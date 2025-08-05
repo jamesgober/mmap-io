@@ -1,6 +1,6 @@
 [package]
 name = "mmap-io"
-version = "0.2.0"
+version = "0.7.1"
 edition = "2021"
 rust-version = "1.76"
 readme = "README.md"
@@ -39,8 +39,17 @@ cfg-if = "1.0"
 libc = { version = "0.2", optional = false }
 
 [features]
-default = []
-async = ["tokio"]
+# Default opt-ins: safe to enable and provide value without platform privileges
+default = ["advise", "iterator", "cow"]
+
+# Optional features
+async     = ["tokio"]     # Tokio-based async helpers
+advise    = []            # Memory advise hints (madvise/posix_madvise, Prefetch on Windows)
+iterator  = []            # Iterator-based access (chunks/pages)
+cow       = []            # Copy-on-Write mapping mode (private mappings)
+locking   = []            # Lock / Unlock memory pages (mlock/munlock, VirtualLock)
+atomic    = []            # Atomic memory views (u32/u64) with strict alignment checks
+watch     = []            # Watch/Notification (inotify/kqueue/FSEvents/Windows; fallback polling)
 
 [badges]
 github-actions = { repository = "asotex/mmap-io", workflow = "CI" }

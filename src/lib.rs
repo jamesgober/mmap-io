@@ -49,8 +49,32 @@ pub mod mmap;
 pub mod segment;
 pub mod manager;
 
+#[cfg(feature = "advise")]
+pub mod advise;
+
+#[cfg(feature = "iterator")]
+pub mod iterator;
+
+#[cfg(feature = "locking")]
+pub mod lock;
+
+#[cfg(feature = "atomic")]
+pub mod atomic;
+
+#[cfg(feature = "watch")]
+pub mod watch;
+
 pub use errors::MmapIoError;
 pub use mmap::{MemoryMappedFile, MmapMode};
 pub use manager::{
     copy_mmap, create_mmap, delete_mmap, flush, load_mmap, update_region, write_mmap,
 };
+
+#[cfg(feature = "advise")]
+pub use advise::MmapAdvice;
+
+#[cfg(feature = "iterator")]
+pub use iterator::{ChunkIterator, PageIterator};
+
+#[cfg(feature = "watch")]
+pub use watch::{ChangeEvent, ChangeKind, WatchHandle};

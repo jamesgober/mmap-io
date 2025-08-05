@@ -35,17 +35,41 @@ Add to your Cargo.toml:
 
 ```toml
 [dependencies]
-mmap-io = { version = "0.1.0" }
+mmap-io = { version = "0.7.1" }
 ```
 
 Enable async helpers (Tokio) when needed:
 
 ```toml
 [dependencies]
-mmap-io = { version = "0.1.0", features = ["async"] }
+mmap-io = { version = "0.7.1", features = ["async"] }
 ```
 
+<br>
+
+## Features
+
+The following optional Cargo features enable extended functionality for `mmap-io`. Enable only what you need to minimize binary size and dependencies.
+
+| Feature    | Description                                                                                         |
+|------------|-----------------------------------------------------------------------------------------------------|
+| `async`    | Enables **Tokio-based async helpers** for asynchronous file and memory operations.                 |
+| `advise`   | Enables memory hinting using **`madvise`/`posix_madvise` (Unix)** or **Prefetch (Windows)**.       |
+| `iterator` | Provides **iterator-based access** to memory chunks or pages with zero-copy read access.           |
+| `cow`      | Enables **Copy-on-Write (COW)** mapping mode using private memory views (per-process isolation).   |
+| `locking`  | Enables page-level memory locking via **`mlock`/`munlock` (Unix)** or **`VirtualLock` (Windows)**. |
+| `atomic`   | Exposes **atomic views** into memory as aligned `u32` / `u64`, with strict safety guarantees.      |
+| `watch`    | Enables **file change notifications** via `inotify`, `kqueue`, `FSEvents`, or `ReadDirectoryChangesW`. Falls back to polling where unavailable. |
+
+> ⚠️ Features are opt-in. Enable only those relevant to your use case to reduce compile time and dependency bloat.
+
+
+<br>
+
+
 ## Usage
+
+### Basic Operations
 
 Create a file, write to it, and read back:
 
@@ -71,45 +95,166 @@ fn main() -> Result<(), mmap_io::MmapIoError> {
 }
 ```
 
-Mutable slice access:
+### Memory Advise (feature = "advise")
+
+Optimize memory access patterns:
 
 ```rust
-use mmap_io::create_mmap;
+#[cfg(feature = "advise")]
+use mmap_io::{create_mmap, MmapAdvice};
 
 fn main() -> Result<(), mmap_io::MmapIoError> {
-    let mmap = create_mmap("data_mut.bin", 4096)?;
-    {
-        let mut g = mmap.as_slice_mut(0, 5)?;
-        g.as_mut().copy_from_slice(b"ABCDE");
-    }
-    mmap.flush()?;
+    let mmap = create_mmap("data.bin", 1024 * 1024)?;
+    
+    // Advise sequential access for better prefetching
+    mmap.advise(0, 1024 * 1024, MmapAdvice::Sequential)?;
+    
+    // Process file sequentially...
+    
+    // Advise that we won't need this region soon
+    mmap.advise(0, 512 * 1024, MmapAdvice::DontNeed)?;
+    
     Ok(())
 }
 ```
 
-Async helpers (feature = "async"):
+### Iterator-Based Access (feature = "iterator")
+
+Process files in chunks efficiently:
+
+```rust
+#[cfg(feature = "iterator")]
+use mmap_io::create_mmap;
+
+fn main() -> Result<(), mmap_io::MmapIoError> {
+    let mmap = create_mmap("large_file.bin", 10 * 1024 * 1024)?;
+    
+    // Process file in 1MB chunks
+    for (i, chunk) in mmap.chunks(1024 * 1024).enumerate() {
+        let data = chunk?;
+        println!("Processing chunk {} with {} bytes", i, data.len());
+    }
+    
+    // Process file page by page (optimal for OS)
+    for page in mmap.pages() {
+        let page_data = page?;
+        // Process page...
+    }
+    
+    Ok(())
+}
+```
+
+### Atomic Operations (feature = "atomic")
+
+Lock-free concurrent access:
+
+```rust
+#[cfg(feature = "atomic")]
+use mmap_io::create_mmap;
+use std::sync::atomic::Ordering;
+
+fn main() -> Result<(), mmap_io::MmapIoError> {
+    let mmap = create_mmap("counters.bin", 64)?;
+    
+    // Get atomic view of u64 at offset 0
+    let counter = mmap.atomic_u64(0)?;
+    counter.store(0, Ordering::SeqCst);
+    
+    // Increment atomically from multiple threads
+    let old = counter.fetch_add(1, Ordering::SeqCst);
+    println!("Counter was: {}", old);
+    
+    Ok(())
+}
+```
+
+### Memory Locking (feature = "locking")
+
+Prevent pages from being swapped:
+
+```rust
+#[cfg(feature = "locking")]
+use mmap_io::create_mmap;
+
+fn main() -> Result<(), mmap_io::MmapIoError> {
+    let mmap = create_mmap("critical.bin", 4096)?;
+    
+    // Lock pages in memory (requires privileges)
+    mmap.lock(0, 4096)?;
+    
+    // Critical operations that need guaranteed memory residence...
+    
+    // Unlock when done
+    mmap.unlock(0, 4096)?;
+    
+    Ok(())
+}
+```
+
+### File Watching (feature = "watch")
+
+Monitor file changes:
+
+```rust
+#[cfg(feature = "watch")]
+use mmap_io::{create_mmap, ChangeEvent};
+
+fn main() -> Result<(), mmap_io::MmapIoError> {
+    let mmap = create_mmap("watched.bin", 1024)?;
+    
+    // Set up file watcher
+    let handle = mmap.watch(|event: ChangeEvent| {
+        println!("File changed: {:?}", event.kind);
+    })?;
+    
+    // File is being watched...
+    // Handle is dropped when out of scope, stopping the watch
+    
+    Ok(())
+}
+```
+
+### Copy-on-Write Mode (feature = "cow")
+
+Private memory views:
+
+```rust
+#[cfg(feature = "cow")]
+use mmap_io::{MemoryMappedFile, MmapMode};
+
+fn main() -> Result<(), mmap_io::MmapIoError> {
+    // Open file in copy-on-write mode
+    let cow_mmap = MemoryMappedFile::open_cow("shared.bin")?;
+    
+    // Reads see the original file content
+    let data = cow_mmap.as_slice(0, 100)?;
+    
+    // Writes would only affect this process (when implemented)
+    // Other processes see original file unchanged
+    
+    Ok(())
+}
+```
+
+### Async Operations (feature = "async")
+
+Tokio-based async helpers:
 
 ```rust
 #[cfg(feature = "async")]
-#[tokio::main(flavor = "multi_thread")]
+#[tokio::main]
 async fn main() -> Result<(), mmap_io::MmapIoError> {
-    use mmap_io::manager::r#async::{create_mmap_async, copy_mmap_async, delete_mmap_async};
+    use mmap_io::manager::r#async::{create_mmap_async, copy_mmap_async};
 
-    let src = "async_src.bin";
-    let dst = "async_dst.bin";
-
-    let mmap = create_mmap_async(src, 4096).await?;
+    // Create file asynchronously
+    let mmap = create_mmap_async("async.bin", 4096).await?;
     mmap.update_region(0, b"async data")?;
     mmap.flush()?;
-    drop(mmap);
-
-    copy_mmap_async(src, dst).await?;
-
-    let ro = mmap_io::load_mmap(dst, mmap_io::MmapMode::ReadOnly)?;
-    assert_eq!(ro.as_slice(0, 10)?, b"async data");
-
-    delete_mmap_async(src).await?;
-    delete_mmap_async(dst).await?;
+    
+    // Copy file asynchronously
+    copy_mmap_async("async.bin", "copy.bin").await?;
+    
     Ok(())
 }
 ```
@@ -125,11 +270,9 @@ async fn main() -> Result<(), mmap_io::MmapIoError> {
 
 Licensed under the Apache License, Version 2.0 (the "License");
 you may not use this project except in compliance with the License.
-You may obtain a copy of the License at:
-
-    http://www.apache.org/licenses/LICENSE-2.0
+You may obtain a copy of the License at: http://www.apache.org/licenses/LICENSE-2.0
 
 Unless required by applicable law or agreed to in writing, software distributed under the License is distributed on an "AS IS" BASIS,
 WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied. See the License for the specific language governing permissions and limitations under the License.
 
-Copyright (c) 2025 James Gober
+Copyright (c) 2025 Asotex Inc.
