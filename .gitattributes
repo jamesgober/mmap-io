@@ -1,0 +1,8 @@
+# Exclude development directories from archive exports
+/tests            export-ignore
+/docs             export-ignore
+/.github          export-ignore
+/.gitignore       export-ignore
+
+# Tell GitHub how to highlight .noml files
+*.noml linguist-detectable=true linguist-language=TOML

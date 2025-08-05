@@ -1,0 +1,47 @@
+[package]
+name = "mmap-io"
+version = "0.1.0"
+edition = "2021"
+readme = "README.md"
+license = "Apache-2.0"
+publish = true
+description = "High-performance, async-ready memory-mapped file I/O library for Rust. Supports fast segment-based loading, updates, and persistence. Designed for database engines, game runtimes, and real-time applications."
+keywords = [
+    "mmap", 
+    "memory-mapped", 
+    "file-io", 
+    "async",
+    "database"
+]
+categories = [
+    "filesystem", 
+    "data-structures", 
+    "asynchronous", 
+    "database-implementations"
+]
+homepage = "https://github.com/asotex/mmap-io"
+repository = "https://github.com/asotex/mmap-io"
+documentation = "https://docs.rs/mmap-io"
+authors = [
+    "James Gober <code@jamesgober.dev>",
+]
+
+
+[dependencies]
+memmap2 = "0.7"
+tokio = { version = "1", features = ["fs", "io-util", "sync", "macros", "rt-multi-thread"] }
+anyhow = "1.0"
+parking_lot = "0.12"
+log = "0.4"
+
+[features]
+default = ["async"]
+async = ["tokio"]
+
+[badges]
+github-actions = { repository = "asotex/mmap-io", workflow = "CI" }
+maintenance = { status = "actively-developed" }
+
+[package.metadata.docs.rs]
+features = ["async"]
+all-features = true
