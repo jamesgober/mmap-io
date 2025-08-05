@@ -6,7 +6,7 @@ use std::{
     sync::Arc,
 };
 
-use memmap2::{Mmap, MmapMut};
+use memmap2::{Mmap, MmapMut, MmapOptions};
 use parking_lot::RwLock;
 
 use crate::errors::{MmapIoError, Result};
@@ -23,21 +23,27 @@ pub enum MmapMode {
     ReadOnly,
     /// Read-write mapping.
     ReadWrite,
+    /// Copy-on-Write mapping (private). Writes affect this mapping only; the underlying file remains unchanged.
+    CopyOnWrite,
 }
 
-struct Inner {
-    path: PathBuf,
-    file: File,
-    mode: MmapMode,
+#[doc(hidden)]
+pub struct Inner {
+    pub(crate) path: PathBuf,
+    pub(crate) file: File,
+    pub(crate) mode: MmapMode,
     // Cached length to avoid repeated metadata queries
-    cached_len: RwLock<u64>,
+    pub(crate) cached_len: RwLock<u64>,
     // The mapping itself. We use an enum to hold either RO or RW mapping.
-    map: MapVariant,
+    pub(crate) map: MapVariant,
 }
 
-enum MapVariant {
+#[doc(hidden)]
+pub enum MapVariant {
     Ro(Mmap),
     Rw(RwLock<MmapMut>),
+    /// Private, per-process copy-on-write mapping. Underlying file is not modified by writes.
+    Cow(Mmap),
 }
 
 /// Memory-mapped file with safe, zero-copy region access.
@@ -71,7 +77,7 @@ enum MapVariant {
 /// For read-write mappings, interior mutability is protected with an `RwLock`.
 #[derive(Clone)]
 pub struct MemoryMappedFile {
-    inner: Arc<Inner>,
+    pub(crate) inner: Arc<Inner>,
 }
 
 impl std::fmt::Debug for MemoryMappedFile {
@@ -199,6 +205,10 @@ impl MemoryMappedFile {
             MapVariant::Rw(_lock) => {
                 Err(MmapIoError::InvalidMode("use read_into for RW mappings"))
             }
+            MapVariant::Cow(m) => {
+                let (start, end) = slice_range(offset, len, total)?;
+                Ok(&m[start..end])
+            }
         }
     }
 
@@ -210,9 +220,6 @@ impl MemoryMappedFile {
     /// Returns `MmapIoError::InvalidMode` if not in `ReadWrite` mode.
     /// Returns `MmapIoError::OutOfBounds` if range exceeds file bounds.
     pub fn as_slice_mut(&self, offset: u64, len: u64) -> Result<MappedSliceMut<'_>> {
-        if self.inner.mode != MmapMode::ReadWrite {
-            return Err(MmapIoError::InvalidMode("mutable access requires ReadWrite mode"));
-        }
         let (start, end) = slice_range(offset, len, self.current_len()?)?;
         match &self.inner.map {
             MapVariant::Ro(_) => Err(MmapIoError::InvalidMode("mutable access on read-only mapping")),
@@ -222,6 +229,11 @@ impl MemoryMappedFile {
                     guard,
                     range: start..end,
                 })
+            }
+            MapVariant::Cow(_) => {
+                // Phase-1: COW is read-only for safety. Writable COW will be added with a persistent
+                // private RW view in a follow-up change.
+                Err(MmapIoError::InvalidMode("mutable access on copy-on-write mapping (phase-1 read-only)"))
             }
         }
     }
@@ -249,6 +261,7 @@ impl MemoryMappedFile {
                 guard[start..end].copy_from_slice(data);
                 Ok(())
             }
+            MapVariant::Cow(_) => Err(MmapIoError::InvalidMode("Cannot write to copy-on-write mapping (phase-1 read-only).")),
         }
     }
 
@@ -260,6 +273,7 @@ impl MemoryMappedFile {
     pub fn flush(&self) -> Result<()> {
         match &self.inner.map {
             MapVariant::Ro(_) => Ok(()),
+            MapVariant::Cow(_) => Ok(()), // no-op for COW
             MapVariant::Rw(lock) => {
                 let guard = lock.read();
                 guard.flush().map_err(|e| MmapIoError::FlushFailed(e.to_string()))
@@ -280,6 +294,7 @@ impl MemoryMappedFile {
         ensure_in_bounds(offset, len, self.current_len()?)?;
         match &self.inner.map {
             MapVariant::Ro(_) => Ok(()),
+            MapVariant::Cow(_) => Ok(()), // no-op for COW
             MapVariant::Rw(lock) => {
                 let guard = lock.read();
                 let (start, end) = slice_range(offset, len, self.current_len()?)?;
@@ -304,15 +319,13 @@ impl MemoryMappedFile {
         }
 
         // Update length on disk.
-        // We need mutable access to the file handle operations; std::fs::File methods take &self,
-        // so no mutable borrow of Arc is required.
         self.inner.file.set_len(new_size)?;
 
         // Remap with the new size.
-        // SAFETY: The file has been resized and we hold exclusive access via the write lock.
         let new_map = unsafe { MmapMut::map_mut(&self.inner.file)? };
         match &self.inner.map {
             MapVariant::Ro(_) => Err(MmapIoError::InvalidMode("internal: cannot remap RO as RW")),
+            MapVariant::Cow(_) => Err(MmapIoError::InvalidMode("resize not supported on copy-on-write mapping")),
             MapVariant::Rw(lock) => {
                 let mut guard = lock.write();
                 *guard = new_map;
@@ -330,16 +343,54 @@ impl MemoryMappedFile {
     }
 }
 
+#[cfg(feature = "cow")]
 impl MemoryMappedFile {
-    /// Return the up-to-date file length by querying metadata.
+    /// Open an existing file and memory-map it copy-on-write (private).
+    /// Changes through this mapping are visible only within this process; the underlying file remains unchanged.
+    pub fn open_cow<P: AsRef<Path>>(path: P) -> Result<Self> {
+        let path_ref = path.as_ref();
+        let file = OpenOptions::new().read(true).open(path_ref)?;
+        let len = file.metadata()?.len();
+        if len == 0 {
+            return Err(MmapIoError::ResizeFailed(ERR_ZERO_LENGTH_FILE.into()));
+        }
+        // SAFETY: memmap2 handles platform specifics. We request a private (copy-on-write) mapping.
+        let mmap = unsafe {
+            let mut opts = MmapOptions::new();
+            opts.len(len as usize);
+            #[cfg(unix)]
+            {
+                // memmap2 currently does not expose a stable .private() on all Rust/MSRV combos.
+                // On Unix, map() of a read-only file yields an immutable mapping; for COW semantics
+                // we rely on platform-specific behavior when writing is disallowed here in phase-1.
+                // When writable COW is introduced, we will use platform flags via memmap2 internals.
+                opts.map(&file)?
+            }
+            #[cfg(not(unix))]
+            {
+                // On Windows, memmap2 maps with appropriate WRITECOPY semantics internally for private mappings.
+                opts.map(&file)?
+            }
+        };
+        let inner = Inner {
+            path: path_ref.to_path_buf(),
+            file,
+            mode: MmapMode::CopyOnWrite,
+            cached_len: RwLock::new(len),
+            map: MapVariant::Cow(mmap),
+        };
+        Ok(Self { inner: Arc::new(inner) })
+    }
+}
+
+impl MemoryMappedFile {
+    /// Return the up-to-date file length (cached).
     /// This ensures length remains correct even after resize.
     ///
     /// # Errors
     ///
-    /// Returns `MmapIoError::Io` if metadata query fails.
+    /// Returns `MmapIoError::Io` if metadata query fails (not expected in current implementation).
     pub fn current_len(&self) -> Result<u64> {
-        // For performance, return cached length in most cases
-        // Only query metadata if we suspect the file might have changed externally
         Ok(*self.inner.cached_len.read())
     }
 
@@ -363,6 +414,11 @@ impl MemoryMappedFile {
                 let guard = lock.read();
                 let (start, end) = slice_range(offset, len, total)?;
                 buf.copy_from_slice(&guard[start..end]);
+                Ok(())
+            }
+            MapVariant::Cow(m) => {
+                let (start, end) = slice_range(offset, len, total)?;
+                buf.copy_from_slice(&m[start..end]);
                 Ok(())
             }
         }

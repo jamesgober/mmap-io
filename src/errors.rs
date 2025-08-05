@@ -35,4 +35,29 @@ pub enum MmapIoError {
     /// Error when resizing is not allowed or fails.
     #[error("resize failed: {0}")]
     ResizeFailed(String),
+
+    /// Error when memory advise fails.
+    #[error("advice failed: {0}")]
+    AdviceFailed(String),
+
+    /// Error when lock operation fails.
+    #[error("lock failed: {0}")]
+    LockFailed(String),
+
+    /// Error when unlock operation fails.
+    #[error("unlock failed: {0}")]
+    UnlockFailed(String),
+
+    /// Error when alignment is required for atomic memory views.
+    #[error("atomic alignment error: required={required}, offset={offset}")]
+    Misaligned {
+        /// Required alignment in bytes.
+        required: u64,
+        /// Provided offset in bytes.
+        offset: u64,
+    },
+
+    /// Error when starting or running a watcher fails.
+    #[error("watch failed: {0}")]
+    WatchFailed(String),
 }
