@@ -1,522 +1,1213 @@
-# mmap-io API Reference
-
+<div align="center">
+   <img width="120px" height="auto" src="https://raw.githubusercontent.com/jamesgober/jamesgober/main/media/icons/hexagon-3.svg" alt="Triple Hexagon">
+    <h1>
+        <strong>mmap-io</strong>
+        <sup><br><sub>API REFERENCE</sub><br></sup>
+    </h1>
+</div>
+<br>
 Complete reference for public-facing APIs. Each item lists its signature, parameters, description, errors, and examples.
 
 Prerequisites:
+
 - MSRV: 1.76
 - Default (sync) APIs always available
-- Async helpers require `features = ["async"]`
+- Feature-gated APIs require enabling specific features
 
----
+<br>
 
-## Crate Exports
+## Table of Contents
 
-- Errors
-  - `MmapIoError`
-  - `errors::Result<T> = std::result::Result<T, MmapIoError>`
-- Core types
-  - `MemoryMappedFile`
-  - `MmapMode`
-- Manager (high-level helpers)
-  - `create_mmap`, `load_mmap`, `write_mmap`, `update_region`, `flush`, `copy_mmap`, `delete_mmap`
-  - Async (feature "async"): `create_mmap_async`, `copy_mmap_async`, `delete_mmap_async`
-- Segments
-  - `segment::Segment`, `segment::SegmentMut`
+- [Installation](#installation)
+- [Features](#features)
+- [Core Types](#core-types)
+  - [MemoryMappedFile](#memorymappedfile)
+  - [MmapMode](#mmapmode)
+  - [MmapIoError](#mmapioerror)
+- [Manager Functions](#manager-functions)
+  - [create_mmap](#create_mmap)
+  - [load_mmap](#load_mmap)
+  - [update_region](#update_region)
+  - [flush](#flush)
+  - [copy_mmap](#copy_mmap)
+  - [delete_mmap](#delete_mmap)
+- [MemoryMappedFile Methods](#memorymappedfile-methods)
+  - [create_rw](#create_rw)
+  - [open_ro](#open_ro)
+  - [open_rw](#open_rw)
+  - [open_cow](#open_cow) (feature = "cow")
+  - [as_slice](#as_slice)
+  - [as_slice_mut](#as_slice_mut)
+  - [read_into](#read_into)
+  - [update_region](#update_region-1)
+  - [flush](#flush-1)
+  - [flush_range](#flush_range)
+  - [resize](#resize)
+  - [len](#len)
+  - [is_empty](#is_empty)
+  - [path](#path)
+  - [mode](#mode)
+- [Feature-Gated APIs](#feature-gated-apis)
+  - [Memory Advise](#memory-advise-feature--advise)
+    - [advise](#advise)
+    - [MmapAdvice](#mmapadvice)
+  - [Iterator-Based Access](#iterator-based-access-feature--iterator)
+    - [chunks](#chunks)
+    - [pages](#pages)
+    - [chunks_mut](#chunks_mut)
+  - [Atomic Operations](#atomic-operations-feature--atomic)
+    - [atomic_u64](#atomic_u64)
+    - [atomic_u32](#atomic_u32)
+    - [atomic_u64_slice](#atomic_u64_slice)
+    - [atomic_u32_slice](#atomic_u32_slice)
+  - [Memory Locking](#memory-locking-feature--locking)
+    - [lock](#lock)
+    - [unlock](#unlock)
+    - [lock_all](#lock_all)
+    - [unlock_all](#unlock_all)
+  - [File Watching](#file-watching-feature--watch)
+    - [watch](#watch)
+    - [ChangeEvent](#changeevent)
+    - [ChangeKind](#changekind)
+- [Segment Types](#segment-types)
+  - [Segment](#segment)
+  - [SegmentMut](#segmentmut)
+- [Async Operations](#async-operations-feature--async)
+  - [create_mmap_async](#create_mmap_async)
+  - [copy_mmap_async](#copy_mmap_async)
+  - [delete_mmap_async](#delete_mmap_async)
+- [Utility Functions](#utility-functions)
+  - [page_size](#page_size)
+  - [align_up](#align_up)
 
----
+<br><br>
 
-## Errors
+## Installation
 
-### errors::MmapIoError (enum)
-Variants:
-- `Io(std::io::Error)` — I/O and OS errors
-- `InvalidMode(&'static str)` — Called an operation in the wrong mode
-- `OutOfBounds { offset: u64, len: u64, total: u64 }` — Range outside file
-- `FlushFailed(String)` — Flush operation failed
-- `ResizeFailed(String)` — Resize requested with invalid size or OS error
+### Install Manually
+```toml
+[dependencies]
+mmap-io = { version = "0.7.1" }
+```
 
-Common Display strings:
-- `"I/O error: ..."`
-- `"invalid access mode: ..."`
-- `"range out of bounds: offset=..., len=..., total=..."`
-- `"flush failed: ..."`
-- `"resize failed: ..."`
+### Install Using Cargo
+```bash
+cargo add mmap-io
+```
 
----
+### Install With Features
+```bash
+cargo add mmap-io --features async,advise,iterator,cow,locking,atomic,watch
+```
 
-## Modes
+<br>
 
-### mmap::MmapMode (enum)
-- `ReadOnly` — read-only mapping
-- `ReadWrite` — read-write mapping
+## Features
 
----
+The following optional Cargo features enable extended functionality:
 
-## Core: MemoryMappedFile
+| Feature    | Description                                                                                         |
+|------------|-----------------------------------------------------------------------------------------------------|
+| `async`    | Enables **Tokio-based async helpers** for asynchronous file and memory operations.                 |
+| `advise`   | Enables memory hinting using **`madvise`/`posix_madvise` (Unix)** or **Prefetch (Windows)**.       |
+| `iterator` | Provides **iterator-based access** to memory chunks or pages with zero-copy read access.           |
+| `cow`      | Enables **Copy-on-Write (COW)** mapping mode using private memory views (per-process isolation).   |
+| `locking`  | Enables page-level memory locking via **`mlock`/`munlock` (Unix)** or **`VirtualLock` (Windows)**. |
+| `atomic`   | Exposes **atomic views** into memory as aligned `u32` / `u64`, with strict safety guarantees.      |
+| `watch`    | Enables **file change notifications** via platform-specific APIs with polling fallback.            |
 
-### mmap::MemoryMappedFile::create_rw(path, size) -> Result<MemoryMappedFile>
-Parameters:
-- `path: impl AsRef<Path>` — File path (created/truncated)
-- `size: u64` — File size in bytes (must be > 0)
+<br>
 
-Description:
-Creates and truncates the file to `size`, then memory-maps it in read-write mode.
+## Core Types
 
-Errors:
-- `ResizeFailed("Size must be greater than zero")` if `size == 0`
-- `Io` if file creation/mapping fails
+### MemoryMappedFile
 
-Example:
+The main type for memory-mapped file operations.
+
+```rust
+pub struct MemoryMappedFile { /* private fields */ }
+```
+
+**Description**: Provides safe, zero-copy access to memory-mapped files with concurrent access support through interior mutability.
+
+**Example**:
 ```rust
 use mmap_io::MemoryMappedFile;
 
-let mmap = MemoryMappedFile::create_rw("data.bin", 4096)?;
-assert_eq!(mmap.mode(), mmap_io::MmapMode::ReadWrite);
+let mmap = MemoryMappedFile::create_rw("data.bin", 1024)?;
 ```
 
----
+### MmapMode
 
-### mmap::MemoryMappedFile::open_ro(path) -> Result<MemoryMappedFile>
-Parameters:
-- `path: impl AsRef<Path>` — Existing file path
+Enum representing the access mode for memory-mapped files.
 
-Description:
-Opens an existing file read-only and maps it.
-
-Errors:
-- `Io` if open/mapping fails
-
-Example:
 ```rust
-let ro = mmap_io::MemoryMappedFile::open_ro("data.bin")?;
-let bytes = ro.as_slice(0, 10)?;
-```
-
----
-
-### mmap::MemoryMappedFile::open_rw(path) -> Result<MemoryMappedFile>
-Parameters:
-- `path: impl AsRef<Path>` — Existing file path
-
-Description:
-Opens an existing file read-write and maps it.
-
-Errors:
-- `ResizeFailed("Cannot map zero-length file")` if file length is 0
-- `Io` if open/mapping fails
-
-Example:
-```rust
-let rw = mmap_io::MemoryMappedFile::open_rw("data.bin")?;
-rw.update_region(0, b"hello")?;
-```
-
----
-
-### mmap::MemoryMappedFile::mode(&self) -> MmapMode
-Description:
-Returns the current mapping mode.
-
-Example:
-```rust
-let m = mmap_io::MemoryMappedFile::open_ro("data.bin")?;
-assert_eq!(m.mode(), mmap_io::MmapMode::ReadOnly);
-```
-
----
-
-### mmap::MemoryMappedFile::len(&self) -> u64
-Description:
-Returns current file length in bytes (cached).
-
-Example:
-```rust
-let m = mmap_io::MemoryMappedFile::open_ro("data.bin")?;
-println!("file size: {}", m.len());
-```
-
----
-
-### mmap::MemoryMappedFile::is_empty(&self) -> bool
-Description:
-Returns true if length == 0.
-
----
-
-### mmap::MemoryMappedFile::as_slice(&self, offset, len) -> Result<&[u8]>
-Parameters:
-- `offset: u64` — Start position
-- `len: u64` — Number of bytes
-
-Description:
-Returns zero-copy read-only slice. Only valid in `ReadOnly` mode. For RW mapping, use `read_into`.
-
-Errors:
-- `OutOfBounds` if range invalid
-- `InvalidMode("use read_into for RW mappings")` for RW
-
-Example:
-```rust
-let ro = mmap_io::MemoryMappedFile::open_ro("data.bin")?;
-let bytes = ro.as_slice(10, 5)?;
-```
-
----
-
-### mmap::MemoryMappedFile::as_slice_mut(&self, offset, len) -> Result<MappedSliceMut<'_>>
-Parameters:
-- `offset: u64`
-- `len: u64`
-
-Description:
-Returns a write-locked slice wrapper for RW mappings. Holds an exclusive write lock while in scope.
-
-Errors:
-- `InvalidMode` if not ReadWrite
-- `OutOfBounds` if range invalid
-
-Example:
-```rust
-let rw = mmap_io::MemoryMappedFile::open_rw("data.bin")?;
-{
-  let mut guard = rw.as_slice_mut(0, 4)?;
-  guard.as_mut().copy_from_slice(b"ABCD");
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum MmapMode {
+    ReadOnly,
+    ReadWrite,
+    CopyOnWrite, // Available with feature = "cow"
 }
-rw.flush()?;
 ```
 
----
+**Variants**:
+- `ReadOnly`: Read-only access to the file
+- `ReadWrite`: Read and write access to the file
+- `CopyOnWrite`: Private copy-on-write mapping (feature-gated)
 
-### mmap::MemoryMappedFile::update_region(&self, offset, data) -> Result<()>
-Parameters:
-- `offset: u64`
-- `data: &[u8]`
+### MmapIoError
 
-Description:
-Bounds-checked, zero-copy write into RW mapping.
+Error type for all mmap-io operations.
 
-Errors:
-- `InvalidMode` if not ReadWrite
-- `OutOfBounds` if range invalid
-
-Example:
 ```rust
-let rw = mmap_io::MemoryMappedFile::open_rw("data.bin")?;
-rw.update_region(100, b"payload")?;
+#[derive(Debug, Error)]
+pub enum MmapIoError {
+    Io(#[from] io::Error),
+    InvalidMode(&'static str),
+    OutOfBounds { offset: u64, len: u64, total: u64 },
+    FlushFailed(String),
+    ResizeFailed(String),
+    AdviceFailed(String),    // feature = "advise"
+    LockFailed(String),      // feature = "locking"
+    UnlockFailed(String),    // feature = "locking"
+    Misaligned { required: u64, offset: u64 }, // feature = "atomic"
+    WatchFailed(String),     // feature = "watch"
+}
 ```
 
----
+<br>
 
-### mmap::MemoryMappedFile::flush(&self) -> Result<()>
-Description:
-Flushes all changes to disk. No-op for RO mapping.
+## Manager Functions
 
-Errors:
-- `FlushFailed` if OS flush fails
+High-level convenience functions for common operations.
 
----
+### create_mmap
 
-### mmap::MemoryMappedFile::flush_range(&self, offset, len) -> Result<()>
-Parameters:
-- `offset: u64`
-- `len: u64`
-
-Description:
-Flushes a specific range of bytes. No-op for zero len or RO mapping.
-
-Errors:
-- `OutOfBounds` if range invalid
-- `FlushFailed` on OS error
-
----
-
-### mmap::MemoryMappedFile::resize(&self, new_size) -> Result<()>
-Parameters:
-- `new_size: u64` — New size in bytes (must be > 0)
-
-Description:
-Resizes underlying file (RW only) and remaps. Cached length updated.
-
-Errors:
-- `InvalidMode` if not RW
-- `ResizeFailed("Size must be greater than zero")` if `new_size == 0`
-- `Io` on OS error
-
-Example:
 ```rust
-let rw = mmap_io::MemoryMappedFile::open_rw("data.bin")?;
-rw.resize(8192)?;
-assert_eq!(rw.len(), 8192);
+pub fn create_mmap<P: AsRef<Path>>(path: P, size: u64) -> Result<MemoryMappedFile>
 ```
 
----
+**Description**: Creates a new memory-mapped file with the specified size. Truncates if the file already exists.
 
-### mmap::MemoryMappedFile::path(&self) -> &Path
-Description:
-Returns the path to the underlying file.
+**Parameters**:
+- `path`: Path to the file to create
+- `size`: Size of the file in bytes (must be > 0)
 
----
+**Returns**: `Result<MemoryMappedFile>` - The created memory-mapped file
 
-### mmap::MemoryMappedFile::current_len(&self) -> Result<u64>
-Description:
-Returns current length (uses cached value). Intended for consistency checks.
+**Errors**:
+- `MmapIoError::ResizeFailed` if size is 0
+- `MmapIoError::Io` if file creation fails
 
-Errors:
-- `Io` if metadata query fails in future variants (currently cached)
-
----
-
-### mmap::MemoryMappedFile::read_into(&self, offset, buf: &mut [u8]) -> Result<()>
-Parameters:
-- `offset: u64`
-- `buf: &mut [u8]` — Destination buffer (length determines read length)
-
-Description:
-Reads bytes into `buf`. Works for both RO and RW mappings.
-
-Errors:
-- `OutOfBounds` if range invalid
-
-Example:
+**Example**:
 ```rust
-let ro = mmap_io::MemoryMappedFile::open_ro("data.bin")?;
-let mut tmp = [0u8; 4];
-ro.read_into(0, &mut tmp)?;
+use mmap_io::create_mmap;
+
+let mmap = create_mmap("new_file.bin", 1024 * 1024)?; // 1MB file
 ```
 
----
+### load_mmap
 
-### mmap::MappedSliceMut<'_>
-Wrapper that holds a write lock and a mutable byte slice for a range.
-
-Methods:
-- `as_mut(&mut self) -> &mut [u8]` — Returns the mutable slice view
-
-Example:
 ```rust
-let rw = mmap_io::MemoryMappedFile::open_rw("data.bin")?;
-let mut guard = rw.as_slice_mut(0, 3)?;
-guard.as_mut().copy_from_slice(b"xyz");
+pub fn load_mmap<P: AsRef<Path>>(path: P, mode: MmapMode) -> Result<MemoryMappedFile>
 ```
 
----
+**Description**: Opens an existing file and memory-maps it with the specified mode.
 
-## Segments
+**Parameters**:
+- `path`: Path to the file to open
+- `mode`: Access mode (`ReadOnly`, `ReadWrite`, or `CopyOnWrite`)
 
-### segment::Segment::new(parent, offset, len) -> Result<Segment>
-Parameters:
-- `parent: Arc<MemoryMappedFile>`
-- `offset: u64`
-- `len: u64`
+**Returns**: `Result<MemoryMappedFile>` - The opened memory-mapped file
 
-Description:
-Immutable view into a region of a file. Delegates to `as_slice`.
+**Errors**:
+- `MmapIoError::Io` if file doesn't exist or can't be opened
+- `MmapIoError::ResizeFailed` if file is zero-length (for RW mode)
 
-Errors:
-- `OutOfBounds` if invalid
+**Example**:
+```rust
+use mmap_io::{load_mmap, MmapMode};
 
-Example:
+let ro_mmap = load_mmap("existing.bin", MmapMode::ReadOnly)?;
+let rw_mmap = load_mmap("data.bin", MmapMode::ReadWrite)?;
+```
+
+### update_region
+
+```rust
+pub fn update_region(mmap: &MemoryMappedFile, offset: u64, data: &[u8]) -> Result<()>
+```
+
+**Description**: Writes data to the memory-mapped file at the specified offset.
+
+**Parameters**:
+- `mmap`: The memory-mapped file to write to
+- `offset`: Byte offset where to start writing
+- `data`: Data to write
+
+**Returns**: `Result<()>`
+
+**Errors**:
+- `MmapIoError::InvalidMode` if not in ReadWrite mode
+- `MmapIoError::OutOfBounds` if offset + data.len() exceeds file size
+
+**Example**:
+```rust
+use mmap_io::{create_mmap, update_region};
+
+let mmap = create_mmap("data.bin", 1024)?;
+update_region(&mmap, 100, b"Hello, World!")?;
+```
+
+### flush
+
+```rust
+pub fn flush(mmap: &MemoryMappedFile) -> Result<()>
+```
+
+**Description**: Flushes all changes to disk. No-op for read-only mappings.
+
+**Parameters**:
+- `mmap`: The memory-mapped file to flush
+
+**Returns**: `Result<()>`
+
+**Errors**:
+- `MmapIoError::FlushFailed` if the flush operation fails
+
+**Example**:
+```rust
+use mmap_io::{create_mmap, update_region, flush};
+
+let mmap = create_mmap("data.bin", 1024)?;
+update_region(&mmap, 0, b"data")?;
+flush(&mmap)?; // Ensure data is persisted
+```
+
+### copy_mmap
+
+```rust
+pub fn copy_mmap<P: AsRef<Path>>(src: P, dst: P) -> Result<()>
+```
+
+**Description**: Copies a file using the filesystem. Does not copy the mapping, only file contents.
+
+**Parameters**:
+- `src`: Source file path
+- `dst`: Destination file path
+
+**Returns**: `Result<()>`
+
+**Errors**:
+- `MmapIoError::Io` if the copy operation fails
+
+**Example**:
+```rust
+use mmap_io::copy_mmap;
+
+copy_mmap("source.bin", "backup.bin")?;
+```
+
+### delete_mmap
+
+```rust
+pub fn delete_mmap<P: AsRef<Path>>(path: P) -> Result<()>
+```
+
+**Description**: Deletes the file at the specified path. The mapping should be dropped before calling this.
+
+**Parameters**:
+- `path`: Path to the file to delete
+
+**Returns**: `Result<()>`
+
+**Errors**:
+- `MmapIoError::Io` if the delete operation fails
+
+**Example**:
+```rust
+use mmap_io::{create_mmap, delete_mmap};
+
+{
+    let mmap = create_mmap("temp.bin", 1024)?;
+    // Use mmap...
+} // mmap dropped here
+
+delete_mmap("temp.bin")?;
+```
+
+<br>
+
+## MemoryMappedFile Methods
+
+### create_rw
+
+```rust
+pub fn create_rw<P: AsRef<Path>>(path: P, size: u64) -> Result<Self>
+```
+
+**Description**: Creates a new file and memory-maps it in read-write mode.
+
+**Parameters**:
+- `path`: Path to the file to create
+- `size`: Size in bytes (must be > 0)
+
+**Returns**: `Result<MemoryMappedFile>`
+
+**Example**:
+```rust
+use mmap_io::MemoryMappedFile;
+
+let mmap = MemoryMappedFile::create_rw("new.bin", 4096)?;
+```
+
+### open_ro
+
+```rust
+pub fn open_ro<P: AsRef<Path>>(path: P) -> Result<Self>
+```
+
+**Description**: Opens an existing file in read-only mode.
+
+**Parameters**:
+- `path`: Path to the file to open
+
+**Returns**: `Result<MemoryMappedFile>`
+
+**Example**:
+```rust
+use mmap_io::MemoryMappedFile;
+
+let mmap = MemoryMappedFile::open_ro("data.bin")?;
+```
+
+### open_rw
+
+```rust
+pub fn open_rw<P: AsRef<Path>>(path: P) -> Result<Self>
+```
+
+**Description**: Opens an existing file in read-write mode.
+
+**Parameters**:
+- `path`: Path to the file to open
+
+**Returns**: `Result<MemoryMappedFile>`
+
+**Errors**:
+- `MmapIoError::ResizeFailed` if file is zero-length
+
+**Example**:
+```rust
+use mmap_io::MemoryMappedFile;
+
+let mmap = MemoryMappedFile::open_rw("data.bin")?;
+```
+
+### open_cow
+
+```rust
+#[cfg(feature = "cow")]
+pub fn open_cow<P: AsRef<Path>>(path: P) -> Result<Self>
+```
+
+**Description**: Opens an existing file in copy-on-write mode. Changes are private to this process.
+
+**Parameters**:
+- `path`: Path to the file to open
+
+**Returns**: `Result<MemoryMappedFile>`
+
+**Example**:
+```rust
+#[cfg(feature = "cow")]
+use mmap_io::MemoryMappedFile;
+
+let mmap = MemoryMappedFile::open_cow("shared.bin")?;
+```
+
+### as_slice
+
+```rust
+pub fn as_slice(&self, offset: u64, len: u64) -> Result<&[u8]>
+```
+
+**Description**: Returns a read-only slice of the mapped memory. Only works for ReadOnly and CopyOnWrite modes.
+
+**Parameters**:
+- `offset`: Starting byte offset
+- `len`: Number of bytes to include
+
+**Returns**: `Result<&[u8]>` - Immutable byte slice
+
+**Errors**:
+- `MmapIoError::OutOfBounds` if range exceeds file bounds
+- `MmapIoError::InvalidMode` for ReadWrite mappings (use `read_into` instead)
+
+**Example**:
+```rust
+let mmap = MemoryMappedFile::open_ro("data.bin")?;
+let data = mmap.as_slice(100, 50)?;
+```
+
+### as_slice_mut
+
+```rust
+pub fn as_slice_mut(&self, offset: u64, len: u64) -> Result<MappedSliceMut<'_>>
+```
+
+**Description**: Returns a mutable slice guard for the specified range. Only available in ReadWrite mode.
+
+**Parameters**:
+- `offset`: Starting byte offset
+- `len`: Number of bytes to include
+
+**Returns**: `Result<MappedSliceMut>` - Guard providing mutable access
+
+**Errors**:
+- `MmapIoError::InvalidMode` if not in ReadWrite mode
+- `MmapIoError::OutOfBounds` if range exceeds file bounds
+
+**Example**:
+```rust
+let mmap = MemoryMappedFile::open_rw("data.bin")?;
+{
+    let mut guard = mmap.as_slice_mut(0, 10)?;
+    guard.as_mut().copy_from_slice(b"0123456789");
+} // guard dropped, lock released
+```
+
+### read_into
+
+```rust
+pub fn read_into(&self, offset: u64, buf: &mut [u8]) -> Result<()>
+```
+
+**Description**: Reads bytes from the mapping into the provided buffer.
+
+**Parameters**:
+- `offset`: Starting byte offset
+- `buf`: Buffer to read into (length determines how many bytes to read)
+
+**Returns**: `Result<()>`
+
+**Errors**:
+- `MmapIoError::OutOfBounds` if range exceeds file bounds
+
+**Example**:
+```rust
+let mmap = MemoryMappedFile::open_rw("data.bin")?;
+let mut buffer = vec![0u8; 100];
+mmap.read_into(50, &mut buffer)?;
+```
+
+### update_region
+
+```rust
+pub fn update_region(&self, offset: u64, data: &[u8]) -> Result<()>
+```
+
+**Description**: Writes data to the mapped file at the specified offset.
+
+**Parameters**:
+- `offset`: Starting byte offset
+- `data`: Data to write
+
+**Returns**: `Result<()>`
+
+**Errors**:
+- `MmapIoError::InvalidMode` if not in ReadWrite mode
+- `MmapIoError::OutOfBounds` if range exceeds file bounds
+
+**Example**:
+```rust
+let mmap = MemoryMappedFile::create_rw("data.bin", 1024)?;
+mmap.update_region(100, b"Hello")?;
+```
+
+### flush
+
+```rust
+pub fn flush(&self) -> Result<()>
+```
+
+**Description**: Flushes all changes to disk.
+
+**Returns**: `Result<()>`
+
+**Errors**:
+- `MmapIoError::FlushFailed` if flush operation fails
+
+### flush_range
+
+```rust
+pub fn flush_range(&self, offset: u64, len: u64) -> Result<()>
+```
+
+**Description**: Flushes a specific byte range to disk.
+
+**Parameters**:
+- `offset`: Starting byte offset
+- `len`: Number of bytes to flush
+
+**Returns**: `Result<()>`
+
+**Errors**:
+- `MmapIoError::OutOfBounds` if range exceeds file bounds
+- `MmapIoError::FlushFailed` if flush operation fails
+
+### resize
+
+```rust
+pub fn resize(&self, new_size: u64) -> Result<()>
+```
+
+**Description**: Resizes the mapped file. Only available in ReadWrite mode.
+
+**Parameters**:
+- `new_size`: New size in bytes (must be > 0)
+
+**Returns**: `Result<()>`
+
+**Errors**:
+- `MmapIoError::InvalidMode` if not in ReadWrite mode
+- `MmapIoError::ResizeFailed` if new size is 0
+
+**Example**:
+```rust
+let mmap = MemoryMappedFile::create_rw("data.bin", 1024)?;
+mmap.resize(2048)?; // Grow to 2KB
+```
+
+### len
+
+```rust
+pub fn len(&self) -> u64
+```
+
+**Description**: Returns the current length of the mapped file in bytes.
+
+**Returns**: `u64` - File size in bytes
+
+### is_empty
+
+```rust
+pub fn is_empty(&self) -> bool
+```
+
+**Description**: Returns true if the mapped file is empty (0 bytes).
+
+**Returns**: `bool`
+
+### path
+
+```rust
+pub fn path(&self) -> &Path
+```
+
+**Description**: Returns the path to the underlying file.
+
+**Returns**: `&Path`
+
+### mode
+
+```rust
+pub fn mode(&self) -> MmapMode
+```
+
+**Description**: Returns the current mapping mode.
+
+**Returns**: `MmapMode`
+
+<br>
+
+## Feature-Gated APIs
+
+### Memory Advise (feature = "advise")
+
+#### advise
+
+```rust
+#[cfg(feature = "advise")]
+pub fn advise(&self, offset: u64, len: u64, advice: MmapAdvice) -> Result<()>
+```
+
+**Description**: Provides hints to the OS about expected access patterns for better performance.
+
+**Parameters**:
+- `offset`: Starting byte offset
+- `len`: Number of bytes the advice applies to
+- `advice`: Type of advice to give
+
+**Returns**: `Result<()>`
+
+**Errors**:
+- `MmapIoError::OutOfBounds` if range exceeds file bounds
+- `MmapIoError::AdviceFailed` if the system call fails
+
+**Example**:
+```rust
+#[cfg(feature = "advise")]
+use mmap_io::MmapAdvice;
+
+mmap.advise(0, 1024 * 1024, MmapAdvice::Sequential)?;
+```
+
+#### MmapAdvice
+
+```rust
+#[cfg(feature = "advise")]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum MmapAdvice {
+    Normal,      // Default access pattern
+    Random,      // Random access expected
+    Sequential,  // Sequential access expected
+    WillNeed,    // Will need this range soon
+    DontNeed,    // Won't need this range soon
+}
+```
+
+### Iterator-Based Access (feature = "iterator")
+
+#### chunks
+
+```rust
+#[cfg(feature = "iterator")]
+pub fn chunks(&self, chunk_size: usize) -> ChunkIterator<'_>
+```
+
+**Description**: Creates an iterator over fixed-size chunks of the file.
+
+**Parameters**:
+- `chunk_size`: Size of each chunk in bytes
+
+**Returns**: `ChunkIterator` yielding `Result<Vec<u8>>`
+
+**Example**:
+```rust
+#[cfg(feature = "iterator")]
+for chunk in mmap.chunks(4096) {
+    let data = chunk?;
+    // Process 4KB chunk...
+}
+```
+
+#### pages
+
+```rust
+#[cfg(feature = "iterator")]
+pub fn pages(&self) -> PageIterator<'_>
+```
+
+**Description**: Creates an iterator over page-aligned chunks (optimal for OS).
+
+**Returns**: `PageIterator` yielding `Result<Vec<u8>>`
+
+**Example**:
+```rust
+#[cfg(feature = "iterator")]
+for page in mmap.pages() {
+    let data = page?;
+    // Process page...
+}
+```
+
+#### chunks_mut
+
+```rust
+#[cfg(feature = "iterator")]
+pub fn chunks_mut(&self, chunk_size: usize) -> ChunkIteratorMut<'_>
+```
+
+**Description**: Creates a mutable iterator that processes chunks via callback.
+
+**Parameters**:
+- `chunk_size`: Size of each chunk in bytes
+
+**Returns**: `ChunkIteratorMut` with `for_each_mut` method
+
+**Example**:
+```rust
+#[cfg(feature = "iterator")]
+mmap.chunks_mut(1024).for_each_mut(|offset, chunk| {
+    chunk.fill(0); // Zero out each 1KB chunk
+    Ok::<(), std::io::Error>(())
+})??;
+```
+
+### Atomic Operations (feature = "atomic")
+
+#### atomic_u64
+
+```rust
+#[cfg(feature = "atomic")]
+pub fn atomic_u64(&self, offset: u64) -> Result<&AtomicU64>
+```
+
+**Description**: Returns an atomic view of a u64 value at the specified offset.
+
+**Parameters**:
+- `offset`: Byte offset (must be 8-byte aligned)
+
+**Returns**: `Result<&AtomicU64>`
+
+**Errors**:
+- `MmapIoError::Misaligned` if offset is not 8-byte aligned
+- `MmapIoError::OutOfBounds` if offset + 8 exceeds file bounds
+
+**Example**:
+```rust
+#[cfg(feature = "atomic")]
+use std::sync::atomic::Ordering;
+
+let counter = mmap.atomic_u64(0)?;
+counter.fetch_add(1, Ordering::SeqCst);
+```
+
+#### atomic_u32
+
+```rust
+#[cfg(feature = "atomic")]
+pub fn atomic_u32(&self, offset: u64) -> Result<&AtomicU32>
+```
+
+**Description**: Returns an atomic view of a u32 value at the specified offset.
+
+**Parameters**:
+- `offset`: Byte offset (must be 4-byte aligned)
+
+**Returns**: `Result<&AtomicU32>`
+
+**Errors**:
+- `MmapIoError::Misaligned` if offset is not 4-byte aligned
+- `MmapIoError::OutOfBounds` if offset + 4 exceeds file bounds
+
+#### atomic_u64_slice
+
+```rust
+#[cfg(feature = "atomic")]
+pub fn atomic_u64_slice(&self, offset: u64, count: usize) -> Result<&[AtomicU64]>
+```
+
+**Description**: Returns a slice of atomic u64 values.
+
+**Parameters**:
+- `offset`: Starting byte offset (must be 8-byte aligned)
+- `count`: Number of u64 values
+
+**Returns**: `Result<&[AtomicU64]>`
+
+#### atomic_u32_slice
+
+```rust
+#[cfg(feature = "atomic")]
+pub fn atomic_u32_slice(&self, offset: u64, count: usize) -> Result<&[AtomicU32]>
+```
+
+**Description**: Returns a slice of atomic u32 values.
+
+**Parameters**:
+- `offset`: Starting byte offset (must be 4-byte aligned)
+- `count`: Number of u32 values
+
+**Returns**: `Result<&[AtomicU32]>`
+
+### Memory Locking (feature = "locking")
+
+#### lock
+
+```rust
+#[cfg(feature = "locking")]
+pub fn lock(&self, offset: u64, len: u64) -> Result<()>
+```
+
+**Description**: Locks memory pages to prevent them from being swapped out. Requires appropriate privileges.
+
+**Parameters**:
+- `offset`: Starting byte offset
+- `len`: Number of bytes to lock
+
+**Returns**: `Result<()>`
+
+**Errors**:
+- `MmapIoError::OutOfBounds` if range exceeds file bounds
+- `MmapIoError::LockFailed` if lock operation fails (often due to privileges)
+
+**Example**:
+```rust
+#[cfg(feature = "locking")]
+mmap.lock(0, 4096)?; // Lock first page
+```
+
+#### unlock
+
+```rust
+#[cfg(feature = "locking")]
+pub fn unlock(&self, offset: u64, len: u64) -> Result<()>
+```
+
+**Description**: Unlocks previously locked memory pages.
+
+**Parameters**:
+- `offset`: Starting byte offset
+- `len`: Number of bytes to unlock
+
+**Returns**: `Result<()>`
+
+#### lock_all
+
+```rust
+#[cfg(feature = "locking")]
+pub fn lock_all(&self) -> Result<()>
+```
+
+**Description**: Locks all pages of the memory-mapped file.
+
+**Returns**: `Result<()>`
+
+#### unlock_all
+
+```rust
+#[cfg(feature = "locking")]
+pub fn unlock_all(&self) -> Result<()>
+```
+
+**Description**: Unlocks all pages of the memory-mapped file.
+
+**Returns**: `Result<()>`
+
+### File Watching (feature = "watch")
+
+#### watch
+
+```rust
+#[cfg(feature = "watch")]
+pub fn watch<F>(&self, callback: F) -> Result<WatchHandle>
+where
+    F: Fn(ChangeEvent) + Send + 'static
+```
+
+**Description**: Watches for changes to the mapped file. The callback is invoked when changes are detected.
+
+**Parameters**:
+- `callback`: Function called when file changes
+
+**Returns**: `Result<WatchHandle>` - Handle that stops watching when dropped
+
+**Example**:
+```rust
+#[cfg(feature = "watch")]
+use mmap_io::ChangeEvent;
+
+let handle = mmap.watch(|event: ChangeEvent| {
+    println!("File changed: {:?}", event.kind);
+})?;
+// File is being watched until handle is dropped
+```
+
+#### ChangeEvent
+
+```rust
+#[cfg(feature = "watch")]
+#[derive(Debug, Clone)]
+pub struct ChangeEvent {
+    pub offset: Option<u64>,  // Offset where change occurred (if known)
+    pub len: Option<u64>,     // Length of changed region (if known)
+    pub kind: ChangeKind,     // Type of change
+}
+```
+
+#### ChangeKind
+
+```rust
+#[cfg(feature = "watch")]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ChangeKind {
+    Modified,  // File content was modified
+    Metadata,  // File metadata changed
+    Removed,   // File was removed
+}
+```
+
+<br>
+
+## Segment Types
+
+### Segment
+
+```rust
+pub struct Segment { /* private fields */ }
+```
+
+**Description**: Immutable view into a region of a memory-mapped file.
+
+**Methods**:
+- `new(parent: Arc<MemoryMappedFile>, offset: u64, len: u64) -> Result<Self>`
+- `as_slice(&self) -> Result<&[u8]>`
+- `len(&self) -> u64`
+- `is_empty(&self) -> bool`
+- `offset(&self) -> u64`
+- `parent(&self) -> &MemoryMappedFile`
+
+**Example**:
 ```rust
 use std::sync::Arc;
 use mmap_io::segment::Segment;
 
-let parent = Arc::new(mmap_io::MemoryMappedFile::open_ro("data.bin")?);
-let seg = Segment::new(parent, 100, 50)?;
-let data = seg.as_slice()?;
+let mmap = Arc::new(MemoryMappedFile::open_ro("data.bin")?);
+let segment = Segment::new(mmap.clone(), 100, 50)?;
+let data = segment.as_slice()?;
 ```
 
-Accessors:
+### SegmentMut
+
+```rust
+pub struct SegmentMut { /* private fields */ }
+```
+
+**Description**: Mutable view into a region of a memory-mapped file.
+
+**Methods**:
+- `new(parent: Arc<MemoryMappedFile>, offset: u64, len: u64) -> Result<Self>`
+- `as_slice_mut(&self) -> Result<MappedSliceMut<'_>>`
+- `write(&self, data: &[u8]) -> Result<()>`
 - `len(&self) -> u64`
 - `is_empty(&self) -> bool`
 - `offset(&self) -> u64`
 - `parent(&self) -> &MemoryMappedFile`
 
----
+<br>
 
-### segment::SegmentMut::new(parent, offset, len) -> Result<SegmentMut>
-Parameters:
-- `parent: Arc<MemoryMappedFile>`
-- `offset: u64`
-- `len: u64`
+## Async Operations (feature = "async")
 
-Description:
-Mutable view into a region. Provides `as_slice_mut` and `write`.
+### create_mmap_async
 
-Errors:
-- `OutOfBounds` if invalid
-
-Methods:
-- `as_slice_mut(&self) -> Result<crate::mmap::MappedSliceMut<'_>>`
-- `write(&self, data: &[u8]) -> Result<()>` — Partial writes allowed (writes `data.len()`)
-
-Accessors:
-- `len(&self) -> u64`
-- `is_empty(&self) -> bool`
-- `offset(&self) -> u64`
-- `parent(&self) -> &MemoryMappedFile`
-
-Example:
 ```rust
-use std::sync::Arc;
-use mmap_io::segment::SegmentMut;
-
-let parent = Arc::new(mmap_io::MemoryMappedFile::open_rw("data.bin")?);
-let seg = SegmentMut::new(parent, 0, 16)?;
-seg.write(b"segment payload")?;
+#[cfg(feature = "async")]
+pub async fn create_mmap_async<P: AsRef<Path>>(
+    path: P, 
+    size: u64
+) -> Result<MemoryMappedFile>
 ```
 
----
+**Description**: Asynchronously creates a new memory-mapped file.
 
-## Manager (High-level helpers)
+**Parameters**:
+- `path`: Path to the file to create
+- `size`: Size in bytes
 
-These wrap low-level operations for convenience.
+**Returns**: `Result<MemoryMappedFile>`
 
-### manager::create_mmap(path, size) -> Result<MemoryMappedFile>
-Description:
-Create/truncate and map RW.
-
-Example:
+**Example**:
 ```rust
-let mmap = mmap_io::create_mmap("file.bin", 4096)?;
+#[cfg(feature = "async")]
+let mmap = mmap_io::manager::r#async::create_mmap_async("async.bin", 4096).await?;
 ```
 
----
+### copy_mmap_async
 
-### manager::load_mmap(path, mode) -> Result<MemoryMappedFile>
-Parameters:
-- `mode: MmapMode`
-
-Example:
 ```rust
-let ro = mmap_io::load_mmap("file.bin", mmap_io::MmapMode::ReadOnly)?;
-let rw = mmap_io::load_mmap("file.bin", mmap_io::MmapMode::ReadWrite)?;
+#[cfg(feature = "async")]
+pub async fn copy_mmap_async<P: AsRef<Path>>(src: P, dst: P) -> Result<()>
 ```
 
----
+**Description**: Asynchronously copies a file.
 
-### manager::write_mmap(path, offset, data) -> Result<()>
-Description:
-Open RW and write `data` at `offset`.
+**Parameters**:
+- `src`: Source file path
+- `dst`: Destination file path
 
----
+**Returns**: `Result<()>`
 
-### manager::update_region(mmap, offset, data) -> Result<()>
-Description:
-Call through to `MemoryMappedFile::update_region`.
+### delete_mmap_async
 
----
-
-### manager::flush(mmap) -> Result<()>
-
----
-
-### utils::slice_range(offset, len, total) -> Result<(usize, usize)>
-Description:
-Computes a safe byte slice range tuple `(start, end)` as `usize` given `offset`, `len`, and `total`. Performs bounds checks via `ensure_in_bounds`.
-
-Parameters:
-- `offset: u64` — start position
-- `len: u64` — byte length
-- `total: u64` — total available length
-
-Errors:
-- `OutOfBounds` if the requested range exceeds `total`
-
-Notes:
-- Low-level helper; most users should call higher-level APIs (`as_slice`, `read_into`, segments) instead of manually computing ranges.
-
-Example:
 ```rust
-let (start, end) = mmap_io::utils::slice_range(10, 5, 100)?;
-assert_eq!((start, end), (10, 15));
+#[cfg(feature = "async")]
+pub async fn delete_mmap_async<P: AsRef<Path>>(path: P) -> Result<()>
 ```
 
----
+**Description**: Asynchronously deletes a file.
 
-## Root Re-exports (crate::)
+**Parameters**:
+- `path`: Path to the file to delete
 
-The following items are re-exported at the crate root for convenience:
-- `MmapIoError`
-- `MemoryMappedFile`
-- `MmapMode`
-- `create_mmap`, `load_mmap`, `write_mmap`, `update_region`, `flush`, `copy_mmap`, `delete_mmap`
+**Returns**: `Result<()>`
 
-Example:
+<br>
+
+## Utility Functions
+
+### page_size
+
 ```rust
-use mmap_io::{create_mmap, load_mmap, MmapMode, MemoryMappedFile, MmapIoError};
+pub fn page_size() -> usize
 ```
 
-## Notes on Length Caching
+**Description**: Returns the system's memory page size in bytes.
 
-`MemoryMappedFile::len()` returns a cached length for performance. APIs that modify the file size (e.g., `resize`) update this cache. If external processes change the file length, the cached length may not reflect that until remapping; such external changes are outside the safety guarantees of this crate.
-Description:
-Flush mapping.
+**Returns**: `usize` - Page size (typically 4096 on most systems)
 
----
-
-### manager::copy_mmap(src, dst) -> Result<()>
-Description:
-Filesystem copy of the underlying file.
-
----
-
-### manager::delete_mmap(path) -> Result<()>
-Description:
-Remove backing file (ensure mappings are dropped beforehand).
-
----
-
-## Async (feature = "async")
-
-### manager::r#async::create_mmap_async(path, size) -> Result<MemoryMappedFile>
-Description:
-Create and size a file asynchronously (Tokio), then open RW mapping.
-
-Example:
+**Example**:
 ```rust
-#[tokio::main]
-async fn main() -> Result<(), mmap_io::MmapIoError> {
-    let mmap = mmap_io::manager::r#async::create_mmap_async("data.bin", 4096).await?;
-    Ok(())
+use mmap_io::utils::page_size;
+
+let ps = page_size();
+println!("System page size: {} bytes", ps);
+```
+
+### align_up
+
+```rust
+pub fn align_up(value: u64, alignment: u64) -> u64
+```
+
+**Description**: Aligns a value up to the nearest multiple of alignment.
+
+**Parameters**:
+- `value`: Value to align
+- `alignment`: Alignment boundary
+
+**Returns**: `u64` - Aligned value
+
+**Example**:
+```rust
+use mmap_io::utils::align_up;
+
+let aligned = align_up(1001, 1024); // Returns 1024
+let aligned2 = align_up(2048, 1024); // Returns 2048
+```
+
+<br>
+
+## Safety and Best Practices
+
+### Thread Safety
+- All operations are thread-safe through interior mutability
+- Read operations can proceed concurrently
+- Write operations are serialized through `RwLock`
+
+### Performance Tips
+1. Use `advise()` to hint access patterns for better OS optimization
+2. Prefer page-aligned operations when possible
+3. Use iterators for sequential processing of large files
+4. Lock critical memory regions to prevent swapping
+5. Batch writes and flush once rather than flushing frequently
+
+### Common Pitfalls
+1. Don't hold mutable guards across `flush()` calls (causes deadlock)
+2. Ensure proper alignment when using atomic operations
+3. Drop mappings before deleting files
+4. Check privileges before using memory locking
+5. Handle watch events promptly to avoid missing changes
+
+### Error Handling
+All operations return `Result<T, MmapIoError>`. Common error scenarios:
+- `OutOfBounds`: Accessing beyond file boundaries
+- `InvalidMode`: Operation not supported in current mode
+- `Misaligned`: Atomic operations require proper alignment
+- `LockFailed`: Usually due to insufficient privileges
+- `Io`: Underlying filesystem errors
+
+<br>
+
+## Examples
+
+### Database-like Usage
+```rust
+use mmap_io::{MemoryMappedFile, MmapAdvice};
+use std::sync::atomic::Ordering;
+
+// Create a file for storing records
+let db = MemoryMappedFile::create_rw("database.bin", 1024 * 1024)?;
+
+// Advise random access pattern
+db.advise(0, 1024 * 1024, MmapAdvice::Random)?;
+
+// Use atomic counter for record count
+let record_count = db.atomic_u64(0)?;
+record_count.store(0, Ordering::SeqCst);
+
+// Write records starting at offset 64
+let record_data = b"First record";
+db.update_region(64, record_data)?;
+record_count.fetch_add(1, Ordering::SeqCst);
+
+db.flush()?;
+```
+
+### Game Asset Loading
+```rust
+use mmap_io::{MemoryMappedFile, MmapAdvice};
+
+// Load game assets read-only
+let assets = MemoryMappedFile::open_ro("game_assets.dat")?;
+
+// Hint that we'll need textures soon
+assets.advise(0, 50 * 1024 * 1024, MmapAdvice::WillNeed)?;
+
+// Load texture data
+let texture_data = assets.as_slice(1024 * 1024, 2048 * 2048 * 4)?;
+```
+
+### Log File Processing
+```rust
+#[cfg(feature = "iterator")]
+use mmap_io::MemoryMappedFile;
+
+let log = MemoryMappedFile::open_ro("app.log")?;
+
+// Process log file line by line using chunks
+for chunk in log.chunks(4096) {
+    let data = chunk?;
+    // Process lines in chunk...
 }
 ```
 
----
+### Concurrent Counter
+```rust
+#[cfg(feature = "atomic")]
+use mmap_io::MemoryMappedFile;
+use std::sync::Arc;
+use std::thread;
+use std::sync::atomic::Ordering;
 
-### manager::r#async::copy_mmap_async(src, dst) -> Result<()>
-Description:
-Async filesystem copy.
+let mmap = Arc::new(MemoryMappedFile::create_rw("counters.bin", 64)?);
 
----
+// Initialize counters
+for i in 0..8 {
+    let counter = mmap.atomic_u64(i * 8)?;
+    counter.store(0, Ordering::SeqCst);
+}
 
-### manager::r#async::delete_mmap_async(path) -> Result<()>
-Description:
-Async file delete.
+// Spawn threads to increment counters
+let handles: Vec<_> = (0..4).map(|i| {
+    let mmap = Arc::clone(&mmap);
+    thread::spawn(move || {
+        let counter = mmap.atomic_u64(i * 8).unwrap();
+        for _ in 0..1000 {
+            counter.fetch_add(1, Ordering::SeqCst);
+        }
+    })
+}).collect();
 
----
+for handle in handles {
+    handle.join().unwrap();
+}
+```
 
-## Utilities
+<br>
 
-### utils::page_size() -> usize
-Description:
-Returns OS page size in bytes.
+## Version History
+- **0.7.1**: Added Documentation.
+- **0.7.0**: Added atomic, locking, watch features
+- **0.5.0**: Added advise, iterator features
+- **0.4.0**: Added copy-on-write mode support
+- **0.3.0**: Added async support with Tokio
+- **0.2.0**: Added segment types
+- **0.1.0**: Initial release with basic mmap functionality
 
----
+<br>
 
-### utils::align_up(value, alignment) -> u64
-Description:
-Align `value` up to `alignment`. Optimized fast path for power-of-two alignments.
+## License
 
----
-
-### utils::ensure_in_bounds(offset, len, total) -> Result<()>
-Description:
-Validates `[offset, offset+len)` is within `[0, total)`. Returns `OutOfBounds` error otherwise.
-
----
-
-## Notes and Best Practices
-
-- For RW mappings, prefer using `read_into` for reading bytes to avoid holding lock guards.
-- Drop write guards before calling `flush` to prevent deadlocks.
-- Use segments for composing larger algorithms over subranges without copying data.
+Licensed under the Apache License, Version 2.0. See LICENSE file for details.
