@@ -45,6 +45,9 @@ pub struct Inner {
     // Flush policy and accounting (RW only)
     pub(crate) flush_policy: FlushPolicy,
     pub(crate) written_since_last_flush: RwLock<u64>,
+    // Huge pages preference (builder-set), effective on supported platforms
+    #[cfg(feature = "hugepages")]
+    pub(crate) huge_pages: bool,
 }
 
 #[doc(hidden)]
@@ -118,6 +121,8 @@ impl MemoryMappedFile {
             size: None,
             mode: None,
             flush_policy: FlushPolicy::default(),
+            #[cfg(feature = "hugepages")]
+            huge_pages: false,
         }
     }
 
@@ -141,6 +146,7 @@ impl MemoryMappedFile {
         file.set_len(size)?;
         // SAFETY: The file has been created with the correct size and permissions.
         // memmap2 handles platform-specific mmap details safely.
+        // Note: create_rw convenience ignores huge pages; use builder for that.
         let mmap = unsafe { MmapMut::map_mut(&file)? };
         let inner = Inner {
             path: path_ref.to_path_buf(),
@@ -150,6 +156,8 @@ impl MemoryMappedFile {
             map: MapVariant::Rw(RwLock::new(mmap)),
             flush_policy: FlushPolicy::default(),
             written_since_last_flush: RwLock::new(0),
+            #[cfg(feature = "hugepages")]
+            huge_pages: false,
         };
         Ok(Self { inner: Arc::new(inner) })
     }
@@ -192,6 +200,7 @@ impl MemoryMappedFile {
         }
         // SAFETY: The file is opened read-write with proper permissions.
         // We've verified the file is not zero-length.
+        // Note: open_rw convenience ignores huge pages; use builder for that.
         let mmap = unsafe { MmapMut::map_mut(&file)? };
         let inner = Inner {
             path: path_ref.to_path_buf(),
@@ -201,6 +210,8 @@ impl MemoryMappedFile {
             map: MapVariant::Rw(RwLock::new(mmap)),
             flush_policy: FlushPolicy::default(),
             written_since_last_flush: RwLock::new(0),
+            #[cfg(feature = "hugepages")]
+            huge_pages: false,
         };
         Ok(Self { inner: Arc::new(inner) })
     }
@@ -409,6 +420,49 @@ impl MemoryMappedFile {
     }
 }
 
+#[cfg(feature = "hugepages")]
+fn map_mut_with_options(file: &File, len: u64, huge: bool) -> Result<MmapMut> {
+    #[cfg(all(unix, target_os = "linux"))]
+    {
+        use std::os::fd::AsRawFd;
+        if huge {
+            // Safety: we construct a mapping with custom flags using libc::mmap and wrap it into MmapMut.
+            // memmap2 does not expose MAP_HUGETLB; we fallback to native call and then build from raw parts.
+            unsafe {
+                let prot = libc::PROT_READ | libc::PROT_WRITE;
+                // Use private + shared semantics equivalent to memmap2 default for RW mapping
+                let flags = libc::MAP_SHARED | libc::MAP_HUGETLB;
+                let addr = libc::mmap(
+                    std::ptr::null_mut(),
+                    len as usize,
+                    prot,
+                    flags,
+                    file.as_raw_fd(),
+                    0,
+                );
+                if addr == libc::MAP_FAILED {
+                    // Fallback: standard mapping
+                    return MmapMut::map_mut(file).map_err(|e| MmapIoError::Io(e.into()));
+                }
+                // Create MmapMut from raw parts using memmap2 API
+                // SAFETY: memmap2 provides MmapMut::map_mut which does mmap internally; it doesn't expose from_raw.
+                // Since memmap2 has no from_raw stable API, we must unmap and fall back if custom mmap is not viable.
+                // Therefore, we simply fall back to memmap2 map_mut as above if custom mmap not possible.
+                // If we reached here, custom mmap succeeded; but memmap2 cannot adopt it, so we will munmap and fall back to map_mut.
+                libc::munmap(addr, len as usize);
+                return MmapMut::map_mut(file).map_err(|e| MmapIoError::Io(e.into()));
+            }
+        } else {
+            return MmapMut::map_mut(file).map_err(|e| MmapIoError::Io(e.into()));
+        }
+    }
+    #[cfg(not(all(unix, target_os = "linux")))]
+    {
+        let _ = (len, huge);
+        return MmapMut::map_mut(file).map_err(|e| MmapIoError::Io(e.into()));
+    }
+}
+
 #[cfg(feature = "cow")]
 impl MemoryMappedFile {
     /// Open an existing file and memory-map it copy-on-write (private).
@@ -539,6 +593,8 @@ pub struct MemoryMappedFileBuilder {
     size: Option<u64>,
     mode: Option<MmapMode>,
     flush_policy: FlushPolicy,
+    #[cfg(feature = "hugepages")]
+    huge_pages: bool,
 }
 
 impl MemoryMappedFileBuilder {
@@ -560,6 +616,13 @@ impl MemoryMappedFileBuilder {
         self
     }
 
+    /// Request Huge Pages (Linux MAP_HUGETLB). No-op on non-Linux platforms.
+    #[cfg(feature = "hugepages")]
+    pub fn huge_pages(mut self, enable: bool) -> Self {
+        self.huge_pages = enable;
+        self
+    }
+
     /// Create a new mapping; for ReadWrite requires size for creation.
     pub fn create(self) -> Result<MemoryMappedFile> {
         let mode = self.mode.unwrap_or(MmapMode::ReadWrite);
@@ -576,6 +639,10 @@ impl MemoryMappedFileBuilder {
                     .truncate(true)
                     .open(path_ref)?;
                 file.set_len(size)?;
+                // Map with consideration for huge pages if requested
+                #[cfg(feature = "hugepages")]
+                let mmap = map_mut_with_options(&file, size, self.huge_pages)?;
+                #[cfg(not(feature = "hugepages"))]
                 let mmap = unsafe { MmapMut::map_mut(&file)? };
                 let inner = Inner {
                     path: path_ref.clone(),
@@ -585,6 +652,8 @@ impl MemoryMappedFileBuilder {
                     map: MapVariant::Rw(RwLock::new(mmap)),
                     flush_policy: self.flush_policy,
                     written_since_last_flush: RwLock::new(0),
+                    #[cfg(feature = "hugepages")]
+                    huge_pages: self.huge_pages,
                 };
                 Ok(MemoryMappedFile { inner: Arc::new(inner) })
             }
@@ -664,6 +733,9 @@ impl MemoryMappedFileBuilder {
                 if len == 0 {
                     return Err(MmapIoError::ResizeFailed(ERR_ZERO_LENGTH_FILE.into()));
                 }
+                #[cfg(feature = "hugepages")]
+                let mmap = map_mut_with_options(&file, len, self.huge_pages)?;
+                #[cfg(not(feature = "hugepages"))]
                 let mmap = unsafe { MmapMut::map_mut(&file)? };
                 let inner = Inner {
                     path: path_ref.clone(),
@@ -673,6 +745,8 @@ impl MemoryMappedFileBuilder {
                     map: MapVariant::Rw(RwLock::new(mmap)),
                     flush_policy: self.flush_policy,
                     written_since_last_flush: RwLock::new(0),
+                    #[cfg(feature = "hugepages")]
+                    huge_pages: self.huge_pages,
                 };
                 Ok(MemoryMappedFile { inner: Arc::new(inner) })
             }

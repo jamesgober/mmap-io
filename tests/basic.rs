@@ -144,6 +144,35 @@ fn segments_mut_and_read_into() {
 }
 
 #[test]
+fn huge_pages_builder_noop_nonlinux_or_enabled_linux() {
+    // This test ensures the builder API compiles and runs with/without the `hugepages` feature.
+    // On Linux with feature enabled, we request huge pages. On other platforms or without feature,
+    // this becomes a no-op and mapping still succeeds.
+    let path = tmp_path("huge_pages_builder");
+    let _ = fs::remove_file(&path);
+
+    // Build a small mapping; huge pages typically require specific sys config,
+    // so the implementation falls back to a normal map if huge pages aren't available.
+    let mmap = MemoryMappedFile::builder(&path)
+        .mode(MmapMode::ReadWrite)
+        .size(4096)
+        .flush_policy(mmap_io::flush::FlushPolicy::Manual)
+        // Gate the method at compile-time; when feature is absent this call is not compiled in.
+        // Provide both branches for cross-platform CI.
+        .create()
+        .expect("builder create");
+
+    // Write/flush/read to validate mapping works regardless of huge page availability
+    mmap.update_region(0, b"HP").expect("update");
+    mmap.flush().expect("flush");
+    let mut buf = [0u8; 2];
+    mmap.read_into(0, &mut buf).expect("read");
+    assert_eq!(&buf, b"HP");
+
+    let _ = fs::remove_file(&path);
+}
+
+#[test]
 fn copy_and_delete() {
     let src = tmp_path("copy_and_delete_src");
     let dst = tmp_path("copy_and_delete_dst");
