@@ -339,6 +339,10 @@ impl MemoryMappedFile {
 
     /// Flush changes to disk. For read-only mappings, this is a no-op.
     ///
+    /// Smart internal guards:
+    /// - Skip I/O when there are no pending writes (accumulator is zero)
+    /// - On Linux, use msync(MS_ASYNC) as a cheaper hint; fall back to full flush on error
+    ///
     /// # Errors
     ///
     /// Returns `MmapIoError::FlushFailed` if flush operation fails.
@@ -347,8 +351,49 @@ impl MemoryMappedFile {
             MapVariant::Ro(_) => Ok(()),
             MapVariant::Cow(_) => Ok(()), // no-op for COW
             MapVariant::Rw(lock) => {
+                // Fast path: no pending writes => skip flushing I/O
+                if *self.inner.written_since_last_flush.read() == 0 {
+                    return Ok(());
+                }
+
+                // Platform-optimized path: Linux MS_ASYNC best-effort
+                #[cfg(all(unix, target_os = "linux"))]
+                {
+                    use std::os::fd::AsRawFd;
+                    // SAFETY: msync requires a valid mapping address/len; memmap2 handles mapping.
+                    // We conservatively issue MS_ASYNC on the entire file length.
+                    let len = self.current_len()? as usize;
+                    if len > 0 {
+                        let fd = self.inner.file.as_raw_fd();
+                        // Obtain a temporary RO view to get a stable address range without write-locking
+                        // We avoid exposing raw ptr; we only pass to msync internally.
+                        let addr_res = match &self.inner.map {
+                            MapVariant::Rw(lock) => {
+                                let guard = lock.read();
+                                let ptr = guard.as_ptr() as *const libc::c_void;
+                                let ret = unsafe { libc::msync(ptr as *mut libc::c_void, len, libc::MS_ASYNC) };
+                                if ret == 0 {
+                                    // Consider MS_ASYNC success as sufficient and reset accumulator
+                                    *self.inner.written_since_last_flush.write() = 0;
+                                    return Ok(());
+                                }
+                                // fall through to full flush on error
+                                drop(guard);
+                                let _ = fd; // silence unused on non-error paths
+                                Ok(())
+                            }
+                            _ => Ok(()),
+                        };
+                        let _ = addr_res;
+                    }
+                }
+
+                // Fallback/full flush using memmap2 API
                 let guard = lock.read();
-                guard.flush().map_err(|e| MmapIoError::FlushFailed(e.to_string()))
+                guard.flush().map_err(|e| MmapIoError::FlushFailed(e.to_string()))?;
+                // Reset accumulator after a successful flush
+                *self.inner.written_since_last_flush.write() = 0;
+                Ok(())
             }
         }
     }
@@ -371,6 +416,10 @@ impl MemoryMappedFile {
 
     /// Flush a specific byte range to disk.
     ///
+    /// Smart internal guards:
+    /// - Skip I/O when there are no pending writes in accumulator
+    /// - On Linux, prefer msync(MS_ASYNC) for the range; fall back to full range flush on error
+    ///
     /// # Errors
     ///
     /// Returns `MmapIoError::OutOfBounds` if range exceeds file bounds.
@@ -384,11 +433,40 @@ impl MemoryMappedFile {
             MapVariant::Ro(_) => Ok(()),
             MapVariant::Cow(_) => Ok(()), // no-op for COW
             MapVariant::Rw(lock) => {
-                let guard = lock.read();
+                // If we have no accumulated writes, skip I/O
+                if *self.inner.written_since_last_flush.read() == 0 {
+                    return Ok(());
+                }
+
                 let (start, end) = slice_range(offset, len, self.current_len()?)?;
+                let range_len = end - start;
+
+                // Linux MS_ASYNC optimization
+                #[cfg(all(unix, target_os = "linux"))]
+                {
+                    // SAFETY: msync on a valid mapped range. We translate to a pointer within the map.
+                    let msync_res = {
+                        let guard = lock.read();
+                        let base = guard.as_ptr();
+                        let ptr = unsafe { base.add(start) } as *mut libc::c_void;
+                        let ret = unsafe { libc::msync(ptr, range_len, libc::MS_ASYNC) };
+                        ret
+                    };
+                    if msync_res == 0 {
+                        // Consider MS_ASYNC success and reset accumulator
+                        *self.inner.written_since_last_flush.write() = 0;
+                        return Ok(());
+                    }
+                    // else fall through to full flush_range
+                }
+
+                let guard = lock.read();
                 guard
-                    .flush_range(start, end - start)
-                    .map_err(|e| MmapIoError::FlushFailed(e.to_string()))
+                    .flush_range(start, range_len)
+                    .map_err(|e| MmapIoError::FlushFailed(e.to_string()))?;
+                // Reset accumulator after a successful flush
+                *self.inner.written_since_last_flush.write() = 0;
+                Ok(())
             }
         }
     }
@@ -551,7 +629,11 @@ impl MemoryMappedFile {
     fn apply_flush_policy(&self, written: u64) -> Result<()> {
         match self.inner.flush_policy {
             FlushPolicy::Never | FlushPolicy::Manual => Ok(()),
-            FlushPolicy::Always => self.flush(),
+            FlushPolicy::Always => {
+                // Record then flush immediately
+                *self.inner.written_since_last_flush.write() += written;
+                self.flush()
+            }
             FlushPolicy::EveryBytes(n) => {
                 let n = n as u64;
                 if n == 0 {
@@ -560,7 +642,8 @@ impl MemoryMappedFile {
                 let mut acc = self.inner.written_since_last_flush.write();
                 *acc += written;
                 if *acc >= n {
-                    *acc = 0;
+                    // Do not reset prematurely; let flush() clear on success
+                    drop(acc);
                     self.flush()
                 } else {
                     Ok(())
@@ -573,15 +656,14 @@ impl MemoryMappedFile {
                 let mut acc = self.inner.written_since_last_flush.write();
                 *acc += 1;
                 if *acc >= w as u64 {
-                    *acc = 0;
+                    drop(acc);
                     self.flush()
                 } else {
                     Ok(())
                 }
             }
             FlushPolicy::EveryMillis(_ms) => {
-                // Phase-1: timer-based flushing is not implemented inside core to avoid background threads.
-                // Users can drive time-based flushing externally. Treat as Manual here.
+                // Phase-1: treat as Manual; user drives time-based flushing externally.
                 Ok(())
             }
         }

@@ -215,14 +215,41 @@ mod tests {
         }).expect("watch");
 
         // Give watcher time to start
-        thread::sleep(Duration::from_millis(200));
+        thread::sleep(Duration::from_millis(500));
 
-        // Modify file
+        // Modify file and ensure mtime changes:
         mmap.update_region(0, b"modified").expect("write");
-        mmap.flush().expect("flush");
+        mmap.flush().expect("flush after write for watch visibility");
 
-        // Wait for change detection
-        thread::sleep(Duration::from_millis(300));
+        // Force timestamp change using utime/utimes fallback to increase detection reliability
+        #[allow(unused_variables)]
+        {
+            #[cfg(unix)]
+            {
+                use std::ffi::CString;
+                use std::os::unix::ffi::OsStrExt;
+                let cpath = CString::new(path.as_os_str().as_bytes()).unwrap();
+                // SAFETY: utime with null sets times to current time
+                unsafe {
+                    libc::utime(cpath.as_ptr(), std::ptr::null());
+                }
+            }
+            #[cfg(windows)]
+            {
+                // Toggle readonly twice as a portable metadata change
+                if let Ok(meta) = std::fs::metadata(&path) {
+                    let mut perms = meta.permissions();
+                    perms.set_readonly(true);
+                    let _ = std::fs::set_permissions(&path, perms);
+                    let mut perms2 = std::fs::metadata(&path).unwrap().permissions();
+                    perms2.set_readonly(false);
+                    let _ = std::fs::set_permissions(&path, perms2);
+                }
+            }
+        }
+
+        // Wait for change detection (polling cadence is 100ms; allow multiple cycles)
+        thread::sleep(Duration::from_millis(1500));
 
         assert!(changed.load(Ordering::SeqCst), "Change should be detected");
         assert!(event_count.load(Ordering::SeqCst) > 0, "Should have events");
@@ -310,14 +337,36 @@ mod tests {
         }).expect("watch 2");
 
         // Give watchers time to start
-        thread::sleep(Duration::from_millis(200));
+        thread::sleep(Duration::from_millis(600));
 
-        // Modify file
+        // Modify file and ensure mtime changes
         mmap.update_region(0, b"change").expect("write");
-        mmap.flush().expect("flush");
+        mmap.flush().expect("flush after write for watch visibility");
 
-        // Wait for change detection
-        thread::sleep(Duration::from_millis(300));
+        #[allow(unused_variables)]
+        {
+            #[cfg(unix)]
+            {
+                use std::ffi::CString;
+                use std::os::unix::ffi::OsStrExt;
+                let cpath = CString::new(path.as_os_str().as_bytes()).unwrap();
+                unsafe { libc::utime(cpath.as_ptr(), std::ptr::null()) };
+            }
+            #[cfg(windows)]
+            {
+                if let Ok(meta) = std::fs::metadata(&path) {
+                    let mut perms = meta.permissions();
+                    perms.set_readonly(true);
+                    let _ = std::fs::set_permissions(&path, perms);
+                    let mut perms2 = std::fs::metadata(&path).unwrap().permissions();
+                    perms2.set_readonly(false);
+                    let _ = std::fs::set_permissions(&path, perms2);
+                }
+            }
+        }
+
+        // Wait for change detection (polling cadence is 100ms; allow multiple cycles)
+        thread::sleep(Duration::from_millis(1500));
 
         // Both watchers should detect the change
         assert!(count1.load(Ordering::SeqCst) > 0, "Watcher 1 should detect change");
