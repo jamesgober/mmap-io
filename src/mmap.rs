@@ -322,7 +322,7 @@ impl MemoryMappedFile {
             return Err(MmapIoError::ResizeFailed("New size must be greater than zero.".into()));
         }
 
-        let current = self.current_len()?;
+        let _current = self.current_len()?;
 
         // On Windows, shrinking a file with an active mapping fails with:
         // "The requested operation cannot be performed on a file with a user-mapped section open."

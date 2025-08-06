@@ -140,7 +140,7 @@ By default, the following features are enabled:
 > Add the following to your Cargo.toml file:
 ```toml
 [dependencies]
-mmap-io = { version = "0.7.2" }
+mmap-io = { version = "0.7.3" }
 ```
 
 > Or install using Cargo:
@@ -156,7 +156,7 @@ Enable additional features by using the pre-defined [features flags](#features) 
 > ##### Manual Install with Features:
 ```toml
 [dependencies]
-mmap-io = { version = "0.7.2", features = ["cow", "locking"] }
+mmap-io = { version = "0.7.3", features = ["cow", "locking"] }
 ```
 > ##### Cargo Install with Features:
 ```bash
@@ -171,7 +171,7 @@ If you're building for minimal environments or want total control over feature f
 > ##### Manual Install without Default Features:
 ```toml
 [dependencies]
-mmap-io = { version = "0.7.2", default-features = false, features = ["locking"] }
+mmap-io = { version = "0.7.3", default-features = false, features = ["locking"] }
 ```
 
 > ##### Cargo Install without Default Features:
@@ -1289,6 +1289,7 @@ for handle in handles {
 <hr><br>
 
 ## Version History
+- **0.7.3**: Fixed Build Errors.
 - **0.7.2**: Added CHANGELOG and updated Documentation.
 - **0.7.1**: Added atomic, locking, and watch features.
 - **0.7.0**: Added advise and iterator features.
