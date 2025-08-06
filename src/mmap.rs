@@ -367,7 +367,7 @@ impl MemoryMappedFile {
                         let fd = self.inner.file.as_raw_fd();
                         // Obtain a temporary RO view to get a stable address range without write-locking
                         // We avoid exposing raw ptr; we only pass to msync internally.
-                        let addr_res = match &self.inner.map {
+                        let addr_res: std::result::Result<(), ()> = match &self.inner.map {
                             MapVariant::Rw(lock) => {
                                 let guard = lock.read();
                                 let ptr = guard.as_ptr() as *const libc::c_void;
@@ -445,7 +445,7 @@ impl MemoryMappedFile {
                 #[cfg(all(unix, target_os = "linux"))]
                 {
                     // SAFETY: msync on a valid mapped range. We translate to a pointer within the map.
-                    let msync_res = {
+                    let msync_res: i32 = {
                         let guard = lock.read();
                         let base = guard.as_ptr();
                         let ptr = unsafe { base.add(start) } as *mut libc::c_void;
