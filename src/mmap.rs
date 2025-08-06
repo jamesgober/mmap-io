@@ -503,6 +503,8 @@ impl MemoryMappedFile {
             // COW never flushes underlying file in phase-1
             flush_policy: FlushPolicy::Never,
             written_since_last_flush: RwLock::new(0),
+            #[cfg(feature = "hugepages")]
+            huge_pages: false,
         };
         Ok(Self { inner: Arc::new(inner) })
     }
@@ -776,6 +778,8 @@ impl MemoryMappedFileBuilder {
                         map: MapVariant::Cow(mmap),
                         flush_policy: FlushPolicy::Never,
                         written_since_last_flush: RwLock::new(0),
+                        #[cfg(feature = "hugepages")]
+                        huge_pages: false,
                     };
                     Ok(MemoryMappedFile { inner: Arc::new(inner) })
                 }
