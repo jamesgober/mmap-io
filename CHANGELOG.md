@@ -15,6 +15,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+- `hugepages` Flag to `Cargo.toml` Features.
+
+### Changed
+- `Optional Features` in `README.md` to include `hugepages` Flag.
+- `Features` in `API.md` to include `hugepages` Flag.
 
 
 
