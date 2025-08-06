@@ -94,11 +94,15 @@ pub struct MemoryMappedFile {
 
 impl std::fmt::Debug for MemoryMappedFile {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("MemoryMappedFile")
-            .field("path", &self.inner.path)
+        let mut ds = f.debug_struct("MemoryMappedFile");
+        ds.field("path", &self.inner.path)
             .field("mode", &self.inner.mode)
-            .field("len", &self.len())
-            .finish()
+            .field("len", &self.len());
+        #[cfg(feature = "hugepages")]
+        {
+            ds.field("huge_pages", &self.inner.huge_pages);
+        }
+        ds.finish()
     }
 }
 
@@ -316,6 +320,23 @@ impl MemoryMappedFile {
         }
     }
 
+    /// Async write that enforces Async-Only Flushing semantics: always flush after write.
+    /// Uses spawn_blocking to avoid blocking the async scheduler.
+    #[cfg(feature = "async")]
+    pub async fn update_region_async(&self, offset: u64, data: &[u8]) -> Result<()> {
+        // Perform the write in a blocking task
+        let this = self.clone();
+        let data_vec = data.to_vec();
+        tokio::task::spawn_blocking(move || {
+            // Synchronous write
+            this.update_region(offset, &data_vec)?;
+            // Async-only flushing: unconditionally flush after write when using async path
+            this.flush()
+        })
+        .await
+        .map_err(|e| MmapIoError::FlushFailed(format!("join error: {e}")))?
+    }
+
     /// Flush changes to disk. For read-only mappings, this is a no-op.
     ///
     /// # Errors
@@ -330,6 +351,22 @@ impl MemoryMappedFile {
                 guard.flush().map_err(|e| MmapIoError::FlushFailed(e.to_string()))
             }
         }
+    }
+
+    /// Async flush changes to disk. For read-only or COW mappings, this is a no-op.
+    /// This method enforces "async-only flushing" semantics for async paths.
+    #[cfg(feature = "async")]
+    pub async fn flush_async(&self) -> Result<()> {
+        // Use spawn_blocking to avoid blocking the async scheduler
+        let this = self.clone();
+        tokio::task::spawn_blocking(move || this.flush()).await.map_err(|e| MmapIoError::FlushFailed(format!("join error: {e}")))?
+    }
+
+    /// Async flush a specific byte range to disk.
+    #[cfg(feature = "async")]
+    pub async fn flush_range_async(&self, offset: u64, len: u64) -> Result<()> {
+        let this = self.clone();
+        tokio::task::spawn_blocking(move || this.flush_range(offset, len)).await.map_err(|e| MmapIoError::FlushFailed(format!("join error: {e}")))?
     }
 
     /// Flush a specific byte range to disk.
