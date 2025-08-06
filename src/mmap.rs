@@ -7,6 +7,10 @@ use std::{
 };
 
 use memmap2::{Mmap, MmapMut};
+
+#[cfg(feature = "cow")]
+use memmap2::MmapOptions;
+
 use parking_lot::RwLock;
 
 use crate::errors::{MmapIoError, Result};
