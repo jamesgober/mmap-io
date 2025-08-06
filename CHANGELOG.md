@@ -15,8 +15,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
-### Add 
-- Benchmark
+### Added
+- Benchmark added to `Cargo.toml`.
+- Benchmark functionality created.
+- `FlushPolicy` via `flush.rs`.
+- Test case for `FlushPolicy`.
+
+### Changed
+- Extended `MmapFile` in `mmap.rs` to store the `flush_policy`.
 
 ### Fix
  - Fix Build Error (Windows)[cannot find value `current`] in `mmap.rs`.
