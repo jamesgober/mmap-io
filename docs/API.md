@@ -117,6 +117,7 @@ The following optional Cargo features enable extended functionality:
 | `async`    | Enables **Tokio-based async helpers** for asynchronous file and memory operations.                 |
 | `advise`   | Enables memory hinting using **`madvise`/`posix_madvise` (Unix)** or **Prefetch (Windows)**.       |
 | `iterator` | Provides **iterator-based access** to memory chunks or pages with zero-copy read access.           |
+| `hugepages` | nables support for Huge Pages via MAP_HUGETLB (Linux) or FILE_ATTRIBUTE_LARGE_PAGES (Windows), reducing TLB misses and improving performance for large memory regions. Requires system configuration and elevated privileges. |
 | `cow`      | Enables **Copy-on-Write (COW)** mapping mode using private memory views (per-process isolation).   |
 | `locking`  | Enables page-level memory locking via **`mlock`/`munlock` (Unix)** or **`VirtualLock` (Windows)**. |
 | `atomic`   | Exposes **atomic views** into memory as aligned `u32` / `u64`, with strict safety guarantees.      |
