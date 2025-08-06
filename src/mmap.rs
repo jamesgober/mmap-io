@@ -454,7 +454,6 @@ impl MemoryMappedFile {
 
 impl MemoryMappedFile {
     fn apply_flush_policy(&self, written: u64) -> Result<()> {
-        use crate::flush::FlushPolicy::*;
         match self.inner.flush_policy {
             FlushPolicy::Never | FlushPolicy::Manual => Ok(()),
             FlushPolicy::Always => self.flush(),
