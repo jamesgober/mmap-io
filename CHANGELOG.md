@@ -1,9 +1,9 @@
 <div align="center">
-   <img width="120px" height="auto" src="https://raw.githubusercontent.com/jamesgober/jamesgober/main/media/icons/hexagon-3.svg" alt="Triple Hexagon">
-    <h1>
-        <strong>CHANGELOG</strong>
-        <sup><br><sub>mmap-io</sub><br></sup>
-    </h1>
+    <picture>
+        <source media="(prefers-color-scheme: dark)" srcset="https://raw.githubusercontent.com/asotex/.github/refs/heads/main/media/asotex-icon-white.png">
+        <img width="81px" alt="Asotex brand logo, featuring the Asotex A-Icon, followed by the word Asotex." src="https://raw.githubusercontent.com/asotex/.github/refs/heads/main/media/asotex-icon-dark.png">
+    </picture>
+    <h1>CHANGELOG</h1>
 </div>
 <br>
 
@@ -15,18 +15,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
-### Added
 
-- v1.1 Brazilian Portuguese translation.
-- v1.1 German Translation
-- v1.1 Spanish translation.
-- v1.1 Italian translation.
-- v1.1 Polish translation.
-- v1.1 Ukrainian translation.
 
-### Fixed
-
-- Fixed warning in `mmap.rs`.
+<br>
 
 
 <!-- VERSION: 0.7.5 
@@ -39,10 +30,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 <!-- VERSION: 0.7.3 -->
 ## [0.7.3] - 2025-08-06
 
+### Changed
+- Changed the header for `CHANGELOG.md`.
+
 ### Fixed
 - Fixed build error in `mmap.rs`.
 - Fixed build error in `advise.rs`.
 - Fixed deprecated command in `ci.yml`.
+- Fixed warning in `mmap.rs`.
 
 <br>
 
