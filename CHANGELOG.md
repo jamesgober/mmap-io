@@ -15,6 +15,24 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+
+
+
+<br>
+
+
+<!-- VERSION: 0.8.0
+## [0.8.0] - 2025-08-06
+ -->
+
+
+
+<br>
+
+
+<!-- VERSION: 0.7.5 -->
+## [0.7.5] - 2025-08-06
+
 ### Added
 - Benchmark added to `Cargo.toml`.
 - Benchmark functionality created.
@@ -26,14 +44,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fix
  - Fix Build Error (Windows)[cannot find value `current`] in `mmap.rs`.
-
-
-<br>
-
-
-<!-- VERSION: 0.7.5 
-## [0.7.5] - 2025-08-06
--->
 
 <br>
 
@@ -103,8 +113,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 [unreleased]: https://github.com/asotex/mmap-io/compare/v0.7.3...HEAD
 
 [0.8.1]: https://github.com/asotex/mmap-io/compare/v0.8.0...v0.8.1
-[0.8.0]: https://github.com/asotex/mmap-io/compare/v0.7.8...v0.8.0
-[0.7.6]: https://github.com/asotex/mmap-io/compare/v0.7.5...v0.7.8
+[0.8.0]: https://github.com/asotex/mmap-io/compare/v0.7.5...v0.8.0
 [0.7.5]: https://github.com/asotex/mmap-io/compare/v0.7.3...v0.7.5
 
 [0.7.3]: https://github.com/asotex/mmap-io/compare/v0.7.2...v0.7.3
