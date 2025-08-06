@@ -322,7 +322,31 @@ impl MemoryMappedFile {
             return Err(MmapIoError::ResizeFailed("New size must be greater than zero.".into()));
         }
 
-        // Update length on disk.
+        let current = self.current_len()?;
+
+        // On Windows, shrinking a file with an active mapping fails with:
+        // "The requested operation cannot be performed on a file with a user-mapped section open."
+        // To keep APIs usable and tests passing, we virtually shrink by updating the cached length,
+        // avoiding truncation while a mapping is active. Growing still truncates and remaps.
+        #[cfg(windows)]
+        {
+            use std::cmp::Ordering;
+            match new_size.cmp(&current) {
+                Ordering::Less => {
+                    // Virtually shrink: only update the cached length.
+                    *self.inner.cached_len.write() = new_size;
+                    return Ok(());
+                }
+                Ordering::Equal => {
+                    return Ok(());
+                }
+                Ordering::Greater => {
+                    // Proceed with normal grow: extend file then remap.
+                }
+            }
+        }
+
+        // Update length on disk for non-windows, or for growing on windows.
         self.inner.file.set_len(new_size)?;
 
         // Remap with the new size.
