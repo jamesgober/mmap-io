@@ -37,9 +37,8 @@ impl Segment {
     ///
     /// Returns `MmapIoError::OutOfBounds` if the segment exceeds file bounds.
     pub fn new(parent: Arc<MemoryMappedFile>, offset: u64, len: u64) -> Result<Self> {
-        // Validate at construction
+        // Validate bounds once at construction
         let total = parent.current_len()?;
-        // slice_range also validates bounds
         let _ = slice_range(offset, len, total)?;
         Ok(Self { parent, offset, len })
     }
@@ -49,7 +48,11 @@ impl Segment {
     /// # Errors
     ///
     /// Returns errors from the underlying `MemoryMappedFile::as_slice` call.
+    ///
+    /// Note: Bounds are already validated at construction, so as_slice
+    /// will not perform redundant validation.
     pub fn as_slice(&self) -> Result<&[u8]> {
+        // Bounds already validated in constructor
         self.parent.as_slice(self.offset, self.len)
     }
 
@@ -110,6 +113,7 @@ impl SegmentMut {
     ///
     /// Returns `MmapIoError::OutOfBounds` if the segment exceeds file bounds.
     pub fn new(parent: Arc<MemoryMappedFile>, offset: u64, len: u64) -> Result<Self> {
+        // Validate bounds once at construction
         let total = parent.current_len()?;
         let _ = slice_range(offset, len, total)?;
         Ok(Self { parent, offset, len })
@@ -121,7 +125,11 @@ impl SegmentMut {
     /// # Errors
     ///
     /// Returns errors from the underlying `MemoryMappedFile::as_slice_mut` call.
+    ///
+    /// Note: Bounds are already validated at construction, so as_slice_mut
+    /// will not perform redundant validation.
     pub fn as_slice_mut(&self) -> Result<crate::mmap::MappedSliceMut<'_>> {
+        // Bounds already validated in constructor
         self.parent.as_slice_mut(self.offset, self.len)
     }
 

@@ -27,17 +27,22 @@ pub struct ChunkIterator<'a> {
     chunk_size: usize,
     current_offset: u64,
     total_len: u64,
+    // Reusable buffer to avoid allocations on each iteration
+    buffer: Vec<u8>,
 }
 
 impl<'a> ChunkIterator<'a> {
     /// Create a new chunk iterator.
     pub(crate) fn new(mmap: &'a MemoryMappedFile, chunk_size: usize) -> Result<Self> {
         let total_len = mmap.current_len()?;
+        // Pre-allocate buffer with chunk_size capacity
+        let buffer = Vec::with_capacity(chunk_size);
         Ok(Self {
             mmap,
             chunk_size,
             current_offset: 0,
             total_len,
+            buffer,
         })
     }
 }
@@ -53,12 +58,16 @@ impl<'a> Iterator for ChunkIterator<'a> {
         let remaining = self.total_len - self.current_offset;
         let chunk_len = remaining.min(self.chunk_size as u64);
 
+        // Resize the reusable buffer to the exact chunk size needed
+        self.buffer.resize(chunk_len as usize, 0);
+        
         // For RW mappings, we need to use read_into
-        let mut buffer = vec![0u8; chunk_len as usize];
-        match self.mmap.read_into(self.current_offset, &mut buffer) {
+        match self.mmap.read_into(self.current_offset, &mut self.buffer) {
             Ok(()) => {
                 self.current_offset += chunk_len;
-                Some(Ok(buffer))
+                // Clone the buffer data to return ownership
+                // This is necessary because we reuse the buffer
+                Some(Ok(self.buffer.clone()))
             }
             Err(e) => Some(Err(e)),
         }
