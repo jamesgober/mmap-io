@@ -38,6 +38,11 @@ thiserror = "1.0"
 cfg-if = "1.0"
 libc = { version = "0.2", optional = false }
 
+[dev-dependencies]
+# Benchmarking framework
+criterion = { version = "0.5", default-features = false }
+tempfile = "3"
+
 [features]
 # Default opt-ins: safe to enable and provide value without platform privileges
 default = ["advise", "iterator"]
@@ -54,6 +59,11 @@ watch     = []            # Watch/Notification (inotify/kqueue/FSEvents/Windows;
 [badges]
 github-actions = { repository = "asotex/mmap-io", workflow = "CI" }
 maintenance = { status = "actively-developed" }
+
+# Criterion benches
+[[bench]]
+name = "mmap_bench"
+harness = false
 
 [package.metadata.docs.rs]
 features = ["async"]
