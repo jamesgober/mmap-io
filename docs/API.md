@@ -148,7 +148,7 @@ By default, the following features are enabled:
 > Add the following to your Cargo.toml file:
 ```toml
 [dependencies]
-mmap-io = { version = "0.7.5" }
+mmap-io = { version = "0.8.0" }
 ```
 
 > Or install using Cargo:
@@ -164,7 +164,7 @@ Enable additional features by using the pre-defined [features flags](#features) 
 > ##### Manual Install with Features:
 ```toml
 [dependencies]
-mmap-io = { version = "0.7.5", features = ["cow", "locking"] }
+mmap-io = { version = 0.8.0", features = ["cow", "locking"] }
 ```
 > ##### Cargo Install with Features:
 ```bash
@@ -179,7 +179,7 @@ If you're building for minimal environments or want total control over feature f
 > ##### Manual Install without Default Features:
 ```toml
 [dependencies]
-mmap-io = { version = "0.7.5", default-features = false, features = ["locking"] }
+mmap-io = { version = "0.8.0", default-features = false, features = ["locking"] }
 ```
 
 > ##### Cargo Install without Default Features:
@@ -1478,27 +1478,11 @@ for handle in handles {
 - **0.2.0**: basic mmap functionality with segment types.
 - **0.1.0**: Initial release.
 
+<br>
+
 View the [CHANGELOG](../CHANGELOG.md).
 
-<br><br>
-
-<a href="./README.md">DOCS</a>
-<span>&nbsp;:&nbsp;</span>
-<a href="../.github/CONTRIBUTORS.md">CONTRIBUTING</a>
-<span>&nbsp;:&nbsp;</span>
-<hr>
-
-<!--// TOP LINK // -->
-<div align="center">
-    <a href="#">HOME</a>
-    <span>&nbsp;:&nbsp;</span>
-    <a href="./README.md">DOCS</a>
-    <span>&nbsp;:&nbsp;</span>
-    <a href="../.github/CONTRIBUTORS.md">CONTRIBUTING</a>
-    <span>&nbsp;:&nbsp;</span>
-    <a href="#doc-top">TOP &uarr; </a>
-   <hr><br><br>
-</div>
+<br>
 
 
 <!--// LICENSE // -->
