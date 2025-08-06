@@ -251,6 +251,7 @@ fn concurrent_access() {
         if start.elapsed() > Duration::from_secs(5) {
             panic!("Thread timed out after 5 seconds");
         }
+        // Small delay to avoid busy-waiting
         thread::sleep(Duration::from_millis(10));
     }
     

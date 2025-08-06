@@ -74,7 +74,7 @@ mod all_features {
             changed_clone.store(true, Ordering::SeqCst);
         }).expect("watch");
         
-        // Give watcher time to start
+        // Give watcher time to start (allow 3 polling intervals at 100ms each)
         thread::sleep(Duration::from_millis(300));
         
         // Make a change
@@ -100,7 +100,7 @@ mod all_features {
             }
         }
         
-        // Wait for change detection (polling cadence is ~100ms; allow multiple cycles)
+        // Wait for change detection (allow 12 polling cycles at 100ms each)
         thread::sleep(Duration::from_millis(1200));
         
         // The change should be detected

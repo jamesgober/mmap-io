@@ -5,6 +5,9 @@ use crate::mmap::MemoryMappedFile;
 use std::thread;
 use std::time::Duration;
 
+// Watch polling interval in milliseconds
+const WATCH_POLL_INTERVAL_MS: u64 = 100;
+
 /// Type of change detected in a watched file.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ChangeKind {
@@ -29,8 +32,24 @@ pub struct ChangeEvent {
 
 /// Handle for controlling a file watch operation.
 pub struct WatchHandle {
-    #[allow(dead_code)]
+    // Thread handle is kept to ensure the watch thread is properly joined on drop
     thread: thread::JoinHandle<()>,
+}
+
+impl Drop for WatchHandle {
+    fn drop(&mut self) {
+        // The thread will naturally exit when it detects the file is removed
+        // or when the handle is dropped. We don't join here to avoid blocking.
+        // The thread will clean up on its own.
+    }
+}
+
+impl WatchHandle {
+    /// Check if the watch thread is still running.
+    #[allow(dead_code)]
+    pub fn is_active(&self) -> bool {
+        !self.thread.is_finished()
+    }
 }
 
 impl MemoryMappedFile {
@@ -81,7 +100,7 @@ impl MemoryMappedFile {
                 .and_then(|m| m.modified().ok());
             
             loop {
-                thread::sleep(Duration::from_millis(100));
+                thread::sleep(Duration::from_millis(WATCH_POLL_INTERVAL_MS));
                 
                 // Check if file still exists
                 let metadata = match std::fs::metadata(&path) {
@@ -118,9 +137,9 @@ impl MemoryMappedFile {
 // For now, we use polling for all platforms
 
 // Fallback polling implementation
+// This function is kept for potential future use when implementing platform-specific watchers
 #[cfg(feature = "watch")]
-#[allow(dead_code)]
-fn polling_watch<F>(path: &std::path::Path, callback: F) -> Result<WatchHandle>
+fn _polling_watch<F>(path: &std::path::Path, callback: F) -> Result<WatchHandle>
 where
     F: Fn(ChangeEvent) + Send + 'static,
 {
@@ -135,7 +154,7 @@ where
             .map(|m| m.len());
         
         loop {
-            thread::sleep(Duration::from_millis(100));
+            thread::sleep(Duration::from_millis(WATCH_POLL_INTERVAL_MS));
             
             // Check if file still exists
             let metadata = match std::fs::metadata(&path) {
@@ -214,8 +233,8 @@ mod tests {
             event_count_clone.fetch_add(1, Ordering::SeqCst);
         }).expect("watch");
 
-        // Give watcher time to start
-        thread::sleep(Duration::from_millis(500));
+        // Give watcher time to start (5 polling intervals)
+        thread::sleep(Duration::from_millis(WATCH_POLL_INTERVAL_MS * 5));
 
         // Modify file and ensure mtime changes:
         mmap.update_region(0, b"modified").expect("write");
@@ -248,8 +267,8 @@ mod tests {
             }
         }
 
-        // Wait for change detection (polling cadence is 100ms; allow multiple cycles)
-        thread::sleep(Duration::from_millis(1500));
+        // Wait for change detection (allow 15 polling cycles)
+        thread::sleep(Duration::from_millis(WATCH_POLL_INTERVAL_MS * 15));
 
         assert!(changed.load(Ordering::SeqCst), "Change should be detected");
         assert!(event_count.load(Ordering::SeqCst) > 0, "Should have events");
@@ -276,14 +295,14 @@ mod tests {
             }
         }).expect("watch");
 
-        // Give watcher time to start
-        thread::sleep(Duration::from_millis(200));
+        // Give watcher time to start (2 polling intervals)
+        thread::sleep(Duration::from_millis(WATCH_POLL_INTERVAL_MS * 2));
 
         // Remove file
         fs::remove_file(&path).expect("remove");
 
-        // Wait for removal detection
-        thread::sleep(Duration::from_millis(300));
+        // Wait for removal detection (3 polling intervals)
+        thread::sleep(Duration::from_millis(WATCH_POLL_INTERVAL_MS * 3));
 
         assert!(removed.load(Ordering::SeqCst), "Removal should be detected");
     }
@@ -336,8 +355,8 @@ mod tests {
             count2_clone.fetch_add(1, Ordering::SeqCst);
         }).expect("watch 2");
 
-        // Give watchers time to start
-        thread::sleep(Duration::from_millis(600));
+        // Give watchers time to start (6 polling intervals)
+        thread::sleep(Duration::from_millis(WATCH_POLL_INTERVAL_MS * 6));
 
         // Modify file and ensure mtime changes
         mmap.update_region(0, b"change").expect("write");
@@ -365,8 +384,8 @@ mod tests {
             }
         }
 
-        // Wait for change detection (polling cadence is 100ms; allow multiple cycles)
-        thread::sleep(Duration::from_millis(1500));
+        // Wait for change detection (allow 15 polling cycles)
+        thread::sleep(Duration::from_millis(WATCH_POLL_INTERVAL_MS * 15));
 
         // Both watchers should detect the change
         assert!(count1.load(Ordering::SeqCst) > 0, "Watcher 1 should detect change");

@@ -321,7 +321,7 @@ impl MemoryMappedFile {
         let len = data.len() as u64;
         let (start, end) = slice_range(offset, len, self.current_len()?)?;
         match &self.inner.map {
-            MapVariant::Ro(_) => Err(MmapIoError::InvalidMode("Cannot write to read-only mapping.")),
+            MapVariant::Ro(_) => Err(MmapIoError::InvalidMode("Cannot write to read-only mapping")),
             MapVariant::Rw(lock) => {
                 {
                     let mut guard = lock.write();
@@ -331,7 +331,7 @@ impl MemoryMappedFile {
                 self.apply_flush_policy(len)?;
                 Ok(())
             }
-            MapVariant::Cow(_) => Err(MmapIoError::InvalidMode("Cannot write to copy-on-write mapping (phase-1 read-only).")),
+            MapVariant::Cow(_) => Err(MmapIoError::InvalidMode("Cannot write to copy-on-write mapping (phase-1 read-only)")),
         }
     }
 
@@ -374,32 +374,12 @@ impl MemoryMappedFile {
                 // Platform-optimized path: Linux MS_ASYNC best-effort
                 #[cfg(all(unix, target_os = "linux"))]
                 {
-                    use std::os::fd::AsRawFd;
-                    // SAFETY: msync requires a valid mapping address/len; memmap2 handles mapping.
-                    // We conservatively issue MS_ASYNC on the entire file length.
-                    let len = self.current_len()? as usize;
-                    if len > 0 {
-                        let fd = self.inner.file.as_raw_fd();
-                        // Obtain a temporary RO view to get a stable address range without write-locking
-                        // We avoid exposing raw ptr; we only pass to msync internally.
-                        let addr_res: std::result::Result<(), ()> = match &self.inner.map {
-                            MapVariant::Rw(lock) => {
-                                let guard = lock.read();
-                                let ptr = guard.as_ptr() as *const libc::c_void;
-                                let ret = unsafe { libc::msync(ptr as *mut libc::c_void, len, libc::MS_ASYNC) };
-                                if ret == 0 {
-                                    // Consider MS_ASYNC success as sufficient and reset accumulator
-                                    *self.inner.written_since_last_flush.write() = 0;
-                                    return Ok(());
-                                }
-                                // fall through to full flush on error
-                                drop(guard);
-                                let _ = fd; // silence unused on non-error paths
-                                Ok(())
+                    if let Ok(len) = self.current_len() {
+                        if len > 0 {
+                            if self.try_linux_async_flush(len as usize)? {
+                                return Ok(());
                             }
-                            _ => Ok(()),
-                        };
-                        let _ = addr_res;
+                        }
                     }
                 }
 
@@ -495,10 +475,10 @@ impl MemoryMappedFile {
     /// Returns `MmapIoError::Io` if resize operation fails.
     pub fn resize(&self, new_size: u64) -> Result<()> {
         if self.inner.mode != MmapMode::ReadWrite {
-            return Err(MmapIoError::InvalidMode("Resize requires ReadWrite mode."));
+            return Err(MmapIoError::InvalidMode("Resize requires ReadWrite mode"));
         }
         if new_size == 0 {
-            return Err(MmapIoError::ResizeFailed("New size must be greater than zero.".into()));
+            return Err(MmapIoError::ResizeFailed("New size must be greater than zero".into()));
         }
         if new_size > MAX_MMAP_SIZE {
             return Err(MmapIoError::ResizeFailed(
@@ -538,7 +518,7 @@ impl MemoryMappedFile {
         // Remap with the new size.
         let new_map = unsafe { MmapMut::map_mut(&self.inner.file)? };
         match &self.inner.map {
-            MapVariant::Ro(_) => Err(MmapIoError::InvalidMode("internal: cannot remap RO as RW")),
+            MapVariant::Ro(_) => Err(MmapIoError::InvalidMode("Cannot remap read-only mapping as read-write")),
             MapVariant::Cow(_) => Err(MmapIoError::InvalidMode("resize not supported on copy-on-write mapping")),
             MapVariant::Rw(lock) => {
                 let mut guard = lock.write();
@@ -554,6 +534,38 @@ impl MemoryMappedFile {
     #[must_use]
     pub fn path(&self) -> &Path {
         &self.inner.path
+    }
+}
+
+impl MemoryMappedFile {
+    // Helper method to attempt Linux-specific async flush
+    #[cfg(all(unix, target_os = "linux"))]
+    fn try_linux_async_flush(&self, len: usize) -> Result<bool> {
+        use std::os::fd::AsRawFd;
+        
+        // Get the file descriptor (unused but kept for potential future use)
+        let _fd = self.inner.file.as_raw_fd();
+        
+        // Try to get the mapping pointer for msync
+        match &self.inner.map {
+            MapVariant::Rw(lock) => {
+                let guard = lock.read();
+                let ptr = guard.as_ptr() as *mut libc::c_void;
+                
+                // SAFETY: msync requires a valid mapping address/len; memmap2 handles mapping
+                let ret = unsafe { libc::msync(ptr, len, libc::MS_ASYNC) };
+                
+                if ret == 0 {
+                    // MS_ASYNC succeeded, reset accumulator
+                    *self.inner.written_since_last_flush.write() = 0;
+                    Ok(true)
+                } else {
+                    // Fall back to full flush
+                    Ok(false)
+                }
+            }
+            _ => Ok(false),
+        }
     }
 }
 
