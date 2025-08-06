@@ -1,16 +1,12 @@
-<div align="center">
-   <img width="120px" height="auto" src="https://raw.githubusercontent.com/jamesgober/jamesgober/main/media/icons/hexagon-3.svg" alt="Triple Hexagon">
+<div id="doc-top" align="center">
+    <picture>
+        <source media="(prefers-color-scheme: dark)" srcset="https://raw.githubusercontent.com/asotex/.github/refs/heads/main/media/asotex-icon-white.png">
+        <img width="81px" alt="Asotex brand logo, featuring the Asotex A-Icon, followed by the word Asotex." src="https://raw.githubusercontent.com/asotex/.github/refs/heads/main/media/asotex-icon-dark.png">
+    </picture>
     <h1>
         <strong>mmap-io</strong>
         <sup><br><sub>API REFERENCE</sub><br></sup>
     </h1>
-</div>
-<div align="center">
-    <a href="../README.md">Home</a> &nbsp;·&nbsp; 
-    <a href="./README.md">Documentation</a> &nbsp;·&nbsp; 
-    <a href="./docs/API.md">API DOCS</a> &nbsp;·&nbsp; 
-    <a href="./docs/API.md">DOCS</a> &nbsp;·&nbsp; 
-    <a href="./CHANGELOG.md">Change Log</a>
 </div>
 <br>
 
@@ -123,6 +119,15 @@ The following optional Cargo features enable extended functionality:
 | `atomic`   | Exposes **atomic views** into memory as aligned `u32` / `u64`, with strict safety guarantees.      |
 | `watch`    | Enables **file change notifications** via platform-specific APIs with polling fallback.            |
 
+<br>
+
+- **Huge Pages** (`feature = "hugepages"`): Best-effort large-page mappings on supported platforms to reduce TLB misses. Falls back safely when unavailable or lacking privileges.
+
+- **Async-Only Flushing** (`feature = "async"`): Async write helpers auto-flush after each write to ensure post-await visibility across platforms.
+
+- **Platform Parity**: After `flush()` or `flush_range()`, newly opened RO mappings observe persisted bytes across supported OSes.
+
+<br> 
 
 ### Default Features
 
@@ -131,9 +136,10 @@ By default, the following features are enabled:
 - `advise` – Memory access hinting for performance
 - `iterator` – Iterator-based chunk/page access
 
+
+<hr>
+<div align="right"><a href="#doc-top">&uarr; TOP</a></div>
 <br>
-
-
 
 
 ## Installation
@@ -181,10 +187,14 @@ mmap-io = { version = "0.7.5", default-features = false, features = ["locking"] 
 cargo add mmap-io --no-default-features --features locking
 ```
 
+<hr>
+<div align="right"><a href="#doc-top">&uarr; TOP</a></div>
 <br>
 
 
 ## Core Types
+
+<br>
 
 ### MemoryMappedFile
 
@@ -203,6 +213,8 @@ use mmap_io::MemoryMappedFile;
 let mmap = MemoryMappedFile::create_rw("data.bin", 1024)?;
 ```
 
+<br>
+
 ### MmapMode
 
 Enum representing the access mode for memory-mapped files.
@@ -220,6 +232,8 @@ pub enum MmapMode {
 - `ReadOnly`: Read-only access to the file
 - `ReadWrite`: Read and write access to the file
 - `CopyOnWrite`: Private copy-on-write mapping (feature-gated)
+
+<br>
 
 ### MmapIoError
 
@@ -240,12 +254,15 @@ pub enum MmapIoError {
     WatchFailed(String),     // feature = "watch"
 }
 ```
-
+<hr>
+<div align="right"><a href="#doc-top">&uarr; TOP</a></div>
 <br>
 
 ## Manager Functions
 
 High-level convenience functions for common operations.
+
+<br>
 
 ### create_mmap
 
@@ -272,6 +289,8 @@ use mmap_io::create_mmap;
 let mmap = create_mmap("new_file.bin", 1024 * 1024)?; // 1MB file
 ```
 
+<br>
+
 ### load_mmap
 
 ```rust
@@ -297,6 +316,8 @@ use mmap_io::{load_mmap, MmapMode};
 let ro_mmap = load_mmap("existing.bin", MmapMode::ReadOnly)?;
 let rw_mmap = load_mmap("data.bin", MmapMode::ReadWrite)?;
 ```
+
+<br>
 
 ### update_region
 
@@ -325,6 +346,8 @@ let mmap = create_mmap("data.bin", 1024)?;
 update_region(&mmap, 100, b"Hello, World!")?;
 ```
 
+<br>
+
 ### flush
 
 ```rust
@@ -350,6 +373,8 @@ update_region(&mmap, 0, b"data")?;
 flush(&mmap)?; // Ensure data is persisted
 ```
 
+<br>
+
 ### copy_mmap
 
 ```rust
@@ -373,6 +398,8 @@ use mmap_io::copy_mmap;
 
 copy_mmap("source.bin", "backup.bin")?;
 ```
+
+<br>
 
 ### delete_mmap
 
@@ -401,10 +428,13 @@ use mmap_io::{create_mmap, delete_mmap};
 
 delete_mmap("temp.bin")?;
 ```
-
+<hr>
+<div align="right"><a href="#doc-top">&uarr; TOP</a></div>
 <br>
 
 ## MemoryMappedFile Methods
+
+<br>
 
 ### create_rw
 
@@ -427,6 +457,8 @@ use mmap_io::MemoryMappedFile;
 let mmap = MemoryMappedFile::create_rw("new.bin", 4096)?;
 ```
 
+<br>
+
 ### open_ro
 
 ```rust
@@ -446,6 +478,8 @@ use mmap_io::MemoryMappedFile;
 
 let mmap = MemoryMappedFile::open_ro("data.bin")?;
 ```
+
+<br>
 
 ### open_rw
 
@@ -470,6 +504,8 @@ use mmap_io::MemoryMappedFile;
 let mmap = MemoryMappedFile::open_rw("data.bin")?;
 ```
 
+<br>
+
 ### open_cow
 
 ```rust
@@ -491,6 +527,8 @@ use mmap_io::MemoryMappedFile;
 
 let mmap = MemoryMappedFile::open_cow("shared.bin")?;
 ```
+
+<br>
 
 ### as_slice
 
@@ -515,6 +553,8 @@ pub fn as_slice(&self, offset: u64, len: u64) -> Result<&[u8]>
 let mmap = MemoryMappedFile::open_ro("data.bin")?;
 let data = mmap.as_slice(100, 50)?;
 ```
+
+<br>
 
 ### as_slice_mut
 
@@ -543,6 +583,8 @@ let mmap = MemoryMappedFile::open_rw("data.bin")?;
 } // guard dropped, lock released
 ```
 
+<br>
+
 ### read_into
 
 ```rust
@@ -566,6 +608,8 @@ let mmap = MemoryMappedFile::open_rw("data.bin")?;
 let mut buffer = vec![0u8; 100];
 mmap.read_into(50, &mut buffer)?;
 ```
+
+<br>
 
 ### update_region
 
@@ -591,7 +635,11 @@ let mmap = MemoryMappedFile::create_rw("data.bin", 1024)?;
 mmap.update_region(100, b"Hello")?;
 ```
 
+<br>
+
 ### flush
+
+Platform Parity: A subsequent fresh read-only mapping observes persisted data after this call on all supported platforms.
 
 ```rust
 pub fn flush(&self) -> Result<()>
@@ -604,7 +652,11 @@ pub fn flush(&self) -> Result<()>
 **Errors**:
 - `MmapIoError::FlushFailed` if flush operation fails
 
+<br>
+
 ### flush_range
+
+Platform Parity: A subsequent fresh read-only mapping observes persisted data for the flushed range after this call. Other non-flushed regions may not be visible until a full `flush()` is performed.
 
 ```rust
 pub fn flush_range(&self, offset: u64, len: u64) -> Result<()>
@@ -621,6 +673,8 @@ pub fn flush_range(&self, offset: u64, len: u64) -> Result<()>
 **Errors**:
 - `MmapIoError::OutOfBounds` if range exceeds file bounds
 - `MmapIoError::FlushFailed` if flush operation fails
+
+<br>
 
 ### resize
 
@@ -645,6 +699,8 @@ let mmap = MemoryMappedFile::create_rw("data.bin", 1024)?;
 mmap.resize(2048)?; // Grow to 2KB
 ```
 
+<br>
+
 ### len
 
 ```rust
@@ -665,6 +721,8 @@ pub fn is_empty(&self) -> bool
 
 **Returns**: `bool`
 
+<br>
+
 ### path
 
 ```rust
@@ -674,6 +732,8 @@ pub fn path(&self) -> &Path
 **Description**: Returns the path to the underlying file.
 
 **Returns**: `&Path`
+
+<br>
 
 ### mode
 
@@ -685,6 +745,8 @@ pub fn mode(&self) -> MmapMode
 
 **Returns**: `MmapMode`
 
+<hr>
+<div align="right"><a href="#doc-top">&uarr; TOP</a></div>
 <br>
 
 ## Flush Policy
@@ -729,9 +791,13 @@ Notes:
 - Flush is best-effort and may not imply fsync semantics on all platforms.
 - COW mappings treat flush() as a no-op.
 
+<hr>
+<div align="right"><a href="#doc-top">&uarr; TOP</a></div>
 <br>
 
 ## Feature-Gated APIs
+
+<br>
 
 ### Memory Advise (feature = "advise")
 
@@ -763,6 +829,8 @@ use mmap_io::MmapAdvice;
 mmap.advise(0, 1024 * 1024, MmapAdvice::Sequential)?;
 ```
 
+<br>
+
 #### MmapAdvice
 
 ```rust
@@ -776,6 +844,8 @@ pub enum MmapAdvice {
     DontNeed,    // Won't need this range soon
 }
 ```
+
+<br>
 
 ### Iterator-Based Access (feature = "iterator")
 
@@ -802,6 +872,8 @@ for chunk in mmap.chunks(4096) {
 }
 ```
 
+<br>
+
 #### pages
 
 ```rust
@@ -821,6 +893,8 @@ for page in mmap.pages() {
     // Process page...
 }
 ```
+
+<br>
 
 #### chunks_mut
 
@@ -845,7 +919,10 @@ mmap.chunks_mut(1024).for_each_mut(|offset, chunk| {
 })??;
 ```
 
+<br>
+
 ### Atomic Operations (feature = "atomic")
+
 
 #### atomic_u64
 
@@ -874,6 +951,8 @@ let counter = mmap.atomic_u64(0)?;
 counter.fetch_add(1, Ordering::SeqCst);
 ```
 
+<br>
+
 #### atomic_u32
 
 ```rust
@@ -892,6 +971,8 @@ pub fn atomic_u32(&self, offset: u64) -> Result<&AtomicU32>
 - `MmapIoError::Misaligned` if offset is not 4-byte aligned
 - `MmapIoError::OutOfBounds` if offset + 4 exceeds file bounds
 
+<br>
+
 #### atomic_u64_slice
 
 ```rust
@@ -907,6 +988,8 @@ pub fn atomic_u64_slice(&self, offset: u64, count: usize) -> Result<&[AtomicU64]
 
 **Returns**: `Result<&[AtomicU64]>`
 
+<br>
+
 #### atomic_u32_slice
 
 ```rust
@@ -921,6 +1004,8 @@ pub fn atomic_u32_slice(&self, offset: u64, count: usize) -> Result<&[AtomicU32]
 - `count`: Number of u32 values
 
 **Returns**: `Result<&[AtomicU32]>`
+
+<br>
 
 ### Memory Locking (feature = "locking")
 
@@ -949,6 +1034,8 @@ pub fn lock(&self, offset: u64, len: u64) -> Result<()>
 mmap.lock(0, 4096)?; // Lock first page
 ```
 
+<br>
+
 #### unlock
 
 ```rust
@@ -964,6 +1051,8 @@ pub fn unlock(&self, offset: u64, len: u64) -> Result<()>
 
 **Returns**: `Result<()>`
 
+<br>
+
 #### lock_all
 
 ```rust
@@ -975,6 +1064,8 @@ pub fn lock_all(&self) -> Result<()>
 
 **Returns**: `Result<()>`
 
+<br>
+
 #### unlock_all
 
 ```rust
@@ -985,6 +1076,8 @@ pub fn unlock_all(&self) -> Result<()>
 **Description**: Unlocks all pages of the memory-mapped file.
 
 **Returns**: `Result<()>`
+
+<br>
 
 ### File Watching (feature = "watch")
 
@@ -1015,6 +1108,8 @@ let handle = mmap.watch(|event: ChangeEvent| {
 // File is being watched until handle is dropped
 ```
 
+<br>
+
 #### ChangeEvent
 
 ```rust
@@ -1027,6 +1122,8 @@ pub struct ChangeEvent {
 }
 ```
 
+<br>
+
 #### ChangeKind
 
 ```rust
@@ -1038,7 +1135,8 @@ pub enum ChangeKind {
     Removed,   // File was removed
 }
 ```
-
+<hr>
+<div align="right"><a href="#doc-top">&uarr; TOP</a></div>
 <br>
 
 ## Segment Types
@@ -1069,6 +1167,8 @@ let segment = Segment::new(mmap.clone(), 100, 50)?;
 let data = segment.as_slice()?;
 ```
 
+<br>
+
 ### SegmentMut
 
 ```rust
@@ -1085,7 +1185,9 @@ pub struct SegmentMut { /* private fields */ }
 - `is_empty(&self) -> bool`
 - `offset(&self) -> u64`
 - `parent(&self) -> &MemoryMappedFile`
-
+å
+<hr>
+<div align="right"><a href="#doc-top">&uarr; TOP</a></div>
 <br>
 
 ## Async Operations (feature = "async")
@@ -1114,6 +1216,8 @@ pub async fn create_mmap_async<P: AsRef<Path>>(
 let mmap = mmap_io::manager::r#async::create_mmap_async("async.bin", 4096).await?;
 ```
 
+<br>
+
 ### copy_mmap_async
 
 ```rust
@@ -1129,6 +1233,8 @@ pub async fn copy_mmap_async<P: AsRef<Path>>(src: P, dst: P) -> Result<()>
 
 **Returns**: `Result<()>`
 
+<br>
+
 ### delete_mmap_async
 
 ```rust
@@ -1143,6 +1249,8 @@ pub async fn delete_mmap_async<P: AsRef<Path>>(path: P) -> Result<()>
 
 **Returns**: `Result<()>`
 
+<hr>
+<div align="right"><a href="#doc-top">&uarr; TOP</a></div>
 <br>
 
 ## Utility Functions
@@ -1164,6 +1272,8 @@ use mmap_io::utils::page_size;
 let ps = page_size();
 println!("System page size: {} bytes", ps);
 ```
+
+<br>
 
 ### align_up
 
@@ -1187,6 +1297,8 @@ let aligned = align_up(1001, 1024); // Returns 1024
 let aligned2 = align_up(2048, 1024); // Returns 2048
 ```
 
+<hr>
+<div align="right"><a href="#doc-top">&uarr; TOP</a></div>
 <br>
 
 ## Safety and Best Practices
@@ -1197,10 +1309,14 @@ This crate uses `unsafe` code internally to interact with system memory mapping 
 
 We expose only safe public APIs, but the following safety considerations apply:
 
+<br>
+
 ### Mapped Memory Access
 - You must not access memory after the file is closed, truncated, or deleted.
 - Writing to `as_slice_mut()` is only allowed in `ReadWrite` or `CopyOnWrite` modes.
 - Do not share mutable slices across threads without synchronization.
+
+<br>
 
 ### Copy-On-Write (COW) Mode
 - Writes are isolated per-process and never flushed to disk.
@@ -1208,14 +1324,22 @@ We expose only safe public APIs, but the following safety considerations apply:
 - Flush in COW is a no-op for disk persistence.
 
 
+<br>
+
 ### Flushing Behavior
 - `flush()` ensures memory is flushed to the underlying file, but is a **best-effort** operation and may not guarantee disk sync unless `sync_all` or `fsync` is also called.
+- Platform Parity: After `flush()`/`flush_range()`, opening a new RO mapping will observe the persisted bytes (entire file for `flush()`, specific region for `flush_range()`).
+- Async-Only Flushing: When using async helpers, writes are auto-flushed after each async write to maintain cross-platform visibility guarantees.
+
+<br>
 
 ### Thread Safety
 `MemoryMappedFile` can be used across threads with `Arc`, but internal mutability requires synchronization if using `as_slice_mut()`.
 - All operations are thread-safe through interior mutability
 - Read operations can proceed concurrently
 - Write operations are serialized through `RwLock`
+
+<br>
 
 ### Performance Tips
 1. Use `advise()` to hint access patterns for better OS optimization
@@ -1224,12 +1348,16 @@ We expose only safe public APIs, but the following safety considerations apply:
 4. Lock critical memory regions to prevent swapping
 5. Batch writes and flush once rather than flushing frequently
 
+<br>
+
 ### Common Pitfalls
 1. Don't hold mutable guards across `flush()` calls (causes deadlock)
 2. Ensure proper alignment when using atomic operations
 3. Drop mappings before deleting files
 4. Check privileges before using memory locking
 5. Handle watch events promptly to avoid missing changes
+
+<br>
 
 ### Error Handling
 All operations return `Result<T, MmapIoError>`. Common error scenarios:
@@ -1239,6 +1367,8 @@ All operations return `Result<T, MmapIoError>`. Common error scenarios:
 - `LockFailed`: Usually due to insufficient privileges
 - `Io`: Underlying filesystem errors
 
+<hr>
+<div align="right"><a href="#doc-top">&uarr; TOP</a></div>
 <br>
 
 ## Examples
@@ -1332,9 +1462,12 @@ for handle in handles {
 }
 ```
 
-<hr><br>
+<hr>
+<div align="right"><a href="#doc-top">&uarr; TOP</a></div>
+<br><br>
 
 ## Version History
+- **0.8.0**: Async-Only Flushing APIs; Platform Parity docs and tests; Huge Pages docs.
 - **0.7.5**: Added Flush Policy.
 - **0.7.3**: Fixed Build Errors.
 - **0.7.2**: Added CHANGELOG and updated Documentation.
@@ -1343,12 +1476,63 @@ for handle in handles {
 - **0.5.0**: Added copy-on-write mode support.
 - **0.3.0**: Added async support with Tokio.
 - **0.2.0**: basic mmap functionality with segment types.
-- **0.1.0: Initial release.
+- **0.1.0**: Initial release.
 
 View the [CHANGELOG](../CHANGELOG.md).
 
-<br>
+<br><br>
 
-## License
+<a href="./README.md">DOCS</a>
+<span>&nbsp;:&nbsp;</span>
+<a href="../.github/CONTRIBUTORS.md">CONTRIBUTING</a>
+<span>&nbsp;:&nbsp;</span>
+<hr>
 
-Licensed under the Apache License, Version 2.0. See LICENSE file for details.
+<!--// TOP LINK // -->
+<div align="center">
+    <a href="#">HOME</a>
+    <span>&nbsp;:&nbsp;</span>
+    <a href="./README.md">DOCS</a>
+    <span>&nbsp;:&nbsp;</span>
+    <a href="../.github/CONTRIBUTORS.md">CONTRIBUTING</a>
+    <span>&nbsp;:&nbsp;</span>
+    <a href="#doc-top">TOP &uarr; </a>
+   <hr><br><br>
+</div>
+
+
+<!--// LICENSE // -->
+<div align="center">
+    <br>
+    <h2>LICENSE</h2>
+    <p>
+        Licensed under the <b>Apache License</b>, <b>Version 2.0</b>. 
+        <br>
+        See <code>LICENSE</code> file for details.
+    </p>
+</div>
+
+
+<!--// FOOTER // -->
+<div align="center">
+    <br>
+    <h2></h2>
+    <div><!-- FOOT: NAVIGATION -->
+        <sup> 
+            <a href="https://asotex.com" title="Asotex Website">ASOTEX.COM</a>
+            <span>&nbsp;&middot;&nbsp;</span>
+            <a href="https://asotex.com/about" title="About Asotex">ABOUT</a>
+            <span>&nbsp;&middot;&nbsp;</span>
+            <a href="https://asotex.com/corporate/investors/" title="Asotex Investors">INVESTORS</a>
+            <span>&nbsp;&middot;&nbsp;</span>
+            <a href="https://asotex.com/corporate/partners/" title="Asotex Partners">PARTNERS</a>
+            <span>&nbsp;&middot;&nbsp;</span>
+            <a href="https://asotex.com/legal/" title="Asotex Legal Documentation">LEGAL</a>
+            <span>&nbsp;&middot;&nbsp;</span>
+            <a href="https://asotex.com/contact/" title="Contact Asotex">CONTACT</a>
+        </sup>
+    </div>
+    <sub><!-- FOOT: COPYRIGHT -->
+        Copyright &copy; 2025 Asotex Inc. All Rights Reserved.
+    </sub>
+</div>

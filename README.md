@@ -42,16 +42,16 @@
 
 The following optional Cargo features enable extended functionality for `mmap-io`. Enable only what you need to minimize binary size and dependencies.
 
-| Feature    | Description                                                                                         |
-|------------|-----------------------------------------------------------------------------------------------------|
-| `async`    | Enables **Tokio-based async helpers** for asynchronous file and memory operations.                 |
-| `advise`   | Enables memory hinting using **`madvise`/`posix_madvise` (Unix)** or **Prefetch (Windows)**.       |
-| `iterator` | Provides **iterator-based access** to memory chunks or pages with zero-copy read access.           |
-| `hugepages` | nables support for Huge Pages via MAP_HUGETLB (Linux) or FILE_ATTRIBUTE_LARGE_PAGES (Windows), reducing TLB misses and improving performance for large memory regions. Requires system configuration and elevated privileges. |
-| `cow`      | Enables **Copy-on-Write (COW)** mapping mode using private memory views (per-process isolation).   |
-| `locking`  | Enables page-level memory locking via **`mlock`/`munlock` (Unix)** or **`VirtualLock` (Windows)**. |
-| `atomic`   | Exposes **atomic views** into memory as aligned `u32` / `u64`, with strict safety guarantees.      |
-| `watch`    | Enables **file change notifications** via `inotify`, `kqueue`, `FSEvents`, or `ReadDirectoryChangesW`. Falls back to polling where unavailable. |
+| Feature     | Description                                                                                         |
+|-------------|-----------------------------------------------------------------------------------------------------|
+| `async`     | Enables **Tokio-based async helpers** for asynchronous file and memory operations.                  |
+| `advise`    | Enables memory hinting using **`madvise`/`posix_madvise` (Unix)** or **Prefetch (Windows)**.        |
+| `iterator`  | Provides **iterator-based access** to memory chunks or pages with zero-copy read access.            |
+| `hugepages` | Enables support for Huge Pages via MAP_HUGETLB (Linux) or FILE_ATTRIBUTE_LARGE_PAGES (Windows), reducing TLB misses and improving performance for large memory regions. Requires system configuration and elevated privileges. |
+| `cow`       | Enables **Copy-on-Write (COW)** mapping mode using private memory views (per-process isolation).    |
+| `locking`   | Enables page-level memory locking via **`mlock`/`munlock` (Unix)** or **`VirtualLock` (Windows)**.  |
+| `atomic`    | Exposes **atomic views** into memory as aligned `u32` / `u64`, with strict safety guarantees.      |
+| `watch`     | Enables **file change notifications** via `inotify`, `kqueue`, `FSEvents`, or `ReadDirectoryChangesW`. Falls back to polling where unavailable. |
 
 > ⚠️ Features are opt-in. Enable only those relevant to your use case to reduce compile time and dependency bloat.
 
@@ -96,9 +96,7 @@ If you're building for minimal environments or want total control over feature f
 mmap-io = { version = "0.7.5", default-features = false, features = ["locking"] }
 ```
 
-
 <br>
-
 
 ## Example Usage
 
@@ -125,18 +123,20 @@ fn main() -> std::io::Result<()> {
     Ok(())
 }
 ```
+<br>
 
-### Flush Policy
-mmap-io supports configurable flush behavior for ReadWrite mappings via a FlushPolicy, allowing you to trade off durability and throughput.
+## Flush Policy
+**mmap-io** supports configurable flush behavior for ReadWrite mappings via a `FlushPolicy`, allowing you to trade off durability and throughput.
 
-Policy variants:
-- FlushPolicy::Never / FlushPolicy::Manual: No automatic flushes. Call mmap.flush() when you want durability.
-- FlushPolicy::Always: Flush after every write; slowest but most durable.
-- FlushPolicy::EveryBytes(n): Accumulate bytes written across update_region() calls; flush when at least n bytes have been written.
-- FlushPolicy::EveryWrites(n): Flush after every n writes (calls to update_region()).
-- FlushPolicy::EveryMillis(ms): Reserved for future time-based flushing; currently behaves like Manual.
+#### Policy variants:
+- **FlushPolicy::Never** / **FlushPolicy::Manual**: No automatic flushes. Call `mmap.flush()` when you want durability.
+- **FlushPolicy::Always**: Flush after every write; slowest but most durable.
+- **FlushPolicy::EveryBytes(*n*)**: Accumulate bytes written across `update_region()` calls; flush when at least n bytes have been written.
+- **FlushPolicy::EveryWrites(*n*)**: Flush after every n writes (calls to `update_region()`).
+- **FlushPolicy::EveryMillis(*ms*)**: Reserved for future time-based flushing; currently behaves like Manual.
 
-Using the builder to set a policy:
+
+#### Using the builder to set a policy:
 ```rust
 use mmap_io::{MemoryMappedFile, MmapMode};
 use mmap_io::flush::FlushPolicy;
@@ -148,7 +148,7 @@ let mmap = MemoryMappedFile::builder("file.bin")
     .create()?;
 ```
 
-Manual flush example:
+#### Manual flush example:
 ```rust
 use mmap_io::{create_mmap, update_region, flush};
 
@@ -158,15 +158,23 @@ update_region(&mmap, 0, b"batch1")?;
 flush(&mmap)?; // ensure durability now
 ```
 
-Benchmark variants:
-- update_only: No flush between writes (Manual policy).
-- update_plus_flush: Explicit flush after each write.
-- update_threshold: Builder sets threshold to flush periodically to measure batching behavior.
+<br>
 
-Note: On some platforms, visibility of writes without explicit flush may still occur due to OS behavior, but durability timing is best-effort without flush.
+## Benchmark variants:
+- **update_only**: No flush between writes (Manual policy).
+- **update_plus_flush**: Explicit flush after each write.
+- **update_threshold**: Builder sets threshold to flush periodically to measure batching behavior.
 
-Create a file, write to it, and read back:
 
+<br>
+
+> [!NOTE]
+> On some platforms, visibility of writes without explicit flush may still occur due to OS behavior, but durability timing is best-effort without flush.
+
+<br>
+
+
+#### Create a file, write to it, and read back:
 ```rust
 use mmap_io::{create_mmap, update_region, flush, load_mmap, MmapMode};
 
@@ -189,10 +197,11 @@ fn main() -> Result<(), mmap_io::MmapIoError> {
 }
 ```
 
-### Memory Advise (feature = "advise")
+<br>
 
-Optimize memory access patterns:
+## Memory Advise (feature = "advise")
 
+#### Optimize memory access patterns:
 ```rust
 #[cfg(feature = "advise")]
 use mmap_io::{create_mmap, MmapAdvice};
@@ -212,7 +221,9 @@ fn main() -> Result<(), mmap_io::MmapIoError> {
 }
 ```
 
-### Iterator-Based Access (feature = "iterator")
+<br>
+
+## Iterator-Based Access (feature = "iterator")
 
 Process files in chunks efficiently:
 
@@ -239,7 +250,9 @@ fn main() -> Result<(), mmap_io::MmapIoError> {
 }
 ```
 
-### Atomic Operations (feature = "atomic")
+<br>
+
+## Atomic Operations (feature = "atomic")
 
 Lock-free concurrent access:
 
@@ -263,7 +276,9 @@ fn main() -> Result<(), mmap_io::MmapIoError> {
 }
 ```
 
-### Memory Locking (feature = "locking")
+<br>
+
+## Memory Locking (feature = "locking")
 
 Prevent pages from being swapped:
 
@@ -286,7 +301,9 @@ fn main() -> Result<(), mmap_io::MmapIoError> {
 }
 ```
 
-### File Watching (feature = "watch")
+<br>
+
+## File Watching (feature = "watch")
 
 Monitor file changes:
 
@@ -309,7 +326,9 @@ fn main() -> Result<(), mmap_io::MmapIoError> {
 }
 ```
 
-### Copy-on-Write Mode (feature = "cow")
+<br>
+
+## Copy-on-Write Mode (feature = "cow")
 
 Private memory views:
 
@@ -331,7 +350,9 @@ fn main() -> Result<(), mmap_io::MmapIoError> {
 }
 ```
 
-### Async Operations (feature = "async")
+<br>
+
+## Async Operations (feature = "async")
 
 Tokio-based async helpers:
 
@@ -355,6 +376,63 @@ async fn main() -> Result<(), mmap_io::MmapIoError> {
 
 <br>
 
+## Async-Only Flushing
+
+When using **async** write helpers, **mmap-io** enforces durability by flushing after each **async** write. This avoids visibility inconsistencies across platforms when awaiting **async** tasks.
+
+```rust
+#[cfg(feature = "async")]
+#[tokio::main(flavor = "multi_thread")]
+async fn main() -> Result<(), mmap_io::MmapIoError> {
+    use mmap_io::MemoryMappedFile;
+
+    let mmap = MemoryMappedFile::create_rw("data.bin", 4096)?;
+    // Async write that auto-flushes under the hood
+    mmap.update_region_async(128, b"ASYNC-FLUSH").await?;
+    // Optional explicit async flush
+    mmap.flush_async().await?;
+    Ok(())
+}
+```
+
+Contract: After await-ing update_region_async or flush_async, reopening a fresh RO mapping observes the persisted data.
+
+<br>
+
+## Platform Parity
+
+Flush visibility is guaranteed across OSes: after calling `flush()` or `flush_range()`, a newly opened read-only mapping will observe the persisted bytes on all supported platforms.
+
+Examples:
+- **Full-file flush**: both written regions are visible after `flush()`.
+- **Range flush**: only the flushed range is guaranteed visible; a later `flush()` persists remaining regions.
+
+See parity tests in the repository that validate this contract on all platforms.
+
+<br>
+
+## Huge Pages (feature = "hugepages")
+
+Best-effort huge page mappings can reduce TLB misses and improve large-region performance:
+- Linux: MAP_HUGETLB
+- Windows: FILE_ATTRIBUTE_LARGE_PAGES
+- Other platforms: no-op fallback
+
+Usage via builder:
+```rust
+#[cfg(feature = "hugepages")]
+use mmap_io::{MemoryMappedFile, MmapMode};
+
+let mmap = MemoryMappedFile::builder("hp.bin")
+    .mode(MmapMode::ReadWrite)
+    .size(1 << 20)
+    .huge_pages(true) // best-effort; falls back safely
+    .create()?;
+```
+If the system is not configured for huge pages, mapping silently falls back to normal pages and still functions correctly.
+
+<br>
+
 ## Safety Notes
 
 - All operations perform bounds checks.
@@ -375,7 +453,7 @@ This crate uses `unsafe` internally to manage raw memory mappings (`mmap`, `Virt
 We document all unsafe logic in the source and mark any footguns with caution.
 
 
-<hr>
+<hr><br>
 
 <ul>
     <li>
@@ -389,13 +467,57 @@ We document all unsafe logic in the source and mark any footguns with caution.
 
 <br><br>
 
-## License
 
-Licensed under the Apache License, Version 2.0 (the "License");
-you may not use this project except in compliance with the License.
-You may obtain a copy of the License at: http://www.apache.org/licenses/LICENSE-2.0
 
-Unless required by applicable law or agreed to in writing, software distributed under the License is distributed on an "AS IS" BASIS,
-WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied. See the License for the specific language governing permissions and limitations under the License.
+<!--// CONTRIBUTERS // 
+<div>
+    <br><br>
+    <h2 align="center">CONTRIBUTERS</h2>
+</div>
+<br><br>-->
 
-Copyright (c) 2025 Asotex Inc.
+
+<!--// SPONSORS // -
+<div>
+    <br><br>
+    <h2 align="center">SPONSORS</h2>
+</div>
+<br><br>->
+
+<!--// LICENSE // -->
+<div>
+    <br><br>
+    <h2 align="center">LICENSE</h2>
+    <p>
+        Licensed under the <strong>Apache License</strong>, <b>Version 2.0</b> (the "License"); you may not use this project except in compliance with the License.
+    </p>
+    <p>See the <code>LICENSE</code> file included with this project for more information.</p>
+    <br>
+    <p>You may obtain a copy of the License at: <a href="http://www.apache.org/licenses/LICENSE-2.0">http://www.apache.org/licenses/LICENSE-2.0</a></p>
+    <br>
+    <p>Unless required by applicable law or agreed to in writing, software distributed under the License is distributed on an "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied. See the License for the specific language governing permissions and limitations under the License.</p>
+</div>
+
+<!--// FOOTER // -->
+<div align="center">
+    <br>
+    <h2></h2>
+    <div><!-- FOOT: NAVIGATION -->
+        <sup> 
+            <a href="https://asotex.com" title="Asotex Website">ASOTEX.COM</a>
+            <span>&nbsp;&middot;&nbsp;</span>
+            <a href="https://asotex.com/about" title="About Asotex">ABOUT</a>
+            <span>&nbsp;&middot;&nbsp;</span>
+            <a href="https://asotex.com/corporate/investors/" title="Asotex Investors">INVESTORS</a>
+            <span>&nbsp;&middot;&nbsp;</span>
+            <a href="https://asotex.com/corporate/partners/" title="Asotex Partners">PARTNERS</a>
+            <span>&nbsp;&middot;&nbsp;</span>
+            <a href="https://asotex.com/legal/" title="Asotex Legal Documentation">LEGAL</a>
+            <span>&nbsp;&middot;&nbsp;</span>
+            <a href="https://asotex.com/contact/" title="Contact Asotex">CONTACT</a>
+        </sup>
+    </div>
+    <sub><!-- FOOT: COPYRIGHT -->
+        Copyright &copy; 2025 Asotex Inc. All Rights Reserved.
+    </sub>
+</div>
