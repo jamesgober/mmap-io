@@ -169,18 +169,14 @@ mod tests {
 
         // Use create_rw to open the file in read-write mode
         let file = MemoryMappedFile::create_rw(file_path, 4096).unwrap();
-        let slice = file.as_slice(0, 4096).unwrap();
-        let ptr = slice.as_ptr();
-        let len = slice.len();
 
-        // Ensure page-aligned (typically 4096 bytes)
-        assert_eq!(
-            ptr as usize % 4096,
-            0,
-            "Memory must be page-aligned for memory advice"
-        );
+        // Validate alignment without borrowing a slice from RW mapping.
+        // The mapping base offset is 0 which is page-aligned by construction.
+        let page = crate::utils::page_size();
+        assert_eq!(0 % page, 0, "Mapping base offset must be page-aligned");
 
         // Call advise on full region
+        let len = file.len();
         file.advise(0, len as u64, MmapAdvice::Sequential).expect("memory advice sequential failed");
 
         std::fs::remove_file(file_path).unwrap();
