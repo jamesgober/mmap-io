@@ -181,6 +181,8 @@ impl MemoryMappedFile {
             map: MapVariant::Ro(mmap),
             flush_policy: FlushPolicy::Never,
             written_since_last_flush: RwLock::new(0),
+            #[cfg(feature = "hugepages")]
+            huge_pages: false,
         };
         Ok(Self { inner: Arc::new(inner) })
     }
@@ -453,13 +455,13 @@ fn map_mut_with_options(file: &File, len: u64, huge: bool) -> Result<MmapMut> {
                 return MmapMut::map_mut(file).map_err(|e| MmapIoError::Io(e.into()));
             }
         } else {
-            return MmapMut::map_mut(file).map_err(|e| MmapIoError::Io(e.into()));
+            return unsafe { MmapMut::map_mut(file) }.map_err(|e| MmapIoError::Io(e.into()));
         }
     }
     #[cfg(not(all(unix, target_os = "linux")))]
     {
         let _ = (len, huge);
-        return MmapMut::map_mut(file).map_err(|e| MmapIoError::Io(e.into()));
+        return unsafe { MmapMut::map_mut(file) }.map_err(|e| MmapIoError::Io(e.into()));
     }
 }
 
@@ -695,6 +697,8 @@ impl MemoryMappedFileBuilder {
                         map: MapVariant::Cow(mmap),
                         flush_policy: FlushPolicy::Never,
                         written_since_last_flush: RwLock::new(0),
+                        #[cfg(feature = "hugepages")]
+                        huge_pages: false,
                     };
                     Ok(MemoryMappedFile { inner: Arc::new(inner) })
                 }
