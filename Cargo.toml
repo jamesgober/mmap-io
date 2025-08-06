@@ -51,10 +51,12 @@ default = ["advise", "iterator"]
 async     = ["tokio"]     # Tokio-based async helpers
 advise    = []            # Memory advise hints (madvise/posix_madvise, Prefetch on Windows)
 iterator  = []            # Iterator-based access (chunks/pages)
+hugepages = []            # Use MAP_HUGETLB / FILE_ATTRIBUTE_LARGE_PAGES
 cow       = []            # Copy-on-Write mapping mode (private mappings)
 locking   = []            # Lock / Unlock memory pages (mlock/munlock, VirtualLock)
 atomic    = []            # Atomic memory views (u32/u64) with strict alignment checks
 watch     = []            # Watch/Notification (inotify/kqueue/FSEvents/Windows; fallback polling)
+
 
 [badges]
 github-actions = { repository = "asotex/mmap-io", workflow = "CI" }
