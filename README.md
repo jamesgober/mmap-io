@@ -1,5 +1,8 @@
 <div align="center">
-   <img width="120px" height="auto" src="https://raw.githubusercontent.com/jamesgober/jamesgober/main/media/icons/hexagon-3.svg" alt="Triple Hexagon">
+    <picture>
+        <source media="(prefers-color-scheme: dark)" srcset="https://raw.githubusercontent.com/asotex/.github/refs/heads/main/media/asotex-icon-white.png">
+        <img width="81px" alt="Asotex brand logo, featuring the Asotex A-Icon, followed by the word Asotex." src="https://raw.githubusercontent.com/asotex/.github/refs/heads/main/media/asotex-icon-dark.png">
+    </picture>
     <h1>
         <strong>mmap-io</strong>
         <sup>
@@ -17,37 +20,25 @@
         <a href="https://github.com/asotex/mmap-io/actions"><img alt="GitHub CI" src="https://github.com/asotex/mmap-io/actions/workflows/ci.yml/badge.svg"></a>
 </div>
 <br>
+<p>
+    High-performance, async-ready memory-mapped file I/O library for Rust. Provides fast, zero-copy reads and efficient writes with safe, concurrent access. Designed for databases, game engines, caches, and real-time applications.
+</p>
+<br>
 
-High-performance, async-ready memory-mapped file I/O library for Rust. Provides fast, zero-copy reads and efficient writes with safe, concurrent access. Designed for databases, game engines, caches, and real-time applications.
+## Capabilities
+- **Zero-copy reads** and **efficient writes**.
+- **Read-only** and **read-write** modes.
+- **Segment-based access** (*offset* + *length*)
+- **Thread-safe** via interior mutability (parking_lot `RwLock`)
+- **Cross-platform** via `memmap2`
+- Optional **async** helpers with `Tokio`.
+- **MSRV: 1.76**
 
-## Features
-- Zero-copy reads and efficient writes
-- Read-only and read-write modes
-- Segment-based access (offset + length)
-- Thread-safe via interior mutability (parking_lot `RwLock`)
-- Cross-platform via `memmap2`
-- Optional async helpers with Tokio
-- MSRV: 1.76
-
-## Installation
-
-Add to your Cargo.toml:
-
-```toml
-[dependencies]
-mmap-io = { version = "0.7.1" }
-```
-
-Enable async helpers (Tokio) when needed:
-
-```toml
-[dependencies]
-mmap-io = { version = "0.7.1", features = ["async"] }
-```
 
 <br>
 
-## Features
+
+## Optional Features
 
 The following optional Cargo features enable extended functionality for `mmap-io`. Enable only what you need to minimize binary size and dependencies.
 
@@ -64,10 +55,77 @@ The following optional Cargo features enable extended functionality for `mmap-io
 > ⚠️ Features are opt-in. Enable only those relevant to your use case to reduce compile time and dependency bloat.
 
 
+### Default Features
+
+By default, the following features are enabled:
+
+- `advise` – Memory access hinting for performance
+- `iterator` – Iterator-based chunk/page access
+
+
+<br>
+
+## Installation
+
+> Add to your Cargo.toml:
+```toml
+[dependencies]
+mmap-io = { version = "0.7.2" }
+```
+<br>
+
+> Enable **async** helpers (`Tokio`) when needed:
+```toml
+[dependencies]
+mmap-io = { version = "0.7.2", features = ["async"] }
+```
+
+> Or, enable other features like: `cow`, `locking`, or `advise`
+```toml
+[dependencies]
+mmap-io = { version = "0.7.2", features = ["cow", "locking"] }
+```
+See full list of [Features](#optional-features) (shown above).
+
+<br>
+
+If you're building for minimal environments or want total control over feature flags, you can disable default features by using `default-features = false` (see below).
+```toml
+[dependencies]
+mmap-io = { version = "0.7.2", default-features = false, features = ["locking"] }
+```
+
+
+
+
 <br>
 
 
-## Usage
+## Example Usage
+
+```rust
+use mmap_io::{MmapMode, MemoryMappedFile};
+
+fn main() -> std::io::Result<()> {
+    // Open an existing file in read-only mode
+    let mmap = MemoryMappedFile::open("data.bin", MmapMode::ReadOnly)?;
+
+    // Read memory-mapped contents
+    let slice = mmap.as_slice();
+    println!("First byte: {}", slice[0]);
+
+    // Write to a mutable mapping
+    #[cfg(feature = "mutable")]
+    {
+        let mut mmap = MemoryMappedFile::open("data.bin", MmapMode::ReadWrite)?;
+        let slice = mmap.as_slice_mut();
+        slice[0] = 0xFF;
+        mmap.flush()?; // flush to disk
+    }
+
+    Ok(())
+}
+```
 
 ### Basic Operations
 
@@ -259,12 +317,41 @@ async fn main() -> Result<(), mmap_io::MmapIoError> {
 }
 ```
 
+<br>
+
 ## Safety Notes
 
 - All operations perform bounds checks.
 - Unsafe blocks are limited to mapping calls and documented with SAFETY comments.
 - Interior mutability uses `parking_lot::RwLock` for high performance.
 - Avoid flushing while holding a write guard to prevent deadlocks (drop the guard first).
+
+<br>
+
+## ⚠️ Unsafe Code Disclaimer
+
+This crate uses `unsafe` internally to manage raw memory mappings (`mmap`, `VirtualAlloc`, etc.) across platforms. All public APIs are designed to be memory-safe when used correctly. However:
+
+- **You must not modify the file concurrently** outside of this process.
+- **Mapped slices are only valid** as long as the underlying file and mapping stay valid.
+- **Behavior is undefined** if you access a truncated or deleted file via a stale mapping.
+
+We document all unsafe logic in the source and mark any footguns with caution.
+
+
+<hr>
+
+<ul>
+    <li>
+        <b><a href="./docs/API.md" title="API Reference and Code Examples">API Reference</a>:</b> A complete collection of code examples and usage details.
+    </li>
+    <li>
+        <b><a href="./CHANGELOG.md" title="Project Changelog">Changelog</a>:</b> A detailed history of all project versions and updates.
+    </li>
+</ul>
+
+
+<br><br>
 
 ## License
 

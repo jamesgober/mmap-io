@@ -1,6 +1,6 @@
 [package]
 name = "mmap-io"
-version = "0.7.1"
+version = "0.7.2"
 edition = "2021"
 rust-version = "1.76"
 readme = "README.md"
@@ -40,7 +40,7 @@ libc = { version = "0.2", optional = false }
 
 [features]
 # Default opt-ins: safe to enable and provide value without platform privileges
-default = ["advise", "iterator", "cow"]
+default = ["advise", "iterator"]
 
 # Optional features
 async     = ["tokio"]     # Tokio-based async helpers

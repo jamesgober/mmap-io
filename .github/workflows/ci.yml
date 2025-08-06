@@ -7,9 +7,19 @@ on:
     branches: [ main ]
 
 jobs:
-  build:
-
-    runs-on: ubuntu-latest
+  build-test:
+    runs-on: ${{ matrix.os }}
+    strategy:
+      matrix:
+        os: [ubuntu-latest, macos-latest, windows-latest]
+        features:
+          - ""
+          - cow
+          - locking
+          - advise
+          - "cow locking"
+          - "locking advise"
+          - "cow locking advise"
 
     steps:
       - uses: actions/checkout@v3
@@ -20,8 +30,19 @@ jobs:
           toolchain: stable
           override: true
 
-      - name: Build
-        run: cargo build --verbose
+      - name: Run tests
+        run: |
+          echo "Testing with features: ${{ matrix.features }}"
+          cargo test --no-default-features --features "${{ matrix.features }}"
 
-      - name: Test
-        run: cargo test --all --verbose
+  full-build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v3
+      - name: Install Rust
+        uses: actions-rs/toolchain@v1
+        with:
+          toolchain: stable
+          override: true
+      - name: Check all features
+        run: cargo check --all-features

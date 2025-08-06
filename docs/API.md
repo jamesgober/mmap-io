@@ -5,33 +5,36 @@
         <sup><br><sub>API REFERENCE</sub><br></sup>
     </h1>
 </div>
+<div align="center">
+    <a href="../README.md">Home</a> &nbsp;·&nbsp; 
+    <a href="./README.md">Documentation</a> &nbsp;·&nbsp; 
+    <a href="./docs/API.md">API DOCS</a> &nbsp;·&nbsp; 
+    <a href="./docs/API.md">DOCS</a> &nbsp;·&nbsp; 
+    <a href="./CHANGELOG.md">Change Log</a>
+</div>
 <br>
+
 Complete reference for public-facing APIs. Each item lists its signature, parameters, description, errors, and examples.
-
-Prerequisites:
-
-- MSRV: 1.76
-- Default (sync) APIs always available
-- Feature-gated APIs require enabling specific features
 
 <br>
 
 ## Table of Contents
-
-- [Installation](#installation)
-- [Features](#features)
-- [Core Types](#core-types)
+- **[Prerequisites](#prerequisites)**
+- **[Features](#features)**
+  - [Default Features](#default-features)
+- **[Installation](#installation)**
+- **[Core Types](#core-types)**
   - [MemoryMappedFile](#memorymappedfile)
   - [MmapMode](#mmapmode)
   - [MmapIoError](#mmapioerror)
-- [Manager Functions](#manager-functions)
+- **[Manager Functions](#manager-functions)**
   - [create_mmap](#create_mmap)
   - [load_mmap](#load_mmap)
   - [update_region](#update_region)
   - [flush](#flush)
   - [copy_mmap](#copy_mmap)
   - [delete_mmap](#delete_mmap)
-- [MemoryMappedFile Methods](#memorymappedfile-methods)
+- **[MemoryMappedFile Methods](#memorymappedfile-methods)**
   - [create_rw](#create_rw)
   - [open_ro](#open_ro)
   - [open_rw](#open_rw)
@@ -47,7 +50,7 @@ Prerequisites:
   - [is_empty](#is_empty)
   - [path](#path)
   - [mode](#mode)
-- [Feature-Gated APIs](#feature-gated-apis)
+- **[Feature-Gated APIs](#feature-gated-apis)**
   - [Memory Advise](#memory-advise-feature--advise)
     - [advise](#advise)
     - [MmapAdvice](#mmapadvice)
@@ -69,38 +72,40 @@ Prerequisites:
     - [watch](#watch)
     - [ChangeEvent](#changeevent)
     - [ChangeKind](#changekind)
-- [Segment Types](#segment-types)
+- **[Segment Types](#segment-types)**
   - [Segment](#segment)
   - [SegmentMut](#segmentmut)
-- [Async Operations](#async-operations-feature--async)
+- **[Async Operations](#async-operations-feature--async)**
   - [create_mmap_async](#create_mmap_async)
   - [copy_mmap_async](#copy_mmap_async)
   - [delete_mmap_async](#delete_mmap_async)
-- [Utility Functions](#utility-functions)
+- **[Utility Functions](#utility-functions)**
   - [page_size](#page_size)
   - [align_up](#align_up)
+- **[Safety and Best Practices](#safety-and-best-practices)**
+  - [Mapped Memory Access](#mapped-memory-access)
+  - [Copy-On-Write Mode](#copy-on-write-cow-mode)
+  - [Flushing Behavior](#flushing-behavior)
+  - [Thread Safety](#thread-safety)
+  - [Performance Tips](#performance-tips)
+  - [Common Pitfalls](#common-pitfalls)
+  - [Error Handling](#error-handling)
+- **[Examples](#examples)**
+  - [Database-like Usage](#database-like-usage)
+  - [Game Asset Loading](#game-asset-loading)
+  - [Log File Processing](#log-file-processing)
+  - [Concurrent Counter](#concurrent-counter)
+- **[Version History](#version-history)**
 
 <br><br>
 
-## Installation
+## Prerequisites:
+- **MSRV: 1.76**
+- **Default (*sync*) APIs**: *always available*.
+- **Feature-gated APIs**: *require enabling specific features*.
 
-### Install Manually
-```toml
-[dependencies]
-mmap-io = { version = "0.7.1" }
-```
+<br><br>
 
-### Install Using Cargo
-```bash
-cargo add mmap-io
-```
-
-### Install With Features
-```bash
-cargo add mmap-io --features async,advise,iterator,cow,locking,atomic,watch
-```
-
-<br>
 
 ## Features
 
@@ -116,7 +121,66 @@ The following optional Cargo features enable extended functionality:
 | `atomic`   | Exposes **atomic views** into memory as aligned `u32` / `u64`, with strict safety guarantees.      |
 | `watch`    | Enables **file change notifications** via platform-specific APIs with polling fallback.            |
 
+
+### Default Features
+
+By default, the following features are enabled:
+
+- `advise` – Memory access hinting for performance
+- `iterator` – Iterator-based chunk/page access
+
 <br>
+
+
+
+
+## Installation
+
+### 1: Basic Installation:
+> Add the following to your Cargo.toml file:
+```toml
+[dependencies]
+mmap-io = { version = "0.7.2" }
+```
+
+> Or install using Cargo:
+```bash
+cargo add mmap-io
+```
+
+<br>
+
+### 2: Custom Install:
+Enable additional features by using the pre-defined [features flags](#features) as shown above.
+
+> ##### Manual Install with Features:
+```toml
+[dependencies]
+mmap-io = { version = "0.7.2", features = ["cow", "locking"] }
+```
+> ##### Cargo Install with Features:
+```bash
+cargo add mmap-io --features async,advise,iterator,cow,locking,atomic,watch
+```
+
+<br>
+
+### 3: Minimal Install:
+If you're building for minimal environments or want total control over feature flags, you can disable the [default features](#default-features).
+
+> ##### Manual Install without Default Features:
+```toml
+[dependencies]
+mmap-io = { version = "0.7.2", default-features = false, features = ["locking"] }
+```
+
+> ##### Cargo Install without Default Features:
+```bash
+cargo add mmap-io --no-default-features --features locking
+```
+
+<br>
+
 
 ## Core Types
 
@@ -1081,7 +1145,28 @@ let aligned2 = align_up(2048, 1024); // Returns 2048
 
 ## Safety and Best Practices
 
+This crate uses `unsafe` code internally to interact with system memory mapping APIs:
+- **Unix:** Uses `mmap`, `munmap`, `msync`, `madvise`, etc.
+- **Windows:** Uses `CreateFileMappingW`, `MapViewOfFile`, `VirtualLock`, etc.
+
+We expose only safe public APIs, but the following safety considerations apply:
+
+### Mapped Memory Access
+- You must not access memory after the file is closed, truncated, or deleted.
+- Writing to `as_slice_mut()` is only allowed in `ReadWrite` or `CopyOnWrite` modes.
+- Do not share mutable slices across threads without synchronization.
+
+### Copy-On-Write (COW) Mode
+- Writes are isolated per-process and never flushed to disk.
+- `as_slice_mut()` is restricted in COW mode (future support planned).
+- Flush in COW is a no-op for disk persistence.
+
+
+### Flushing Behavior
+- `flush()` ensures memory is flushed to the underlying file, but is a **best-effort** operation and may not guarantee disk sync unless `sync_all` or `fsync` is also called.
+
 ### Thread Safety
+`MemoryMappedFile` can be used across threads with `Arc`, but internal mutability requires synchronization if using `as_slice_mut()`.
 - All operations are thread-safe through interior mutability
 - Read operations can proceed concurrently
 - Write operations are serialized through `RwLock`
@@ -1135,6 +1220,8 @@ record_count.fetch_add(1, Ordering::SeqCst);
 db.flush()?;
 ```
 
+<br>
+
 ### Game Asset Loading
 ```rust
 use mmap_io::{MemoryMappedFile, MmapAdvice};
@@ -1149,6 +1236,8 @@ assets.advise(0, 50 * 1024 * 1024, MmapAdvice::WillNeed)?;
 let texture_data = assets.as_slice(1024 * 1024, 2048 * 2048 * 4)?;
 ```
 
+<br>
+
 ### Log File Processing
 ```rust
 #[cfg(feature = "iterator")]
@@ -1162,6 +1251,8 @@ for chunk in log.chunks(4096) {
     // Process lines in chunk...
 }
 ```
+
+<br>
 
 ### Concurrent Counter
 ```rust
@@ -1195,16 +1286,18 @@ for handle in handles {
 }
 ```
 
-<br>
+<hr><br>
 
 ## Version History
-- **0.7.1**: Added Documentation.
-- **0.7.0**: Added atomic, locking, watch features
-- **0.5.0**: Added advise, iterator features
-- **0.4.0**: Added copy-on-write mode support
-- **0.3.0**: Added async support with Tokio
-- **0.2.0**: Added segment types
-- **0.1.0**: Initial release with basic mmap functionality
+- **0.7.2**: Added CHANGELOG and updated Documentation.
+- **0.7.1**: Added atomic, locking, and watch features.
+- **0.7.0**: Added advise and iterator features.
+- **0.5.0**: Added copy-on-write mode support.
+- **0.3.0**: Added async support with Tokio.
+- **0.2.0**: basic mmap functionality with segment types.
+- **0.1.0: Initial release.
+
+View the [CHANGELOG](../CHANGELOG.md).
 
 <br>
 
