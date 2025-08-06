@@ -413,10 +413,13 @@ See parity tests in the repository that validate this contract on all platforms.
 
 ## Huge Pages (feature = "hugepages")
 
-Best-effort huge page mappings can reduce TLB misses and improve large-region performance:
-- Linux: MAP_HUGETLB
-- Windows: FILE_ATTRIBUTE_LARGE_PAGES
-- Other platforms: no-op fallback
+Best-effort huge page support to reduce TLB misses and improve performance for large memory regions:
+
+**Linux**: Uses Transparent Huge Pages (THP) via `madvise(MADV_HUGEPAGE)`. The kernel will opportunistically use huge pages when available, providing automatic fallback to normal pages if huge pages cannot be allocated.
+
+**Windows**: Attempts to use `FILE_ATTRIBUTE_LARGE_PAGES` when creating files. Requires the "Lock Pages in Memory" privilege and system configuration. Falls back to normal pages if unavailable.
+
+**Other platforms**: No-op (uses normal pages).
 
 Usage via builder:
 ```rust
@@ -425,11 +428,16 @@ use mmap_io::{MemoryMappedFile, MmapMode};
 
 let mmap = MemoryMappedFile::builder("hp.bin")
     .mode(MmapMode::ReadWrite)
-    .size(1 << 20)
-    .huge_pages(true) // best-effort; falls back safely
+    .size(2 * 1024 * 1024) // 2MB - typical huge page size
+    .huge_pages(true) // best-effort optimization
     .create()?;
 ```
-If the system is not configured for huge pages, mapping silently falls back to normal pages and still functions correctly.
+
+**Important Notes:**
+- Huge pages are a performance optimization hint, not a guarantee
+- The mapping will function correctly regardless of whether huge pages are used
+- On Linux, THP provides automatic, transparent fallback to normal pages
+- Performance benefits are most noticeable with large, frequently-accessed mappings
 
 <br>
 

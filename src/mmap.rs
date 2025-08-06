@@ -601,64 +601,50 @@ impl MemoryMappedFile {
     }
 }
 
+/// Create a memory mapping with optional huge pages support.
+///
+/// When `huge` is true on Linux, this function attempts to use Transparent Huge Pages (THP)
+/// via the `madvise(MADV_HUGEPAGE)` hint. This is a best-effort optimization that allows
+/// the kernel to use huge pages when available and beneficial.
+///
+/// Note: This does NOT guarantee huge pages will be used. The actual usage depends on:
+/// - System configuration (THP must be enabled)
+/// - Available memory and fragmentation
+/// - Kernel heuristics
+///
+/// The function will silently fall back to regular pages if huge pages are unavailable.
 #[cfg(feature = "hugepages")]
 fn map_mut_with_options(file: &File, len: u64, huge: bool) -> Result<MmapMut> {
     #[cfg(all(unix, target_os = "linux"))]
     {
-        use std::os::fd::AsRawFd;
+        // Create the standard mapping first
+        let mmap = unsafe { MmapMut::map_mut(file) }.map_err(|e| MmapIoError::Io(e.into()))?;
+        
         if huge {
-            // Try to use huge pages via mmap with MAP_HUGETLB flag
+            // Request Transparent Huge Pages (THP) for this mapping
+            // This is a hint to the kernel - not a guarantee
             unsafe {
-                let prot = libc::PROT_READ | libc::PROT_WRITE;
-                let flags = libc::MAP_SHARED | libc::MAP_HUGETLB;
-                let addr = libc::mmap(
-                    std::ptr::null_mut(),
-                    len as usize,
-                    prot,
-                    flags,
-                    file.as_raw_fd(),
-                    0,
-                );
-                
-                if addr == libc::MAP_FAILED {
-                    // Huge pages not available or failed, fall back to regular mapping
-                    // This is expected behavior - huge pages may not be configured on the system
-                    return MmapMut::map_mut(file).map_err(|e| MmapIoError::Io(e.into()));
-                }
-                
-                // Successfully mapped with huge pages!
-                // Since memmap2 doesn't expose a way to create MmapMut from raw pointer,
-                // we need to use the raw mapping directly. However, for safety and compatibility
-                // with the rest of the codebase, we'll create a custom wrapper.
-                //
-                // IMPORTANT: The current memmap2 API doesn't support adopting external mappings.
-                // The best approach is to try MAP_HUGETLB first, and if it succeeds,
-                // we know huge pages are available. Then we can hint the kernel about our
-                // preference and let memmap2 handle the actual mapping.
-                //
-                // First, unmap our test mapping
-                libc::munmap(addr, len as usize);
-                
-                // Now use madvise to hint that we want huge pages for this region
-                // This is done after memmap2 creates the mapping
-                let mmap = MmapMut::map_mut(file).map_err(|e| MmapIoError::Io(e.into()))?;
-                
-                // Apply MADV_HUGEPAGE hint to encourage huge page usage
                 let mmap_ptr = mmap.as_ptr() as *mut libc::c_void;
-                let ret = libc::madvise(mmap_ptr, len as usize, libc::MADV_HUGEPAGE);
-                if ret != 0 {
-                    // madvise failed, but the mapping is still valid
-                    // Continue with regular pages
-                }
                 
-                return Ok(mmap);
+                // MADV_HUGEPAGE: Enable THP for this memory region
+                // The kernel will attempt to use huge pages when beneficial
+                // This is the most compatible approach with memmap2's constraints
+                let ret = libc::madvise(mmap_ptr, len as usize, libc::MADV_HUGEPAGE);
+                
+                if ret != 0 {
+                    // madvise failed - huge pages may not be available
+                    // This is not fatal - the mapping is still valid with regular pages
+                    // In production, you might want to log this for monitoring
+                    // eprintln!("Warning: madvise(MADV_HUGEPAGE) failed, using regular pages");
+                }
             }
-        } else {
-            return unsafe { MmapMut::map_mut(file) }.map_err(MmapIoError::Io);
         }
+        
+        Ok(mmap)
     }
     #[cfg(not(all(unix, target_os = "linux")))]
     {
+        // Huge pages are Linux-specific, ignore the flag on other platforms
         let _ = (len, huge);
         unsafe { MmapMut::map_mut(file) }.map_err(|e| MmapIoError::Io(e.into()))
     }

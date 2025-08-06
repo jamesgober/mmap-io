@@ -785,7 +785,7 @@ Behavior:
 - Always: flush() is invoked after each update_region() call.
 - EveryBytes(n): increments a byte counter by the number of bytes written per update_region; when it reaches n, counter resets and flush() is called.
 - EveryWrites(w): increments a write counter per update_region; when it reaches w, counter resets and flush() is called.
-- EveryMillis(ms): currently behaves as Manual (no background thread).
+- EveryMillis(ms): Reserved for future time-based flushing. Currently behaves identically to Manual/Never (no automatic flushing). Time-based flushing would require a background thread which is not yet implemented.
 
 Notes:
 - Flush is best-effort and may not imply fsync semantics on all platforms.
