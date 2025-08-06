@@ -22,6 +22,16 @@ use crate::utils::{ensure_in_bounds, slice_range};
 const ERR_ZERO_SIZE: &str = "Size must be greater than zero";
 const ERR_ZERO_LENGTH_FILE: &str = "Cannot map zero-length file";
 
+// Maximum safe mmap size: 128TB (reasonable limit for most systems)
+// This prevents accidental exhaustion of address space or disk
+// Note: This is intentionally very large to support legitimate use cases
+// while still preventing obvious errors like u64::MAX
+#[cfg(target_pointer_width = "64")]
+const MAX_MMAP_SIZE: u64 = 128 * (1 << 40); // 128 TB on 64-bit systems
+
+#[cfg(target_pointer_width = "32")]
+const MAX_MMAP_SIZE: u64 = 2 * (1 << 30); // 2 GB on 32-bit systems (practical limit)
+
 /// Access mode for a memory-mapped file.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum MmapMode {
@@ -134,11 +144,16 @@ impl MemoryMappedFile {
     ///
     /// # Errors
     ///
-    /// Returns `MmapIoError::ResizeFailed` if size is zero.
+    /// Returns `MmapIoError::ResizeFailed` if size is zero or exceeds the maximum safe limit.
     /// Returns `MmapIoError::Io` if file creation or mapping fails.
     pub fn create_rw<P: AsRef<Path>>(path: P, size: u64) -> Result<Self> {
         if size == 0 {
             return Err(MmapIoError::ResizeFailed(ERR_ZERO_SIZE.into()));
+        }
+        if size > MAX_MMAP_SIZE {
+            return Err(MmapIoError::ResizeFailed(
+                format!("Size {} exceeds maximum safe limit of {} bytes", size, MAX_MMAP_SIZE)
+            ));
         }
         let path_ref = path.as_ref();
         let file = OpenOptions::new()
@@ -476,7 +491,7 @@ impl MemoryMappedFile {
     /// # Errors
     ///
     /// Returns `MmapIoError::InvalidMode` if not in `ReadWrite` mode.
-    /// Returns `MmapIoError::ResizeFailed` if new size is zero.
+    /// Returns `MmapIoError::ResizeFailed` if new size is zero or exceeds the maximum safe limit.
     /// Returns `MmapIoError::Io` if resize operation fails.
     pub fn resize(&self, new_size: u64) -> Result<()> {
         if self.inner.mode != MmapMode::ReadWrite {
@@ -484,6 +499,11 @@ impl MemoryMappedFile {
         }
         if new_size == 0 {
             return Err(MmapIoError::ResizeFailed("New size must be greater than zero.".into()));
+        }
+        if new_size > MAX_MMAP_SIZE {
+            return Err(MmapIoError::ResizeFailed(
+                format!("New size {} exceeds maximum safe limit of {} bytes", new_size, MAX_MMAP_SIZE)
+            ));
         }
 
         let current = self.current_len()?;
@@ -754,6 +774,14 @@ impl MemoryMappedFileBuilder {
                 let size = self.size.ok_or_else(|| {
                     MmapIoError::ResizeFailed("Size must be set for create() in ReadWrite mode".into())
                 })?;
+                if size == 0 {
+                    return Err(MmapIoError::ResizeFailed(ERR_ZERO_SIZE.into()));
+                }
+                if size > MAX_MMAP_SIZE {
+                    return Err(MmapIoError::ResizeFailed(
+                        format!("Size {} exceeds maximum safe limit of {} bytes", size, MAX_MMAP_SIZE)
+                    ));
+                }
                 let path_ref = &self.path;
                 let file = OpenOptions::new()
                     .create(true)

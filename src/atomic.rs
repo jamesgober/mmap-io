@@ -55,8 +55,11 @@ impl MemoryMappedFile {
 
         // SAFETY: We've validated alignment and bounds.
         // The AtomicU64 reference is valid for the lifetime of self.
+        // Convert offset to usize with explicit overflow check
+        let offset_usize = offset.try_into()
+            .map_err(|_| MmapIoError::OutOfBounds { offset, len: SIZE, total })?;
         unsafe {
-            let addr = ptr.add(offset as usize);
+            let addr = ptr.add(offset_usize);
             let atomic_ptr = addr as *const AtomicU64;
             Ok(&*atomic_ptr)
         }
@@ -112,8 +115,11 @@ impl MemoryMappedFile {
 
         // SAFETY: We've validated alignment and bounds.
         // The AtomicU32 reference is valid for the lifetime of self.
+        // Convert offset to usize with explicit overflow check
+        let offset_usize = offset.try_into()
+            .map_err(|_| MmapIoError::OutOfBounds { offset, len: SIZE, total })?;
         unsafe {
-            let addr = ptr.add(offset as usize);
+            let addr = ptr.add(offset_usize);
             let atomic_ptr = addr as *const AtomicU32;
             Ok(&*atomic_ptr)
         }
@@ -164,8 +170,11 @@ impl MemoryMappedFile {
 
         // SAFETY: We've validated alignment and bounds.
         // The slice is valid for the lifetime of self.
+        // Convert offset to usize with explicit overflow check
+        let offset_usize = offset.try_into()
+            .map_err(|_| MmapIoError::OutOfBounds { offset, len: total_size, total })?;
         unsafe {
-            let addr = ptr.add(offset as usize);
+            let addr = ptr.add(offset_usize);
             let atomic_ptr = addr as *const AtomicU64;
             Ok(std::slice::from_raw_parts(atomic_ptr, count))
         }
@@ -216,8 +225,11 @@ impl MemoryMappedFile {
 
         // SAFETY: We've validated alignment and bounds.
         // The slice is valid for the lifetime of self.
+        // Convert offset to usize with explicit overflow check
+        let offset_usize = offset.try_into()
+            .map_err(|_| MmapIoError::OutOfBounds { offset, len: total_size, total })?;
         unsafe {
-            let addr = ptr.add(offset as usize);
+            let addr = ptr.add(offset_usize);
             let atomic_ptr = addr as *const AtomicU32;
             Ok(std::slice::from_raw_parts(atomic_ptr, count))
         }

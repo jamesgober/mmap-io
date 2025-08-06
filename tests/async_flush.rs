@@ -1,7 +1,7 @@
 #![cfg(feature = "async")]
 //! Async-only flushing tests: async write auto-flushes without explicit flush()
 
-use mmap_io::{MemoryMappedFile, MmapMode};
+use mmap_io::MemoryMappedFile;
 use std::fs;
 use std::path::PathBuf;
 
