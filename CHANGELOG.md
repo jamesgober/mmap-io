@@ -22,12 +22,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `Async-Only Flushing` support.
 - `async_flush.rs` file for `Async-Only Flushing` support.
 - Test case for `Async-Only Flushing`.
-
+- `Platform Parity` support.
+- Test case for `latform Parity`.
+- `Huge Pages`, `Async-Only Flushing`, & `Platform Parity` documentation to `API.md`.
+- `Huge Pages`, `Async-Only Flushing`, & `Platform Parity` documentation to `README.md`.
+- Smarter internal guards for `flush()`.
 
 ### Changed
 - `Optional Features` in `README.md` to include `hugepages` Flag.
 - `Features` in `API.md` to include `hugepages` Flag.
 
+### Fixed
+- Performance issues and errors in `watch.rs`.
+- Performance issues and errors in `mmap.rs`.
 
 
 <br>
