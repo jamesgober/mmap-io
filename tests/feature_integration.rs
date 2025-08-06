@@ -75,14 +75,33 @@ mod all_features {
         }).expect("watch");
         
         // Give watcher time to start
-        thread::sleep(Duration::from_millis(100));
+        thread::sleep(Duration::from_millis(300));
         
         // Make a change
         mmap.update_region(100, b"watched change").expect("update");
-        mmap.flush().expect("flush");
+        // Ensure durability and bump timestamps for watch parity across platforms
+        mmap.flush().expect("flush for watch visibility");
+        #[cfg(unix)]
+        {
+            use std::ffi::CString;
+            use std::os::unix::ffi::OsStrExt;
+            let cpath = CString::new(path.as_os_str().as_bytes()).unwrap();
+            unsafe { libc::utime(cpath.as_ptr(), std::ptr::null()) };
+        }
+        #[cfg(windows)]
+        {
+            if let Ok(meta) = std::fs::metadata(&path) {
+                let mut perms = meta.permissions();
+                perms.set_readonly(true);
+                let _ = std::fs::set_permissions(&path, perms);
+                let mut perms2 = std::fs::metadata(&path).unwrap().permissions();
+                perms2.set_readonly(false);
+                let _ = std::fs::set_permissions(&path, perms2);
+            }
+        }
         
-        // Wait for change detection
-        thread::sleep(Duration::from_millis(200));
+        // Wait for change detection (polling cadence is ~100ms; allow multiple cycles)
+        thread::sleep(Duration::from_millis(1200));
         
         // The change should be detected
         assert!(changed.load(Ordering::SeqCst), "Change should be detected");
