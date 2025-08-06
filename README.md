@@ -125,7 +125,44 @@ fn main() -> std::io::Result<()> {
 }
 ```
 
-### Basic Operations
+### Flush Policy
+mmap-io supports configurable flush behavior for ReadWrite mappings via a FlushPolicy, allowing you to trade off durability and throughput.
+
+Policy variants:
+- FlushPolicy::Never / FlushPolicy::Manual: No automatic flushes. Call mmap.flush() when you want durability.
+- FlushPolicy::Always: Flush after every write; slowest but most durable.
+- FlushPolicy::EveryBytes(n): Accumulate bytes written across update_region() calls; flush when at least n bytes have been written.
+- FlushPolicy::EveryWrites(n): Flush after every n writes (calls to update_region()).
+- FlushPolicy::EveryMillis(ms): Reserved for future time-based flushing; currently behaves like Manual.
+
+Using the builder to set a policy:
+```rust
+use mmap_io::{MemoryMappedFile, MmapMode};
+use mmap_io::flush::FlushPolicy;
+
+let mmap = MemoryMappedFile::builder("file.bin")
+    .mode(MmapMode::ReadWrite)
+    .size(1_000_000)
+    .flush_policy(FlushPolicy::EveryBytes(256 * 1024)) // flush every 256KB written
+    .create()?;
+```
+
+Manual flush example:
+```rust
+use mmap_io::{create_mmap, update_region, flush};
+
+let mmap = create_mmap("data.bin", 1024 * 1024)?;
+update_region(&mmap, 0, b"batch1")?;
+// ... more batched writes ...
+flush(&mmap)?; // ensure durability now
+```
+
+Benchmark variants:
+- update_only: No flush between writes (Manual policy).
+- update_plus_flush: Explicit flush after each write.
+- update_threshold: Builder sets threshold to flush periodically to measure batching behavior.
+
+Note: On some platforms, visibility of writes without explicit flush may still occur due to OS behavior, but durability timing is best-effort without flush.
 
 Create a file, write to it, and read back:
 

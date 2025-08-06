@@ -83,6 +83,7 @@ Complete reference for public-facing APIs. Each item lists its signature, parame
   - [page_size](#page_size)
   - [align_up](#align_up)
 - **[Safety and Best Practices](#safety-and-best-practices)**
+- **[Flush Policy](#flush-policy)**
   - [Mapped Memory Access](#mapped-memory-access)
   - [Copy-On-Write Mode](#copy-on-write-cow-mode)
   - [Flushing Behavior](#flushing-behavior)
@@ -682,6 +683,50 @@ pub fn mode(&self) -> MmapMode
 **Description**: Returns the current mapping mode.
 
 **Returns**: `MmapMode`
+
+<br>
+
+## Flush Policy
+
+Configurable write flushing behavior for ReadWrite mappings.
+
+Enum:
+```rust
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum FlushPolicy {
+    Never,            // Manual control, no automatic flush
+    Manual,           // Alias of Never
+    Always,           // Flush after every write
+    EveryBytes(usize),// Flush when N bytes written since last flush
+    EveryWrites(usize), // Flush after W calls to update_region
+    EveryMillis(u64), // Reserved for time-based flushing (no-op currently)
+}
+```
+
+Default: FlushPolicy::Never
+
+Builder integration:
+```rust
+use mmap_io::{MemoryMappedFile, MmapMode};
+use mmap_io::flush::FlushPolicy;
+
+let mmap = MemoryMappedFile::builder("file.bin")
+    .mode(MmapMode::ReadWrite)
+    .size(1_000_000)
+    .flush_policy(FlushPolicy::EveryBytes(64 * 1024))
+    .create()?;
+```
+
+Behavior:
+- Never/Manual: internal counters are not used; user must call flush() explicitly.
+- Always: flush() is invoked after each update_region() call.
+- EveryBytes(n): increments a byte counter by the number of bytes written per update_region; when it reaches n, counter resets and flush() is called.
+- EveryWrites(w): increments a write counter per update_region; when it reaches w, counter resets and flush() is called.
+- EveryMillis(ms): currently behaves as Manual (no background thread).
+
+Notes:
+- Flush is best-effort and may not imply fsync semantics on all platforms.
+- COW mappings treat flush() as a no-op.
 
 <br>
 
