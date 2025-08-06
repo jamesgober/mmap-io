@@ -674,6 +674,8 @@ impl MemoryMappedFileBuilder {
                     map: MapVariant::Ro(mmap),
                     flush_policy: FlushPolicy::Never,
                     written_since_last_flush: RwLock::new(0),
+                    #[cfg(feature = "hugepages")]
+                    huge_pages: false,
                 };
                 Ok(MemoryMappedFile { inner: Arc::new(inner) })
             }
@@ -729,6 +731,8 @@ impl MemoryMappedFileBuilder {
                     map: MapVariant::Ro(mmap),
                     flush_policy: FlushPolicy::Never,
                     written_since_last_flush: RwLock::new(0),
+                    #[cfg(feature = "hugepages")]
+                    huge_pages: false,
                 };
                 Ok(MemoryMappedFile { inner: Arc::new(inner) })
             }
