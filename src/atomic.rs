@@ -53,12 +53,19 @@ impl MemoryMappedFile {
             crate::mmap::MapVariant::Cow(m) => m.as_ptr(),
         };
 
-        // SAFETY: We've validated alignment and bounds.
-        // The AtomicU64 reference is valid for the lifetime of self.
-        // Convert offset to usize with explicit overflow check
+        // SAFETY: Multiple invariants are guaranteed:
+        // 1. Alignment: We've verified offset % 8 == 0 (required for AtomicU64)
+        // 2. Bounds: We've verified offset + 8 <= total file size
+        // 3. Overflow: try_into() ensures offset fits in usize, preventing ptr arithmetic overflow
+        // 4. Lifetime: The returned reference is bound to 'self', ensuring the mapping outlives it
+        // 5. Validity: The memory is mapped and valid for the entire file size
+        // 6. Atomicity: The hardware guarantees atomic operations on aligned 8-byte values
         let offset_usize = offset.try_into()
             .map_err(|_| MmapIoError::OutOfBounds { offset, len: SIZE, total })?;
         unsafe {
+            // ptr.add() is safe because:
+            // - offset_usize is guaranteed to be within bounds (checked above)
+            // - The resulting pointer is within the mapped region
             let addr = ptr.add(offset_usize);
             let atomic_ptr = addr as *const AtomicU64;
             Ok(&*atomic_ptr)
@@ -113,12 +120,19 @@ impl MemoryMappedFile {
             crate::mmap::MapVariant::Cow(m) => m.as_ptr(),
         };
 
-        // SAFETY: We've validated alignment and bounds.
-        // The AtomicU32 reference is valid for the lifetime of self.
-        // Convert offset to usize with explicit overflow check
+        // SAFETY: Multiple invariants are guaranteed:
+        // 1. Alignment: We've verified offset % 4 == 0 (required for AtomicU32)
+        // 2. Bounds: We've verified offset + 4 <= total file size
+        // 3. Overflow: try_into() ensures offset fits in usize, preventing ptr arithmetic overflow
+        // 4. Lifetime: The returned reference is bound to 'self', ensuring the mapping outlives it
+        // 5. Validity: The memory is mapped and valid for the entire file size
+        // 6. Atomicity: The hardware guarantees atomic operations on aligned 4-byte values
         let offset_usize = offset.try_into()
             .map_err(|_| MmapIoError::OutOfBounds { offset, len: SIZE, total })?;
         unsafe {
+            // ptr.add() is safe because:
+            // - offset_usize is guaranteed to be within bounds (checked above)
+            // - The resulting pointer is within the mapped region
             let addr = ptr.add(offset_usize);
             let atomic_ptr = addr as *const AtomicU32;
             Ok(&*atomic_ptr)
@@ -168,14 +182,24 @@ impl MemoryMappedFile {
             crate::mmap::MapVariant::Cow(m) => m.as_ptr(),
         };
 
-        // SAFETY: We've validated alignment and bounds.
-        // The slice is valid for the lifetime of self.
-        // Convert offset to usize with explicit overflow check
+        // SAFETY: Multiple invariants are guaranteed:
+        // 1. Alignment: We've verified offset % 8 == 0 (required for AtomicU64 array)
+        // 2. Bounds: We've verified offset + (count * 8) <= total file size
+        // 3. Overflow: try_into() ensures offset fits in usize, preventing ptr arithmetic overflow
+        // 4. Lifetime: The returned slice is bound to 'self', ensuring the mapping outlives it
+        // 5. Validity: The memory is mapped and valid for the entire requested range
+        // 6. Atomicity: Each element in the slice maintains 8-byte alignment for atomic operations
         let offset_usize = offset.try_into()
             .map_err(|_| MmapIoError::OutOfBounds { offset, len: total_size, total })?;
         unsafe {
+            // ptr.add() is safe because:
+            // - offset_usize is guaranteed to be within bounds (checked above)
+            // - The resulting pointer is within the mapped region
             let addr = ptr.add(offset_usize);
             let atomic_ptr = addr as *const AtomicU64;
+            // from_raw_parts is safe because:
+            // - atomic_ptr points to valid, aligned memory
+            // - count elements fit within the mapped region (verified above)
             Ok(std::slice::from_raw_parts(atomic_ptr, count))
         }
     }
@@ -223,14 +247,24 @@ impl MemoryMappedFile {
             crate::mmap::MapVariant::Cow(m) => m.as_ptr(),
         };
 
-        // SAFETY: We've validated alignment and bounds.
-        // The slice is valid for the lifetime of self.
-        // Convert offset to usize with explicit overflow check
+        // SAFETY: Multiple invariants are guaranteed:
+        // 1. Alignment: We've verified offset % 4 == 0 (required for AtomicU32 array)
+        // 2. Bounds: We've verified offset + (count * 4) <= total file size
+        // 3. Overflow: try_into() ensures offset fits in usize, preventing ptr arithmetic overflow
+        // 4. Lifetime: The returned slice is bound to 'self', ensuring the mapping outlives it
+        // 5. Validity: The memory is mapped and valid for the entire requested range
+        // 6. Atomicity: Each element in the slice maintains 4-byte alignment for atomic operations
         let offset_usize = offset.try_into()
             .map_err(|_| MmapIoError::OutOfBounds { offset, len: total_size, total })?;
         unsafe {
+            // ptr.add() is safe because:
+            // - offset_usize is guaranteed to be within bounds (checked above)
+            // - The resulting pointer is within the mapped region
             let addr = ptr.add(offset_usize);
             let atomic_ptr = addr as *const AtomicU32;
+            // from_raw_parts is safe because:
+            // - atomic_ptr points to valid, aligned memory
+            // - count elements fit within the mapped region (verified above)
             Ok(std::slice::from_raw_parts(atomic_ptr, count))
         }
     }

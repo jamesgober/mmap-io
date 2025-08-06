@@ -142,6 +142,12 @@ impl MemoryMappedFile {
 
     /// Create a new file (truncating if exists) and memory-map it in read-write mode with the given size.
     ///
+    /// # Performance
+    ///
+    /// - **Time Complexity**: O(1) for mapping creation
+    /// - **Memory Usage**: Virtual address space of `size` bytes (physical memory allocated on demand)
+    /// - **I/O Operations**: One file creation, one truncate, one mmap syscall
+    ///
     /// # Errors
     ///
     /// Returns `MmapIoError::ResizeFailed` if size is zero or exceeds the maximum safe limit.
@@ -258,6 +264,12 @@ impl MemoryMappedFile {
     /// Get a zero-copy read-only slice for the given [offset, offset+len).
     /// For RW mappings, cannot return a reference bound to a temporary guard; use `read_into` instead.
     ///
+    /// # Performance
+    ///
+    /// - **Time Complexity**: O(1) - direct pointer access
+    /// - **Memory Usage**: No additional allocation (zero-copy)
+    /// - **Cache Behavior**: May trigger page faults on first access
+    ///
     /// # Errors
     ///
     /// Returns `MmapIoError::OutOfBounds` if range exceeds file bounds.
@@ -306,6 +318,12 @@ impl MemoryMappedFile {
 
     /// Copy the provided bytes into the mapped file at the given offset.
     /// Bounds-checked, zero-copy write.
+    ///
+    /// # Performance
+    ///
+    /// - **Time Complexity**: O(n) where n is data.len()
+    /// - **Memory Usage**: No additional allocation
+    /// - **I/O Operations**: May trigger flush based on flush policy
     ///
     /// # Errors
     ///
@@ -357,6 +375,13 @@ impl MemoryMappedFile {
     /// Smart internal guards:
     /// - Skip I/O when there are no pending writes (accumulator is zero)
     /// - On Linux, use msync(MS_ASYNC) as a cheaper hint; fall back to full flush on error
+    ///
+    /// # Performance
+    ///
+    /// - **Time Complexity**: O(n) where n is the size of dirty pages
+    /// - **I/O Operations**: Triggers disk write of modified pages
+    /// - **Optimization**: Skips flush if no writes since last flush
+    /// - **Platform**: Linux uses async msync for better performance
     ///
     /// # Errors
     ///
@@ -467,6 +492,13 @@ impl MemoryMappedFile {
     }
 
     /// Resize (grow or shrink) the mapped file (RW only). This remaps the file internally.
+    ///
+    /// # Performance
+    ///
+    /// - **Time Complexity**: O(1) for the remap operation
+    /// - **Memory Usage**: Allocates new virtual address space of `new_size`
+    /// - **I/O Operations**: File truncate/extend + new mmap syscall
+    /// - **Note**: Existing pointers/slices become invalid after resize
     ///
     /// # Errors
     ///
@@ -733,6 +765,12 @@ impl MemoryMappedFile {
 
     /// Read bytes from the mapping into the provided buffer starting at `offset`.
     /// Length is `buf.len()`; performs bounds checks.
+    ///
+    /// # Performance
+    ///
+    /// - **Time Complexity**: O(n) where n is buf.len()
+    /// - **Memory Usage**: Uses provided buffer, no additional allocation
+    /// - **Cache Behavior**: Sequential access pattern is cache-friendly
     ///
     /// # Errors
     ///
