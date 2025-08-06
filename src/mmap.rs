@@ -6,7 +6,7 @@ use std::{
     sync::Arc,
 };
 
-use memmap2::{Mmap, MmapMut, MmapOptions};
+use memmap2::{Mmap, MmapMut};
 use parking_lot::RwLock;
 
 use crate::errors::{MmapIoError, Result};
