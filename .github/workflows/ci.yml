@@ -40,3 +40,14 @@ jobs:
         uses: dtolnay/rust-toolchain@stable
       - name: Check all features
         run: cargo check --all-features
+
+  benchmarks:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install Rust (stable)
+        uses: dtolnay/rust-toolchain@stable
+      - name: Run Criterion benchmarks (no default features)
+        run: cargo bench --no-default-features
+      - name: Run Criterion benchmarks (all features)
+        run: cargo bench --all-features
