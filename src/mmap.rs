@@ -576,7 +576,7 @@ fn map_mut_with_options(file: &File, len: u64, huge: bool) -> Result<MmapMut> {
     #[cfg(not(all(unix, target_os = "linux")))]
     {
         let _ = (len, huge);
-        return unsafe { MmapMut::map_mut(file) }.map_err(|e| MmapIoError::Io(e.into()));
+        unsafe { MmapMut::map_mut(file) }.map_err(MmapIoError::Io)
     }
 }
 

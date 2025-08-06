@@ -165,7 +165,7 @@ mod tests {
         use crate::mmap::MemoryMappedFile;
 
         let file_path = "test_advise_ops.tmp";
-        std::fs::write(file_path, &[0u8; 4096]).unwrap();
+        std::fs::write(file_path, [0u8; 4096]).unwrap();
 
         // Use create_rw to open the file in read-write mode
         let file = MemoryMappedFile::create_rw(file_path, 4096).unwrap();
@@ -177,7 +177,7 @@ mod tests {
 
         // Call advise on full region
         let len = file.len();
-        file.advise(0, len as u64, MmapAdvice::Sequential).expect("memory advice sequential failed");
+        file.advise(0, len, MmapAdvice::Sequential).expect("memory advice sequential failed");
 
         std::fs::remove_file(file_path).unwrap();
     }

@@ -4,9 +4,10 @@
 //! Controls when writes to a RW mapping should be flushed to disk.
 
 /// Policy controlling when to flush dirty pages to disk.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum FlushPolicy {
     /// Never flush implicitly; flush() must be called by the user.
+    #[default]
     Never,
     /// Alias of Never for semantic clarity when using the builder API.
     Manual,
@@ -20,8 +21,3 @@ pub enum FlushPolicy {
     EveryMillis(u64),
 }
 
-impl Default for FlushPolicy {
-    fn default() -> Self {
-        FlushPolicy::Never
-    }
-}

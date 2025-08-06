@@ -209,7 +209,7 @@ mod tests {
         let event_count_clone = Arc::clone(&event_count);
 
         let _handle = mmap.watch(move |event| {
-            println!("Detected change: {:?}", event);
+            println!("Detected change: {event:?}");
             changed_clone.store(true, Ordering::SeqCst);
             event_count_clone.fetch_add(1, Ordering::SeqCst);
         }).expect("watch");

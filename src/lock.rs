@@ -234,7 +234,7 @@ mod tests {
             mmap.unlock(0, 4096).expect("unlock should succeed after lock");
         } else {
             // Expected on systems without privileges
-            println!("Lock failed (expected without privileges): {:?}", lock_result);
+            println!("Lock failed (expected without privileges): {lock_result:?}");
         }
 
         // Test empty range (should be no-op)
