@@ -19,6 +19,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `hugepages` Flag to `Cargo.toml` Features.
 - `Huge Pages` Feature.
 - Test case for `Huge Pages`.
+- `Async-Only Flushing` support.
+- `async_flush.rs` file for `Async-Only Flushing` support.
+- Test case for `Async-Only Flushing`.
+
 
 ### Changed
 - `Optional Features` in `README.md` to include `hugepages` Flag.
