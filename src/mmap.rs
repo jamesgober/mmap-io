@@ -152,7 +152,7 @@ impl MemoryMappedFile {
         }
         if size > MAX_MMAP_SIZE {
             return Err(MmapIoError::ResizeFailed(
-                format!("Size {} exceeds maximum safe limit of {} bytes", size, MAX_MMAP_SIZE)
+                format!("Size {size} exceeds maximum safe limit of {MAX_MMAP_SIZE} bytes")
             ));
         }
         let path_ref = path.as_ref();
@@ -502,7 +502,7 @@ impl MemoryMappedFile {
         }
         if new_size > MAX_MMAP_SIZE {
             return Err(MmapIoError::ResizeFailed(
-                format!("New size {} exceeds maximum safe limit of {} bytes", new_size, MAX_MMAP_SIZE)
+                format!("New size {new_size} exceeds maximum safe limit of {MAX_MMAP_SIZE} bytes")
             ));
         }
 
@@ -563,11 +563,9 @@ fn map_mut_with_options(file: &File, len: u64, huge: bool) -> Result<MmapMut> {
     {
         use std::os::fd::AsRawFd;
         if huge {
-            // Safety: we construct a mapping with custom flags using libc::mmap and wrap it into MmapMut.
-            // memmap2 does not expose MAP_HUGETLB; we fallback to native call and then build from raw parts.
+            // Try to use huge pages via mmap with MAP_HUGETLB flag
             unsafe {
                 let prot = libc::PROT_READ | libc::PROT_WRITE;
-                // Use private + shared semantics equivalent to memmap2 default for RW mapping
                 let flags = libc::MAP_SHARED | libc::MAP_HUGETLB;
                 let addr = libc::mmap(
                     std::ptr::null_mut(),
@@ -577,26 +575,48 @@ fn map_mut_with_options(file: &File, len: u64, huge: bool) -> Result<MmapMut> {
                     file.as_raw_fd(),
                     0,
                 );
+                
                 if addr == libc::MAP_FAILED {
-                    // Fallback: standard mapping
+                    // Huge pages not available or failed, fall back to regular mapping
+                    // This is expected behavior - huge pages may not be configured on the system
                     return MmapMut::map_mut(file).map_err(|e| MmapIoError::Io(e.into()));
                 }
-                // Create MmapMut from raw parts using memmap2 API
-                // SAFETY: memmap2 provides MmapMut::map_mut which does mmap internally; it doesn't expose from_raw.
-                // Since memmap2 has no from_raw stable API, we must unmap and fall back if custom mmap is not viable.
-                // Therefore, we simply fall back to memmap2 map_mut as above if custom mmap not possible.
-                // If we reached here, custom mmap succeeded; but memmap2 cannot adopt it, so we will munmap and fall back to map_mut.
+                
+                // Successfully mapped with huge pages!
+                // Since memmap2 doesn't expose a way to create MmapMut from raw pointer,
+                // we need to use the raw mapping directly. However, for safety and compatibility
+                // with the rest of the codebase, we'll create a custom wrapper.
+                //
+                // IMPORTANT: The current memmap2 API doesn't support adopting external mappings.
+                // The best approach is to try MAP_HUGETLB first, and if it succeeds,
+                // we know huge pages are available. Then we can hint the kernel about our
+                // preference and let memmap2 handle the actual mapping.
+                //
+                // First, unmap our test mapping
                 libc::munmap(addr, len as usize);
-                return MmapMut::map_mut(file).map_err(|e| MmapIoError::Io(e.into()));
+                
+                // Now use madvise to hint that we want huge pages for this region
+                // This is done after memmap2 creates the mapping
+                let mmap = MmapMut::map_mut(file).map_err(|e| MmapIoError::Io(e.into()))?;
+                
+                // Apply MADV_HUGEPAGE hint to encourage huge page usage
+                let mmap_ptr = mmap.as_ptr() as *mut libc::c_void;
+                let ret = libc::madvise(mmap_ptr, len as usize, libc::MADV_HUGEPAGE);
+                if ret != 0 {
+                    // madvise failed, but the mapping is still valid
+                    // Continue with regular pages
+                }
+                
+                return Ok(mmap);
             }
         } else {
-            return unsafe { MmapMut::map_mut(file) }.map_err(|e| MmapIoError::Io(e.into()));
+            return unsafe { MmapMut::map_mut(file) }.map_err(MmapIoError::Io);
         }
     }
     #[cfg(not(all(unix, target_os = "linux")))]
     {
         let _ = (len, huge);
-        unsafe { MmapMut::map_mut(file) }.map_err(MmapIoError::Io)
+        unsafe { MmapMut::map_mut(file) }.map_err(|e| MmapIoError::Io(e.into()))
     }
 }
 
@@ -779,7 +799,7 @@ impl MemoryMappedFileBuilder {
                 }
                 if size > MAX_MMAP_SIZE {
                     return Err(MmapIoError::ResizeFailed(
-                        format!("Size {} exceeds maximum safe limit of {} bytes", size, MAX_MMAP_SIZE)
+                        format!("Size {size} exceeds maximum safe limit of {MAX_MMAP_SIZE} bytes")
                     ));
                 }
                 let path_ref = &self.path;
