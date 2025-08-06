@@ -49,6 +49,9 @@ pub mod mmap;
 pub mod segment;
 pub mod manager;
 
+/// Provides functions for flushing memory-mapped file changes to disk.
+pub mod flush;
+
 #[cfg(feature = "advise")]
 pub mod advise;
 

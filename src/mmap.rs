@@ -8,6 +8,8 @@ use std::{
 
 use memmap2::{Mmap, MmapMut};
 
+use crate::flush::FlushPolicy;
+
 #[cfg(feature = "cow")]
 use memmap2::MmapOptions;
 
@@ -40,6 +42,9 @@ pub struct Inner {
     pub(crate) cached_len: RwLock<u64>,
     // The mapping itself. We use an enum to hold either RO or RW mapping.
     pub(crate) map: MapVariant,
+    // Flush policy and accounting (RW only)
+    pub(crate) flush_policy: FlushPolicy,
+    pub(crate) written_since_last_flush: RwLock<u64>,
 }
 
 #[doc(hidden)]
@@ -95,6 +100,27 @@ impl std::fmt::Debug for MemoryMappedFile {
 }
 
 impl MemoryMappedFile {
+    /// Builder for constructing a MemoryMappedFile with custom options.
+    ///
+    /// Example:
+    /// ```
+    /// # use mmap_io::{MemoryMappedFile, MmapMode};
+    /// # use mmap_io::flush::FlushPolicy;
+    /// // let mmap = MemoryMappedFile::builder("file.bin")
+    /// //     .mode(MmapMode::ReadWrite)
+    /// //     .size(1_000_000)
+    /// //     .flush_policy(FlushPolicy::EveryBytes(1_000_000))
+    /// //     .create().unwrap();
+    /// ```
+    pub fn builder<P: AsRef<Path>>(path: P) -> MemoryMappedFileBuilder {
+        MemoryMappedFileBuilder {
+            path: path.as_ref().to_path_buf(),
+            size: None,
+            mode: None,
+            flush_policy: FlushPolicy::default(),
+        }
+    }
+
     /// Create a new file (truncating if exists) and memory-map it in read-write mode with the given size.
     ///
     /// # Errors
@@ -122,6 +148,8 @@ impl MemoryMappedFile {
             mode: MmapMode::ReadWrite,
             cached_len: RwLock::new(size),
             map: MapVariant::Rw(RwLock::new(mmap)),
+            flush_policy: FlushPolicy::default(),
+            written_since_last_flush: RwLock::new(0),
         };
         Ok(Self { inner: Arc::new(inner) })
     }
@@ -143,6 +171,8 @@ impl MemoryMappedFile {
             mode: MmapMode::ReadOnly,
             cached_len: RwLock::new(len),
             map: MapVariant::Ro(mmap),
+            flush_policy: FlushPolicy::Never,
+            written_since_last_flush: RwLock::new(0),
         };
         Ok(Self { inner: Arc::new(inner) })
     }
@@ -169,6 +199,8 @@ impl MemoryMappedFile {
             mode: MmapMode::ReadWrite,
             cached_len: RwLock::new(len),
             map: MapVariant::Rw(RwLock::new(mmap)),
+            flush_policy: FlushPolicy::default(),
+            written_since_last_flush: RwLock::new(0),
         };
         Ok(Self { inner: Arc::new(inner) })
     }
@@ -206,9 +238,7 @@ impl MemoryMappedFile {
                 let (start, end) = slice_range(offset, len, total)?;
                 Ok(&m[start..end])
             }
-            MapVariant::Rw(_lock) => {
-                Err(MmapIoError::InvalidMode("use read_into for RW mappings"))
-            }
+            MapVariant::Rw(_lock) => Err(MmapIoError::InvalidMode("use read_into for RW mappings")),
             MapVariant::Cow(m) => {
                 let (start, end) = slice_range(offset, len, total)?;
                 Ok(&m[start..end])
@@ -261,8 +291,12 @@ impl MemoryMappedFile {
         match &self.inner.map {
             MapVariant::Ro(_) => Err(MmapIoError::InvalidMode("Cannot write to read-only mapping.")),
             MapVariant::Rw(lock) => {
-                let mut guard = lock.write();
-                guard[start..end].copy_from_slice(data);
+                {
+                    let mut guard = lock.write();
+                    guard[start..end].copy_from_slice(data);
+                }
+                // Apply flush policy
+                self.apply_flush_policy(len)?;
                 Ok(())
             }
             MapVariant::Cow(_) => Err(MmapIoError::InvalidMode("Cannot write to copy-on-write mapping (phase-1 read-only).")),
@@ -302,7 +336,9 @@ impl MemoryMappedFile {
             MapVariant::Rw(lock) => {
                 let guard = lock.read();
                 let (start, end) = slice_range(offset, len, self.current_len()?)?;
-                guard.flush_range(start, end - start).map_err(|e| MmapIoError::FlushFailed(e.to_string()))
+                guard
+                    .flush_range(start, end - start)
+                    .map_err(|e| MmapIoError::FlushFailed(e.to_string()))
             }
         }
     }
@@ -408,12 +444,55 @@ impl MemoryMappedFile {
             mode: MmapMode::CopyOnWrite,
             cached_len: RwLock::new(len),
             map: MapVariant::Cow(mmap),
+            // COW never flushes underlying file in phase-1
+            flush_policy: FlushPolicy::Never,
+            written_since_last_flush: RwLock::new(0),
         };
         Ok(Self { inner: Arc::new(inner) })
     }
 }
 
 impl MemoryMappedFile {
+    fn apply_flush_policy(&self, written: u64) -> Result<()> {
+        use crate::flush::FlushPolicy::*;
+        match self.inner.flush_policy {
+            FlushPolicy::Never | FlushPolicy::Manual => Ok(()),
+            FlushPolicy::Always => self.flush(),
+            FlushPolicy::EveryBytes(n) => {
+                let n = n as u64;
+                if n == 0 {
+                    return Ok(());
+                }
+                let mut acc = self.inner.written_since_last_flush.write();
+                *acc += written;
+                if *acc >= n {
+                    *acc = 0;
+                    self.flush()
+                } else {
+                    Ok(())
+                }
+            }
+            FlushPolicy::EveryWrites(w) => {
+                if w == 0 {
+                    return Ok(());
+                }
+                let mut acc = self.inner.written_since_last_flush.write();
+                *acc += 1;
+                if *acc >= w as u64 {
+                    *acc = 0;
+                    self.flush()
+                } else {
+                    Ok(())
+                }
+            }
+            FlushPolicy::EveryMillis(_ms) => {
+                // Phase-1: timer-based flushing is not implemented inside core to avoid background threads.
+                // Users can drive time-based flushing externally. Treat as Manual here.
+                Ok(())
+            }
+        }
+    }
+
     /// Return the up-to-date file length (cached).
     /// This ensures length remains correct even after resize.
     ///
@@ -450,6 +529,183 @@ impl MemoryMappedFile {
                 let (start, end) = slice_range(offset, len, total)?;
                 buf.copy_from_slice(&m[start..end]);
                 Ok(())
+            }
+        }
+    }
+}
+
+/// Builder for MemoryMappedFile construction with options.
+pub struct MemoryMappedFileBuilder {
+    path: PathBuf,
+    size: Option<u64>,
+    mode: Option<MmapMode>,
+    flush_policy: FlushPolicy,
+}
+
+impl MemoryMappedFileBuilder {
+    /// Specify the size (required for create/ReadWrite new files).
+    pub fn size(mut self, size: u64) -> Self {
+        self.size = Some(size);
+        self
+    }
+
+    /// Specify the mode (ReadOnly, ReadWrite, CopyOnWrite).
+    pub fn mode(mut self, mode: MmapMode) -> Self {
+        self.mode = Some(mode);
+        self
+    }
+
+    /// Specify the flush policy.
+    pub fn flush_policy(mut self, policy: FlushPolicy) -> Self {
+        self.flush_policy = policy;
+        self
+    }
+
+    /// Create a new mapping; for ReadWrite requires size for creation.
+    pub fn create(self) -> Result<MemoryMappedFile> {
+        let mode = self.mode.unwrap_or(MmapMode::ReadWrite);
+        match mode {
+            MmapMode::ReadWrite => {
+                let size = self.size.ok_or_else(|| {
+                    MmapIoError::ResizeFailed("Size must be set for create() in ReadWrite mode".into())
+                })?;
+                let path_ref = &self.path;
+                let file = OpenOptions::new()
+                    .create(true)
+                    .write(true)
+                    .read(true)
+                    .truncate(true)
+                    .open(path_ref)?;
+                file.set_len(size)?;
+                let mmap = unsafe { MmapMut::map_mut(&file)? };
+                let inner = Inner {
+                    path: path_ref.clone(),
+                    file,
+                    mode,
+                    cached_len: RwLock::new(size),
+                    map: MapVariant::Rw(RwLock::new(mmap)),
+                    flush_policy: self.flush_policy,
+                    written_since_last_flush: RwLock::new(0),
+                };
+                Ok(MemoryMappedFile { inner: Arc::new(inner) })
+            }
+            MmapMode::ReadOnly => {
+                let path_ref = &self.path;
+                let file = OpenOptions::new().read(true).open(path_ref)?;
+                let len = file.metadata()?.len();
+                let mmap = unsafe { Mmap::map(&file)? };
+                let inner = Inner {
+                    path: path_ref.clone(),
+                    file,
+                    mode,
+                    cached_len: RwLock::new(len),
+                    map: MapVariant::Ro(mmap),
+                    flush_policy: FlushPolicy::Never,
+                    written_since_last_flush: RwLock::new(0),
+                };
+                Ok(MemoryMappedFile { inner: Arc::new(inner) })
+            }
+            MmapMode::CopyOnWrite => {
+                #[cfg(feature = "cow")]
+                {
+                    let path_ref = &self.path;
+                    let file = OpenOptions::new().read(true).open(path_ref)?;
+                    let len = file.metadata()?.len();
+                    if len == 0 {
+                        return Err(MmapIoError::ResizeFailed(ERR_ZERO_LENGTH_FILE.into()));
+                    }
+                    let mmap = unsafe {
+                        let mut opts = MmapOptions::new();
+                        opts.len(len as usize);
+                        opts.map(&file)?
+                    };
+                    let inner = Inner {
+                        path: path_ref.clone(),
+                        file,
+                        mode,
+                        cached_len: RwLock::new(len),
+                        map: MapVariant::Cow(mmap),
+                        flush_policy: FlushPolicy::Never,
+                        written_since_last_flush: RwLock::new(0),
+                    };
+                    Ok(MemoryMappedFile { inner: Arc::new(inner) })
+                }
+                #[cfg(not(feature = "cow"))]
+                {
+                    Err(MmapIoError::InvalidMode("CopyOnWrite mode requires 'cow' feature"))
+                }
+            }
+        }
+    }
+
+    /// Open an existing file with provided mode (size ignored).
+    pub fn open(self) -> Result<MemoryMappedFile> {
+        let mode = self.mode.unwrap_or(MmapMode::ReadOnly);
+        match mode {
+            MmapMode::ReadOnly => {
+                let path_ref = &self.path;
+                let file = OpenOptions::new().read(true).open(path_ref)?;
+                let len = file.metadata()?.len();
+                let mmap = unsafe { Mmap::map(&file)? };
+                let inner = Inner {
+                    path: path_ref.clone(),
+                    file,
+                    mode,
+                    cached_len: RwLock::new(len),
+                    map: MapVariant::Ro(mmap),
+                    flush_policy: FlushPolicy::Never,
+                    written_since_last_flush: RwLock::new(0),
+                };
+                Ok(MemoryMappedFile { inner: Arc::new(inner) })
+            }
+            MmapMode::ReadWrite => {
+                let path_ref = &self.path;
+                let file = OpenOptions::new().read(true).write(true).open(path_ref)?;
+                let len = file.metadata()?.len();
+                if len == 0 {
+                    return Err(MmapIoError::ResizeFailed(ERR_ZERO_LENGTH_FILE.into()));
+                }
+                let mmap = unsafe { MmapMut::map_mut(&file)? };
+                let inner = Inner {
+                    path: path_ref.clone(),
+                    file,
+                    mode,
+                    cached_len: RwLock::new(len),
+                    map: MapVariant::Rw(RwLock::new(mmap)),
+                    flush_policy: self.flush_policy,
+                    written_since_last_flush: RwLock::new(0),
+                };
+                Ok(MemoryMappedFile { inner: Arc::new(inner) })
+            }
+            MmapMode::CopyOnWrite => {
+                #[cfg(feature = "cow")]
+                {
+                    let path_ref = &self.path;
+                    let file = OpenOptions::new().read(true).open(path_ref)?;
+                    let len = file.metadata()?.len();
+                    if len == 0 {
+                        return Err(MmapIoError::ResizeFailed(ERR_ZERO_LENGTH_FILE.into()));
+                    }
+                    let mmap = unsafe {
+                        let mut opts = MmapOptions::new();
+                        opts.len(len as usize);
+                        opts.map(&file)?
+                    };
+                    let inner = Inner {
+                        path: path_ref.clone(),
+                        file,
+                        mode,
+                        cached_len: RwLock::new(len),
+                        map: MapVariant::Cow(mmap),
+                        flush_policy: FlushPolicy::Never,
+                        written_since_last_flush: RwLock::new(0),
+                    };
+                    Ok(MemoryMappedFile { inner: Arc::new(inner) })
+                }
+                #[cfg(not(feature = "cow"))]
+                {
+                    Err(MmapIoError::InvalidMode("CopyOnWrite mode requires 'cow' feature"))
+                }
             }
         }
     }
