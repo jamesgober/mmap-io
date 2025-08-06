@@ -162,7 +162,6 @@ fn bench_resize(b: &mut Criterion) {
 
 #[cfg(feature = "iterator")]
 fn bench_iterator_chunks(b: &mut Criterion) {
-    use mmap_io::iterator::ChunkIterator;
     let mut group = b.benchmark_group("iterator_chunks");
     let sz = 4 * 1024 * 1024;
     group.throughput(Throughput::Bytes(sz as u64));
