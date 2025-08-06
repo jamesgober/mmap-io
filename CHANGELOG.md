@@ -15,6 +15,30 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+ 
+
+<br>
+
+
+<!-- VERSION: 0.9.0 -->
+## [0.9.0] - 2025-08-06
+
+### Fixed
+- Critical Issues in `atomic.rs`.
+- Critical Issues in `mmap.rs`.
+- Performance Issues in `mmap.rs`.
+- Efficiency Issues in `iterator.rs`.
+- Efficiency Issues in `segment.rs`.
+- Code Quality in `watch.rs`.
+- Code Quality in `mmap.rs`.
+
+
+<br>
+
+
+<!-- VERSION: 0.8.0 -->
+## [0.8.0] - 2025-08-06
+
 ### Added
 - `hugepages` Flag to `Cargo.toml` Features.
 - `Huge Pages` Feature.
@@ -40,15 +64,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 <br>
 
 
-<!-- VERSION: 0.8.0
-## [0.8.0] - 2025-08-06
- -->
-
-
-
-<br>
-
-
 <!-- VERSION: 0.7.5 -->
 ## [0.7.5] - 2025-08-06
 
@@ -61,8 +76,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Changed
 - Extended `MmapFile` in `mmap.rs` to store the `flush_policy`.
 
-### Fix
+### Fixed
  - Fix Build Error (Windows)[cannot find value `current`] in `mmap.rs`.
+
 
 <br>
 
@@ -79,7 +95,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Fixed deprecated command in `ci.yml`.
 - Fixed warning in `mmap.rs`.
 
+
 <br>
+
 
 <!-- VERSION: 0.7.2 -->
 ## [0.7.2] - 2025-08-05
@@ -98,7 +116,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Updated Cargo Default Features.
 - Updated GitHub Actions (CI) to include basic test build with all features.
 
+
 <br>
+
 
 <!-- VERSION: 0.7.1 -->
 ## [0.7.1] - 2025-08-05
@@ -117,7 +137,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Changed
 - Updated README.
 
+
 <br>
+
 
 <!-- VERSION: 0.2.0 -->
 ## [0.2.0] - 2025-08-05
@@ -128,13 +150,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Basic README.
 
 
-<!-- LINK REFERENCE -->
-[unreleased]: https://github.com/asotex/mmap-io/compare/v0.7.3...HEAD
 
-[0.8.1]: https://github.com/asotex/mmap-io/compare/v0.8.0...v0.8.1
+
+<!-- LINK REFERENCE -->
+[unreleased]: https://github.com/asotex/mmap-io/compare/v0.9.0...HEAD
+
+[0.9.0]: https://github.com/asotex/mmap-io/compare/v0.8.0...v0.9.0
 [0.8.0]: https://github.com/asotex/mmap-io/compare/v0.7.5...v0.8.0
 [0.7.5]: https://github.com/asotex/mmap-io/compare/v0.7.3...v0.7.5
-
 [0.7.3]: https://github.com/asotex/mmap-io/compare/v0.7.2...v0.7.3
 [0.7.2]: https://github.com/asotex/mmap-io/compare/0.7.1...v0.7.2
 [0.7.1]: https://github.com/asotex/mmap-io/compare/0.2.0...0.7.1
