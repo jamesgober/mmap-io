@@ -148,7 +148,7 @@ By default, the following features are enabled:
 > Add the following to your Cargo.toml file:
 ```toml
 [dependencies]
-mmap-io = { version = "0.9.3" }
+mmap-io = { version = "0.9.4" }
 ```
 
 > Or install using Cargo:
@@ -164,7 +164,7 @@ Enable additional features by using the pre-defined [features flags](#features) 
 > ##### Manual Install with Features:
 ```toml
 [dependencies]
-mmap-io = { version = 0.9.3", features = ["cow", "locking"] }
+mmap-io = { version = 0.9.4", features = ["cow", "locking"] }
 ```
 > ##### Cargo Install with Features:
 ```bash
@@ -1547,7 +1547,8 @@ for handle in handles {
 <br><br>
 
 ## Version History
-- **0.9.3**: Fixed Remaining Issues, Finalized Codebase for 
+- **0.9.4**: Production-Ready Performance 
+- **0.9.3**: Final optimizations, cleaned codebase.
 - **0.9.0**: Fixed Remaining Issues, Finalized Codebase for Stable Beta Release.
 - **0.8.0**: Added Async-Only Flushing APIs; Platform Parity docs and tests; Huge Pages docs.
 - **0.7.5**: Added Flush Policy.

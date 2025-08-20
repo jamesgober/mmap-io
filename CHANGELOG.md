@@ -16,6 +16,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 
+<br>
+
+<!-- VERSION: 0.9.4 -->
+## [0.9.4] - 2025-08-20
+
+### Added
+- Final update and publish.
+
 
 <br>
 
@@ -182,7 +190,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 
 <!-- LINK REFERENCE -->
-[unreleased]: https://github.com/asotex/mmap-io/compare/v0.9.3...HEAD
+[unreleased]: https://github.com/asotex/mmap-io/compare/v0.9.4...HEAD
+[0.9.4]: https://github.com/asotex/mmap-io/compare/v0.9.3...v0.9.4
 [0.9.3]: https://github.com/asotex/mmap-io/compare/v0.9.0...v0.9.3
 [0.9.0]: https://github.com/asotex/mmap-io/compare/v0.8.0...v0.9.0
 [0.8.0]: https://github.com/asotex/mmap-io/compare/v0.7.5...v0.8.0

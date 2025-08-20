@@ -71,20 +71,20 @@ By default, the following features are enabled:
 > Add to your Cargo.toml:
 ```toml
 [dependencies]
-mmap-io = { version = "0.9.3" }
+mmap-io = { version = "0.9.4" }
 ```
 <br>
 
 > Enable **async** helpers (`Tokio`) when needed:
 ```toml
 [dependencies]
-mmap-io = { version = "0.9.3", features = ["async"] }
+mmap-io = { version = "0.9.4", features = ["async"] }
 ```
 
 > Or, enable other features like: `cow`, `locking`, or `advise`
 ```toml
 [dependencies]
-mmap-io = { version = "0.9.3, features = ["cow", "locking"] }
+mmap-io = { version = "0.9.4, features = ["cow", "locking"] }
 ```
 See full list of [Features](#optional-features) (shown above).
 
@@ -93,7 +93,7 @@ See full list of [Features](#optional-features) (shown above).
 If you're building for minimal environments or want total control over feature flags, you can disable default features by using `default-features = false` (see below).
 ```toml
 [dependencies]
-mmap-io = { version = "0.9.3", default-features = false, features = ["locking"] }
+mmap-io = { version = "0.9.4", default-features = false, features = ["locking"] }
 ```
 
 <br>
