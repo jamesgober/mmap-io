@@ -1151,7 +1151,9 @@ impl MemoryMappedFileBuilder {
                 // This is a placeholder for future implementation.
                 if let FlushPolicy::EveryMillis(ms) = self.flush_policy {
                     if ms > 0 {
-                        log::debug!("Time-based flushing policy set to {ms} ms (implementation simplified)");
+                        log::debug!(
+                            "Time-based flushing policy set to {ms} ms (implementation simplified)"
+                        );
                     }
                 }
 

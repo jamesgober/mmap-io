@@ -262,10 +262,7 @@ fn concurrent_access() {
         thread::sleep(Duration::from_millis(10));
     }
 
-    if let Err(e) = handle
-        .join()
-        .map_err(|e| format!("Thread panicked: {e:?}"))
-    {
+    if let Err(e) = handle.join().map_err(|e| format!("Thread panicked: {e:?}")) {
         panic!("Thread panicked: {e:?}");
     }
 
