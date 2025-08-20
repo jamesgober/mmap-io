@@ -430,10 +430,8 @@ impl MemoryMappedFile {
                 #[cfg(all(unix, target_os = "linux"))]
                 {
                     if let Ok(len) = self.current_len() {
-                        if len > 0 {
-                            if self.try_linux_async_flush(len as usize)? {
-                                return Ok(());
-                            }
+                        if len > 0 && self.try_linux_async_flush(len as usize)? {
+                            return Ok(());
                         }
                     }
                 }
@@ -528,8 +526,7 @@ impl MemoryMappedFile {
                         let guard = lock.read();
                         let base = guard.as_ptr();
                         let ptr = unsafe { base.add(optimized_start) } as *mut libc::c_void;
-                        let ret = unsafe { libc::msync(ptr, optimized_len, libc::MS_ASYNC) };
-                        ret
+                        unsafe { libc::msync(ptr, optimized_len, libc::MS_ASYNC) }
                     };
                     if msync_res == 0 {
                         // Consider MS_ASYNC success and reset accumulator
