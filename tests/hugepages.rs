@@ -127,8 +127,8 @@ fn test_hugepages_large_file() {
 
     // Test writing at various offsets
     let test_cases = vec![
-        (0, b"Start of file"),
-        (1024 * 1024, b"At 1MB......"),    // 13 bytes
+        (0, b"Start of file"),           // 13 bytes
+        (1024 * 1024, b"At 1MB......"),  // 13 bytes
         (8 * 1024 * 1024, b"At 8MB......"), // 13 bytes
         (size - 100, b"Near end...."),      // 13 bytes
     ];
