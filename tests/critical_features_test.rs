@@ -41,7 +41,9 @@ fn test_hugepages_fallback_behavior() {
         assert_eq!(&buf, b"huge page test");
     }
 
-    fs::remove_file(&path).expect("cleanup");
+    // Ignore NotFound since the file may not have been created when the
+    // `hugepages` feature is disabled on the CI runner.
+    let _ = fs::remove_file(&path);
 }
 
 #[test]
