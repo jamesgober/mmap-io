@@ -61,7 +61,7 @@ fn test_touch_hint_eager() {
         .expect("create with eager touch");
     let creation_time = start.elapsed();
 
-    println!("Creation with eager touch took: {:?}", creation_time);
+    println!("Creation with eager touch took: {creation_time:?}");
 
     // Subsequent access should be faster (no page faults)
     let start = Instant::now();
@@ -71,7 +71,7 @@ fn test_touch_hint_eager() {
     }
     let write_time = start.elapsed();
 
-    println!("Writing after eager touch took: {:?}", write_time);
+    println!("Writing after eager touch took: {write_time:?}");
 
     fs::remove_file(&path).expect("cleanup");
 }
@@ -91,7 +91,7 @@ fn test_touch_hint_never() {
         .expect("create with no touch");
     let creation_time = start.elapsed();
 
-    println!("Creation with no touch took: {:?}", creation_time);
+    println!("Creation with no touch took: {creation_time:?}");
 
     // First access may have page faults
     let start = Instant::now();
@@ -101,7 +101,7 @@ fn test_touch_hint_never() {
     }
     let write_time = start.elapsed();
 
-    println!("First write (with page faults) took: {:?}", write_time);
+    println!("First write (with page faults) took: {write_time:?}");
 
     fs::remove_file(&path).expect("cleanup");
 }
@@ -149,7 +149,7 @@ fn test_microflush_optimization() {
     mmap.flush_range(0, 256).expect("microflush");
     let microflush_time = start.elapsed();
 
-    println!("Microflush optimization took: {:?}", microflush_time);
+    println!("Microflush optimization took: {microflush_time:?}");
 
     // Verify data was flushed
     let ro_mmap = MemoryMappedFile::open_ro(&path).expect("open ro");
@@ -204,30 +204,5 @@ fn test_comprehensive_feature_combination() {
     }
 
     println!("Comprehensive feature test completed successfully");
-
     fs::remove_file(&path).expect("cleanup");
-}
-
-fn main() {
-    println!("Running critical feature tests...");
-
-    test_hugepages_fallback_behavior();
-    println!("✓ Huge pages fallback behavior test passed");
-
-    test_touch_hint_eager();
-    println!("✓ TouchHint::Eager test passed");
-
-    test_touch_hint_never();
-    println!("✓ TouchHint::Never test passed");
-
-    test_time_based_flushing_policy();
-    println!("✓ Time-based flushing policy test passed");
-
-    test_microflush_optimization();
-    println!("✓ Microflush optimization test passed");
-
-    test_comprehensive_feature_combination();
-    println!("✓ Comprehensive feature combination test passed");
-
-    println!("\nAll critical feature tests passed! 🎉");
 }

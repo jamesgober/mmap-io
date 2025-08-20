@@ -51,3 +51,23 @@ jobs:
         run: cargo bench --no-default-features
       - name: Run Criterion benchmarks (all features)
         run: cargo bench --all-features
+    
+
+  # Code quality checks
+  quality:
+    name: Code Quality
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
+
+      - name: Check formatting
+        run: cargo fmt --all -- --check
+
+      - name: Clippy analysis
+        run: cargo clippy --workspace --all-features --all-targets -- -D warnings

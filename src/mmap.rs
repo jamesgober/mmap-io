@@ -791,7 +791,7 @@ fn map_mut_with_options(file: &File, len: u64, huge: bool) -> Result<MmapMut> {
         }
 
         // Create standard mapping
-        let mmap = unsafe { MmapMut::map_mut(file) }.map_err(|e| MmapIoError::Io(e.into()))?;
+        let mmap = unsafe { MmapMut::map_mut(file) }.map_err(MmapIoError::Io)?;
 
         if huge {
             // Request Transparent Huge Pages (THP) for existing mapping
@@ -816,7 +816,7 @@ fn map_mut_with_options(file: &File, len: u64, huge: bool) -> Result<MmapMut> {
     {
         // Huge pages are Linux-specific, ignore the flag on other platforms
         let _ = (len, huge);
-        unsafe { MmapMut::map_mut(file) }.map_err(|e| MmapIoError::Io(e.into()))
+        unsafe { MmapMut::map_mut(file) }.map_err(MmapIoError::Io)
     }
 }
 
@@ -830,7 +830,7 @@ fn try_create_optimized_mapping(file: &File, len: u64) -> Result<MmapMut> {
 
     if len >= HUGE_PAGE_SIZE {
         // Create the mapping and immediately advise huge pages
-        let mmap = unsafe { MmapMut::map_mut(file) }.map_err(|e| MmapIoError::Io(e.into()))?;
+        let mmap = unsafe { MmapMut::map_mut(file) }.map_err(MmapIoError::Io)?;
 
         unsafe {
             let mmap_ptr = mmap.as_ptr() as *mut libc::c_void;
@@ -1140,9 +1140,9 @@ impl MemoryMappedFileBuilder {
 
                 // Apply touch hint if specified
                 if self.touch_hint == TouchHint::Eager {
-                    log::debug!("Eagerly touching all pages for {} bytes", size);
+                    log::debug!("Eagerly touching all pages for {size} bytes");
                     if let Err(e) = mmap_file.touch_pages() {
-                        log::warn!("Failed to eagerly touch pages: {}", e);
+                        log::warn!("Failed to eagerly touch pages: {e}");
                         // Don't fail the creation, just log the warning
                     }
                 }
@@ -1151,10 +1151,7 @@ impl MemoryMappedFileBuilder {
                 // This is a placeholder for future implementation.
                 if let FlushPolicy::EveryMillis(ms) = self.flush_policy {
                     if ms > 0 {
-                        log::debug!(
-                            "Time-based flushing policy set to {} ms (implementation simplified)",
-                            ms
-                        );
+                        log::debug!("Time-based flushing policy set to {ms} ms (implementation simplified)");
                     }
                 }
 

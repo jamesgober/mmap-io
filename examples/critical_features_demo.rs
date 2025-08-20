@@ -124,12 +124,10 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let warm_time = start.elapsed();
 
     println!("📊 Performance Results:");
-    println!("   Cold access (with page faults): {:?}", cold_time);
-    println!("   Warm access (pre-touched): {:?}", warm_time);
-    if cold_time > warm_time {
-        let speedup = cold_time.as_nanos() as f64 / warm_time.as_nanos() as f64;
-        println!("   Speedup: {:.2}x faster with page prewarming", speedup);
-    }
+    println!("   Cold access (with page faults): {cold_time:?}");
+    println!("   Warm access (pre-touched): {warm_time:?}");
+    let speedup = cold_time.as_nanos() as f64 / warm_time.as_nanos() as f64;
+    println!("   Speedup: {speedup:.2}x faster with page prewarming");
 
     // 8. **Demonstrate Fallback Behavior Documentation**
     println!("\n8. Huge pages fallback behavior:");

@@ -169,7 +169,7 @@ mod all_features {
         // Initialize with atomic values
         for i in 0..8 {
             let atomic = mmap.atomic_u64(i * 8).expect("atomic");
-            atomic.store(i as u64, Ordering::SeqCst);
+            atomic.store(i, Ordering::SeqCst);
         }
 
         // Spawn threads that use different features
@@ -211,7 +211,7 @@ mod all_features {
         // Verify atomic increments
         for i in 0..4 {
             let atomic = mmap.atomic_u64(i * 8).expect("verify atomic");
-            assert_eq!(atomic.load(Ordering::SeqCst), i as u64 + 100);
+            assert_eq!(atomic.load(Ordering::SeqCst), i + 100);
         }
 
         fs::remove_file(&path).expect("cleanup");

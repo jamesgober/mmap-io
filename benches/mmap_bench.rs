@@ -17,7 +17,7 @@ fn bench_create_rw(b: &mut Criterion) {
         group.bench_with_input(BenchmarkId::from_parameter(size), &size, |ben, &sz| {
             ben.iter_batched(
                 || {
-                    let path = tmp_path(&format!("create_rw_{}", sz));
+                    let path = tmp_path(&format!("create_rw_{sz}"));
                     let _ = fs::remove_file(&path);
                     (path, sz)
                 },
@@ -40,7 +40,7 @@ fn bench_update_region_flush(b: &mut Criterion) {
         group.throughput(Throughput::Bytes(size as u64));
         // Variant A: updates without flush (manual/batched control)
         group.bench_with_input(BenchmarkId::new("update_only", size), &size, |ben, &sz| {
-            let path = tmp_path(&format!("update_only_{}", sz));
+            let path = tmp_path(&format!("update_only_{sz}"));
             let _ = fs::remove_file(&path);
             let mmap = MemoryMappedFile::create_rw(&path, sz as u64).expect("create_rw");
 
@@ -59,7 +59,7 @@ fn bench_update_region_flush(b: &mut Criterion) {
             BenchmarkId::new("update_plus_flush", size),
             &size,
             |ben, &sz| {
-                let path = tmp_path(&format!("update_flush_{}", sz));
+                let path = tmp_path(&format!("update_flush_{sz}"));
                 let _ = fs::remove_file(&path);
                 let mmap = MemoryMappedFile::create_rw(&path, sz as u64).expect("create_rw");
 
@@ -78,7 +78,7 @@ fn bench_update_region_flush(b: &mut Criterion) {
             BenchmarkId::new("update_threshold", size),
             &size,
             |ben, &sz| {
-                let path = tmp_path(&format!("update_threshold_{}", sz));
+                let path = tmp_path(&format!("update_threshold_{sz}"));
                 let _ = fs::remove_file(&path);
 
                 // Use builder to set a byte-threshold flush policy equal to the write size
@@ -107,7 +107,7 @@ fn bench_read_into_rw(b: &mut Criterion) {
     for &size in &[4_usize * 1024, 64 * 1024, 1024 * 1024] {
         group.throughput(Throughput::Bytes(size as u64));
         group.bench_with_input(BenchmarkId::from_parameter(size), &size, |ben, &sz| {
-            let path = tmp_path(&format!("read_into_rw_{}", sz));
+            let path = tmp_path(&format!("read_into_rw_{sz}"));
             let _ = fs::remove_file(&path);
             let mmap = MemoryMappedFile::create_rw(&path, sz as u64).expect("create_rw");
             // Seed some data
@@ -131,7 +131,7 @@ fn bench_as_slice_ro(b: &mut Criterion) {
     for &size in &[4_usize * 1024, 64 * 1024, 1024 * 1024] {
         group.throughput(Throughput::Bytes(size as u64));
         group.bench_with_input(BenchmarkId::from_parameter(size), &size, |ben, &sz| {
-            let path = tmp_path(&format!("as_slice_ro_{}", sz));
+            let path = tmp_path(&format!("as_slice_ro_{sz}"));
             let _ = fs::remove_file(&path);
             // Create file and seed data
             {
@@ -158,10 +158,10 @@ fn bench_resize(b: &mut Criterion) {
     group.bench_function("grow_1MB_to_8MB", |ben| {
         let path = tmp_path("resize_grow");
         let _ = fs::remove_file(&path);
-        let mmap = MemoryMappedFile::create_rw(&path, 1 * 1024 * 1024).expect("create_rw");
+        let mmap = MemoryMappedFile::create_rw(&path, 1024 * 1024).expect("create_rw");
         ben.iter(|| {
             mmap.resize(8 * 1024 * 1024).expect("resize grow");
-            mmap.resize(1 * 1024 * 1024).expect("resize shrink");
+            mmap.resize(1024 * 1024).expect("resize shrink");
         });
         let _ = fs::remove_file(&path);
     });
@@ -170,10 +170,10 @@ fn bench_resize(b: &mut Criterion) {
 
 fn bench_touch_pages(b: &mut Criterion) {
     let mut group = b.benchmark_group("touch_pages");
-    for &size in &[1 * 1024 * 1024, 8 * 1024 * 1024, 32 * 1024 * 1024] {
+    for &size in &[1024 * 1024, 8 * 1024 * 1024, 32 * 1024 * 1024] {
         group.throughput(Throughput::Bytes(size as u64));
         group.bench_with_input(BenchmarkId::from_parameter(size), &size, |ben, &sz| {
-            let path = tmp_path(&format!("touch_pages_{}", sz));
+            let path = tmp_path(&format!("touch_pages_{sz}"));
             let _ = fs::remove_file(&path);
             let mmap = MemoryMappedFile::create_rw(&path, sz as u64).expect("create_rw");
 
@@ -273,7 +273,7 @@ fn bench_microflush_overhead(b: &mut Criterion) {
             BenchmarkId::from_parameter(flush_size),
             &flush_size,
             |ben, &sz| {
-                let path = tmp_path(&format!("microflush_{}", sz));
+                let path = tmp_path(&format!("microflush_{sz}"));
                 let _ = fs::remove_file(&path);
                 let mmap = MemoryMappedFile::create_rw(&path, 64 * 1024).expect("create_rw");
 

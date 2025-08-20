@@ -264,9 +264,9 @@ fn concurrent_access() {
 
     if let Err(e) = handle
         .join()
-        .map_err(|e| format!("Thread panicked: {:?}", e))
+        .map_err(|e| format!("Thread panicked: {e:?}"))
     {
-        panic!("Thread panicked: {:?}", e);
+        panic!("Thread panicked: {e:?}");
     }
 
     let mut buf = [0u8; 10];

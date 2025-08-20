@@ -71,20 +71,20 @@ By default, the following features are enabled:
 > Add to your Cargo.toml:
 ```toml
 [dependencies]
-mmap-io = { version = "0.9.0" }
+mmap-io = { version = "0.9.3" }
 ```
 <br>
 
 > Enable **async** helpers (`Tokio`) when needed:
 ```toml
 [dependencies]
-mmap-io = { version = "0.9.0", features = ["async"] }
+mmap-io = { version = "0.9.3", features = ["async"] }
 ```
 
 > Or, enable other features like: `cow`, `locking`, or `advise`
 ```toml
 [dependencies]
-mmap-io = { version = "0.9.0, features = ["cow", "locking"] }
+mmap-io = { version = "0.9.3, features = ["cow", "locking"] }
 ```
 See full list of [Features](#optional-features) (shown above).
 
@@ -93,7 +93,7 @@ See full list of [Features](#optional-features) (shown above).
 If you're building for minimal environments or want total control over feature flags, you can disable default features by using `default-features = false` (see below).
 ```toml
 [dependencies]
-mmap-io = { version = "0.9.0", default-features = false, features = ["locking"] }
+mmap-io = { version = "0.9.3", default-features = false, features = ["locking"] }
 ```
 
 <br>
@@ -415,11 +415,23 @@ See parity tests in the repository that validate this contract on all platforms.
 
 Best-effort huge page support to reduce TLB misses and improve performance for large memory regions:
 
-**Linux**: Uses Transparent Huge Pages (THP) via `madvise(MADV_HUGEPAGE)`. The kernel will opportunistically use huge pages when available, providing automatic fallback to normal pages if huge pages cannot be allocated.
+**Linux**: Uses a multi-tier approach for optimal huge page allocation:
+
+1. **Tier 1**: For files ≥ 2MB, creates optimized mapping with immediate `MADV_HUGEPAGE` + `MADV_POPULATE_WRITE` to encourage kernel huge page allocation
+2. **Tier 2**: Falls back to standard mapping with `MADV_HUGEPAGE` hint for Transparent Huge Pages (THP)
+3. **Tier 3**: Silent fallback to regular pages if huge pages are unavailable
 
 **Windows**: Attempts to use `FILE_ATTRIBUTE_LARGE_PAGES` when creating files. Requires the "Lock Pages in Memory" privilege and system configuration. Falls back to normal pages if unavailable.
 
 **Other platforms**: No-op (uses normal pages).
+
+⚠️ **Important**: `.huge_pages(true)` does **NOT guarantee** huge pages will be used. The actual allocation depends on:
+- System configuration (huge pages must be enabled)
+- Available memory and fragmentation  
+- Kernel heuristics and available huge page pool
+- Process privileges (for explicit huge page allocation)
+
+The mapping will function correctly regardless of whether huge pages are actually used.
 
 Usage via builder:
 ```rust

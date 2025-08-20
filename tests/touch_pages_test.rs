@@ -35,7 +35,7 @@ fn test_touch_pages_basic() {
     mmap.touch_pages().expect("touch_pages");
     let touch_duration = start.elapsed();
 
-    println!("Touch pages took: {:?}", touch_duration);
+    println!("Touch pages took: {touch_duration:?}");
 
     // Verify we can still read the data
     let mut buf = vec![0u8; 4096];
@@ -59,7 +59,7 @@ fn test_touch_pages_range() {
         .expect("touch_pages_range");
     let touch_duration = start.elapsed();
 
-    println!("Touch pages range took: {:?}", touch_duration);
+    println!("Touch pages range took: {touch_duration:?}");
 
     // Test bounds checking
     let result = mmap.touch_pages_range(1024 * 1024, 1);
@@ -83,7 +83,7 @@ fn test_microflush_optimization() {
     mmap.flush_range(0, 512).expect("flush_range");
     let flush_duration = start.elapsed();
 
-    println!("Microflush took: {:?}", flush_duration);
+    println!("Microflush took: {flush_duration:?}");
 
     fs::remove_file(&path).expect("cleanup");
 }

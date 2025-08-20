@@ -113,7 +113,7 @@ The following optional Cargo features enable extended functionality:
 | `async`    | Enables **Tokio-based async helpers** for asynchronous file and memory operations.                 |
 | `advise`   | Enables memory hinting using **`madvise`/`posix_madvise` (Unix)** or **Prefetch (Windows)**.       |
 | `iterator` | Provides **iterator-based access** to memory chunks or pages with zero-copy read access.           |
-| `hugepages` | nables support for Huge Pages via MAP_HUGETLB (Linux) or FILE_ATTRIBUTE_LARGE_PAGES (Windows), reducing TLB misses and improving performance for large memory regions. Requires system configuration and elevated privileges. |
+| `hugepages` | **Best-effort Huge Pages Support**: Reduces TLB misses for large memory regions through a multi-tier approach:<br/>**Tier 1**: Optimized mapping with immediate MADV_HUGEPAGE + MADV_POPULATE_WRITE<br/>**Tier 2**: Standard mapping with MADV_HUGEPAGE hint<br/>**Tier 3**: Silent fallback to regular pages<br/>⚠️ **Not Guaranteed**: Requires system configuration and adequate privileges. The mapping will function correctly regardless of huge page availability. |
 | `cow`      | Enables **Copy-on-Write (COW)** mapping mode using private memory views (per-process isolation).   |
 | `locking`  | Enables page-level memory locking via **`mlock`/`munlock` (Unix)** or **`VirtualLock` (Windows)**. |
 | `atomic`   | Exposes **atomic views** into memory as aligned `u32` / `u64`, with strict safety guarantees.      |
@@ -148,7 +148,7 @@ By default, the following features are enabled:
 > Add the following to your Cargo.toml file:
 ```toml
 [dependencies]
-mmap-io = { version = "0.9.0" }
+mmap-io = { version = "0.9.3" }
 ```
 
 > Or install using Cargo:
@@ -164,7 +164,7 @@ Enable additional features by using the pre-defined [features flags](#features) 
 > ##### Manual Install with Features:
 ```toml
 [dependencies]
-mmap-io = { version = 0.9.0", features = ["cow", "locking"] }
+mmap-io = { version = 0.9.3", features = ["cow", "locking"] }
 ```
 > ##### Cargo Install with Features:
 ```bash
@@ -212,6 +212,26 @@ use mmap_io::MemoryMappedFile;
 
 let mmap = MemoryMappedFile::create_rw("data.bin", 1024)?;
 ```
+
+<br>
+
+### TouchHint
+
+Enum representing when to touch (prewarm) memory pages during mapping creation.
+
+```rust
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum TouchHint {
+    Never,   // Don't touch pages during creation (default)
+    Eager,   // Eagerly touch all pages during creation
+    Lazy,    // Touch pages lazily on first access (same as Never for now)
+}
+```
+
+**Variants**:
+- `Never`: Don't touch pages during creation (default)
+- `Eager`: Eagerly touch all pages during creation to prewarm page tables and improve first-access latency. Useful for benchmarking scenarios where you want consistent timing without page fault overhead.
+- `Lazy`: Touch pages lazily on first access (same as Never for now)
 
 <br>
 
@@ -745,6 +765,66 @@ pub fn mode(&self) -> MmapMode
 
 **Returns**: `MmapMode`
 
+<br>
+
+### touch_pages
+
+```rust
+pub fn touch_pages(&self) -> Result<()>
+```
+
+**Description**: Prewarns (touches) all pages by reading the first byte of each page, forcing the OS to load all pages into physical memory. This eliminates page faults during subsequent access, which is useful for benchmarking and performance-critical sections.
+
+**Returns**: `Result<()>`
+
+**Errors**:
+- `MmapIoError::Io` if memory access fails
+
+**Performance**:
+- **Time Complexity**: O(n) where n is the number of pages
+- **Memory Usage**: Forces all pages into physical memory
+- **I/O Operations**: May trigger disk reads for unmapped pages
+- **Cache Behavior**: Optimizes subsequent access patterns
+
+**Example**:
+```rust
+let mmap = MemoryMappedFile::open_ro("data.bin")?;
+
+// Prewarm all pages before performance-critical section
+mmap.touch_pages()?;
+
+// Now all subsequent accesses will be fast (no page faults)
+let data = mmap.as_slice(0, 1024)?;
+```
+
+<br>
+
+### touch_pages_range
+
+```rust
+pub fn touch_pages_range(&self, offset: u64, len: u64) -> Result<()>
+```
+
+**Description**: Prewarns a specific range of pages. Similar to `touch_pages()` but only affects the specified range.
+
+**Parameters**:
+- `offset`: Starting offset in bytes
+- `len`: Length of range to touch in bytes
+
+**Returns**: `Result<()>`
+
+**Errors**:
+- `MmapIoError::OutOfBounds` if range exceeds file bounds
+- `MmapIoError::Io` if memory access fails
+
+**Example**:
+```rust
+let mmap = MemoryMappedFile::create_rw("data.bin", 1024 * 1024)?;
+
+// Prewarm only the first 64KB for immediate use
+mmap.touch_pages_range(0, 64 * 1024)?;
+```
+
 <hr>
 <div align="right"><a href="#doc-top">&uarr; TOP</a></div>
 <br>
@@ -762,7 +842,7 @@ pub enum FlushPolicy {
     Always,           // Flush after every write
     EveryBytes(usize),// Flush when N bytes written since last flush
     EveryWrites(usize), // Flush after W calls to update_region
-    EveryMillis(u64), // Reserved for time-based flushing (no-op currently)
+    EveryMillis(u64), // Automatic time-based flushing every N milliseconds
 }
 ```
 
@@ -785,7 +865,7 @@ Behavior:
 - Always: flush() is invoked after each update_region() call.
 - EveryBytes(n): increments a byte counter by the number of bytes written per update_region; when it reaches n, counter resets and flush() is called.
 - EveryWrites(w): increments a write counter per update_region; when it reaches w, counter resets and flush() is called.
-- EveryMillis(ms): Reserved for future time-based flushing. Currently behaves identically to Manual/Never (no automatic flushing). Time-based flushing would require a background thread which is not yet implemented.
+- EveryMillis(ms): Enables automatic time-based flushing using a background thread. Writes are tracked and the background thread flushes pending changes every `ms` milliseconds when there are dirty pages. The background thread automatically stops when the MemoryMappedFile is dropped.
 
 Notes:
 - Flush is best-effort and may not imply fsync semantics on all platforms.
@@ -1467,6 +1547,7 @@ for handle in handles {
 <br><br>
 
 ## Version History
+- **0.9.3**: Fixed Remaining Issues, Finalized Codebase for 
 - **0.9.0**: Fixed Remaining Issues, Finalized Codebase for Stable Beta Release.
 - **0.8.0**: Added Async-Only Flushing APIs; Platform Parity docs and tests; Huge Pages docs.
 - **0.7.5**: Added Flush Policy.

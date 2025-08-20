@@ -1,4 +1,4 @@
-#![cfg(all(test))]
+#![cfg(test)]
 //! Platform parity tests for flush visibility across OSes.
 //!
 //! Contract: After calling flush() or flush_range(), a newly opened read-only mapping
