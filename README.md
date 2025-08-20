@@ -111,15 +111,6 @@ fn main() -> std::io::Result<()> {
     let slice = mmap.as_slice();
     println!("First byte: {}", slice[0]);
 
-    // Write to a mutable mapping
-    #[cfg(feature = "mutable")]
-    {
-        let mut mmap = MemoryMappedFile::open("data.bin", MmapMode::ReadWrite)?;
-        let slice = mmap.as_slice_mut();
-        slice[0] = 0xFF;
-        mmap.flush()?; // flush to disk
-    }
-
     Ok(())
 }
 ```
@@ -133,7 +124,7 @@ fn main() -> std::io::Result<()> {
 - **FlushPolicy::Always**: Flush after every write; slowest but most durable.
 - **FlushPolicy::EveryBytes(*n*)**: Accumulate bytes written across `update_region()` calls; flush when at least n bytes have been written.
 - **FlushPolicy::EveryWrites(*n*)**: Flush after every n writes (calls to `update_region()`).
-- **FlushPolicy::EveryMillis(*ms*)**: Reserved for future time-based flushing; currently behaves like Manual.
+- **FlushPolicy::EveryMillis(*ms*)**: Automatically flushes pending writes at the specified interval using a background thread.
 
 
 #### Using the builder to set a policy:
@@ -251,6 +242,37 @@ fn main() -> Result<(), mmap_io::MmapIoError> {
 ```
 
 <br>
+
+
+
+
+## Page Pre-warming (feature = "locking")
+
+Eliminate page fault latency by pre-warming pages into memory.
+
+```rust
+#[cfg(feature = "locking")]
+use mmap_io::{MemoryMappedFile, MmapMode, TouchHint};
+
+fn main() -> Result<(), mmap_io::MmapIoError> {
+    // Eagerly pre-warm all pages on creation for benchmarks
+    let mmap = MemoryMappedFile::builder("benchmark.bin")
+        .size(1024 * 1024)
+        .touch_hint(TouchHint::Eager)
+        .create()?;
+
+    // Manually pre-warm a specific range before a critical operation
+    mmap.touch_pages_range(0, 512 * 1024)?;
+
+    Ok(())
+}
+
+```
+> Note: The locking feature is currently required for this functionality as it provides the necessary ow-level memory control.
+
+<br>
+
+
 
 ## Atomic Operations (feature = "atomic")
 
@@ -415,11 +437,11 @@ See parity tests in the repository that validate this contract on all platforms.
 
 Best-effort huge page support to reduce TLB misses and improve performance for large memory regions:
 
-**Linux**: Uses a multi-tier approach for optimal huge page allocation:
+**Linux**: Uses a multi-tier approach for optimal huge page allocation::
 
-1. **Tier 1**: For files ≥ 2MB, creates optimized mapping with immediate `MADV_HUGEPAGE` + `MADV_POPULATE_WRITE` to encourage kernel huge page allocation
-2. **Tier 2**: Falls back to standard mapping with `MADV_HUGEPAGE` hint for Transparent Huge Pages (THP)
-3. **Tier 3**: Silent fallback to regular pages if huge pages are unavailable
+1. **Tier 1**: Attempts an optimized mapping with immediate `MADV_HUGEPAGE` to encourage kernel huge page allocation.
+2. **Tier 2**: Falls back to a standard mapping with a `MADV_HUGEPAGE` hint for Transparent Huge Pages (THP).
+3. **Tier 3**: Silently falls back to regular pages if huge pages are unavailable.
 
 **Windows**: Attempts to use `FILE_ATTRIBUTE_LARGE_PAGES` when creating files. Requires the "Lock Pages in Memory" privilege and system configuration. Falls back to normal pages if unavailable.
 
