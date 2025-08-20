@@ -55,41 +55,49 @@ fn bench_update_region_flush(b: &mut Criterion) {
         });
 
         // Variant B: updates with flush to measure sync overhead
-        group.bench_with_input(BenchmarkId::new("update_plus_flush", size), &size, |ben, &sz| {
-            let path = tmp_path(&format!("update_flush_{}", sz));
-            let _ = fs::remove_file(&path);
-            let mmap = MemoryMappedFile::create_rw(&path, sz as u64).expect("create_rw");
+        group.bench_with_input(
+            BenchmarkId::new("update_plus_flush", size),
+            &size,
+            |ben, &sz| {
+                let path = tmp_path(&format!("update_flush_{}", sz));
+                let _ = fs::remove_file(&path);
+                let mmap = MemoryMappedFile::create_rw(&path, sz as u64).expect("create_rw");
 
-            let payload = vec![0xAC_u8; sz];
-            ben.iter(|| {
-                mmap.update_region(0, &payload).expect("update");
-                mmap.flush().expect("flush");
-            });
+                let payload = vec![0xAC_u8; sz];
+                ben.iter(|| {
+                    mmap.update_region(0, &payload).expect("update");
+                    mmap.flush().expect("flush");
+                });
 
-            let _ = fs::remove_file(&path);
-        });
+                let _ = fs::remove_file(&path);
+            },
+        );
 
         // Variant C: threshold-based automatic flushing via builder
-        group.bench_with_input(BenchmarkId::new("update_threshold", size), &size, |ben, &sz| {
-            let path = tmp_path(&format!("update_threshold_{}", sz));
-            let _ = fs::remove_file(&path);
+        group.bench_with_input(
+            BenchmarkId::new("update_threshold", size),
+            &size,
+            |ben, &sz| {
+                let path = tmp_path(&format!("update_threshold_{}", sz));
+                let _ = fs::remove_file(&path);
 
-            // Use builder to set a byte-threshold flush policy equal to the write size
-            let mmap = mmap_io::MemoryMappedFile::builder(&path)
-                .mode(mmap_io::MmapMode::ReadWrite)
-                .size(sz as u64)
-                .flush_policy(FlushPolicy::EveryBytes(sz)) // flush roughly once per write
-                .create()
-                .expect("builder create_rw with threshold");
+                // Use builder to set a byte-threshold flush policy equal to the write size
+                let mmap = mmap_io::MemoryMappedFile::builder(&path)
+                    .mode(mmap_io::MmapMode::ReadWrite)
+                    .size(sz as u64)
+                    .flush_policy(FlushPolicy::EveryBytes(sz)) // flush roughly once per write
+                    .create()
+                    .expect("builder create_rw with threshold");
 
-            let payload = vec![0xAD_u8; sz];
-            ben.iter(|| {
-                mmap.update_region(0, &payload).expect("update");
-                criterion::black_box(&payload);
-            });
+                let payload = vec![0xAD_u8; sz];
+                ben.iter(|| {
+                    mmap.update_region(0, &payload).expect("update");
+                    criterion::black_box(&payload);
+                });
 
-            let _ = fs::remove_file(&path);
-        });
+                let _ = fs::remove_file(&path);
+            },
+        );
     }
     group.finish();
 }
@@ -157,6 +165,129 @@ fn bench_resize(b: &mut Criterion) {
         });
         let _ = fs::remove_file(&path);
     });
+    group.finish();
+}
+
+fn bench_touch_pages(b: &mut Criterion) {
+    let mut group = b.benchmark_group("touch_pages");
+    for &size in &[1 * 1024 * 1024, 8 * 1024 * 1024, 32 * 1024 * 1024] {
+        group.throughput(Throughput::Bytes(size as u64));
+        group.bench_with_input(BenchmarkId::from_parameter(size), &size, |ben, &sz| {
+            let path = tmp_path(&format!("touch_pages_{}", sz));
+            let _ = fs::remove_file(&path);
+            let mmap = MemoryMappedFile::create_rw(&path, sz as u64).expect("create_rw");
+
+            ben.iter(|| {
+                mmap.touch_pages().expect("touch_pages");
+            });
+
+            let _ = fs::remove_file(&path);
+        });
+    }
+    group.finish();
+}
+
+fn bench_page_fault_costs(b: &mut Criterion) {
+    let mut group = b.benchmark_group("page_fault_costs");
+
+    // Test different block sizes to investigate allocator/page fault costs
+    for &block_size in &[4_usize * 1024, 8 * 1024, 16 * 1024, 32 * 1024, 64 * 1024] {
+        group.throughput(Throughput::Bytes(block_size as u64));
+
+        // Test with cold pages (no prewarm)
+        group.bench_with_input(
+            BenchmarkId::new("cold_pages", block_size),
+            &block_size,
+            |ben, &sz| {
+                let total_size = 16 * 1024 * 1024; // 16MB total
+
+                ben.iter_batched(
+                    || {
+                        // Create fresh mapping for each iteration to ensure cold pages
+                        let path =
+                            tmp_path(&format!("cold_pages_iter_{}_{}", sz, std::process::id()));
+                        let _ = fs::remove_file(&path);
+                        let mmap =
+                            MemoryMappedFile::create_rw(&path, total_size).expect("create_rw");
+                        (path, mmap)
+                    },
+                    |(path, mmap)| {
+                        // Access memory in block-sized chunks to trigger page faults
+                        let data = vec![0xAB_u8; sz];
+                        for offset in (0..total_size).step_by(sz) {
+                            let write_size = std::cmp::min(sz as u64, total_size - offset);
+                            mmap.update_region(offset, &data[..write_size as usize])
+                                .expect("update");
+                        }
+                        let _ = fs::remove_file(&path);
+                    },
+                    BatchSize::SmallInput,
+                );
+            },
+        );
+
+        // Test with warm pages (prewarmed)
+        group.bench_with_input(
+            BenchmarkId::new("warm_pages", block_size),
+            &block_size,
+            |ben, &sz| {
+                let total_size = 16 * 1024 * 1024; // 16MB total
+
+                ben.iter_batched(
+                    || {
+                        let path =
+                            tmp_path(&format!("warm_pages_iter_{}_{}", sz, std::process::id()));
+                        let _ = fs::remove_file(&path);
+                        let mmap =
+                            MemoryMappedFile::create_rw(&path, total_size).expect("create_rw");
+                        // Prewarm all pages
+                        mmap.touch_pages().expect("touch_pages");
+                        (path, mmap)
+                    },
+                    |(path, mmap)| {
+                        // Access memory in block-sized chunks with prewarmed pages
+                        let data = vec![0xAC_u8; sz];
+                        for offset in (0..total_size).step_by(sz) {
+                            let write_size = std::cmp::min(sz as u64, total_size - offset);
+                            mmap.update_region(offset, &data[..write_size as usize])
+                                .expect("update");
+                        }
+                        let _ = fs::remove_file(&path);
+                    },
+                    BatchSize::SmallInput,
+                );
+            },
+        );
+    }
+    group.finish();
+}
+
+fn bench_microflush_overhead(b: &mut Criterion) {
+    let mut group = b.benchmark_group("microflush_overhead");
+
+    // Test different flush sizes to measure microflush optimization
+    for &flush_size in &[64_usize, 256, 512, 1024, 2048, 4096, 8192] {
+        group.throughput(Throughput::Bytes(flush_size as u64));
+
+        group.bench_with_input(
+            BenchmarkId::from_parameter(flush_size),
+            &flush_size,
+            |ben, &sz| {
+                let path = tmp_path(&format!("microflush_{}", sz));
+                let _ = fs::remove_file(&path);
+                let mmap = MemoryMappedFile::create_rw(&path, 64 * 1024).expect("create_rw");
+
+                let data = vec![0xCD_u8; sz];
+                ben.iter(|| {
+                    // Write then flush small range to test microflush optimization
+                    mmap.update_region(0, &data).expect("update");
+                    mmap.flush_range(0, sz as u64).expect("flush_range");
+                });
+
+                let _ = fs::remove_file(&path);
+            },
+        );
+    }
     group.finish();
 }
 
@@ -244,6 +375,9 @@ criterion_group! {
         bench_read_into_rw,
         bench_as_slice_ro,
         bench_resize,
+        bench_touch_pages,
+        bench_page_fault_costs,
+        bench_microflush_overhead,
         bench_iterator_chunks,
         bench_advise,
         bench_cow_open

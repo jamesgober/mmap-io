@@ -30,7 +30,9 @@ pub fn load_mmap<P: AsRef<Path>>(path: P, mode: MmapMode) -> Result<MemoryMapped
         #[cfg(feature = "cow")]
         MmapMode::CopyOnWrite => MemoryMappedFile::open_cow(path),
         #[cfg(not(feature = "cow"))]
-        MmapMode::CopyOnWrite => Err(crate::errors::MmapIoError::InvalidMode("copy-on-write mode not enabled (feature `cow`)")),
+        MmapMode::CopyOnWrite => Err(crate::errors::MmapIoError::InvalidMode(
+            "copy-on-write mode not enabled (feature `cow`)",
+        )),
     }
 }
 

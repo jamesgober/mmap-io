@@ -10,7 +10,11 @@ use std::path::PathBuf;
 
 fn tmp_path(name: &str) -> PathBuf {
     let mut p = std::env::temp_dir();
-    p.push(format!("mmap_io_platform_parity_{}_{}", name, std::process::id()));
+    p.push(format!(
+        "mmap_io_platform_parity_{}_{}",
+        name,
+        std::process::id()
+    ));
     p
 }
 
@@ -51,10 +55,12 @@ fn parity_flush_visibility_range() {
     // Write three regions
     mmap.update_region(10, b"XXXXYYYYZZZZ").expect("write-xyz");
     mmap.update_region(200, b"RANGE-ONLY").expect("write-range");
-    mmap.update_region(1000, b"NO-FLUSH-YET").expect("write-no-flush");
+    mmap.update_region(1000, b"NO-FLUSH-YET")
+        .expect("write-no-flush");
 
     // Flush only the [200, 200 + len) region
-    mmap.flush_range(200, "RANGE-ONLY".len() as u64).expect("flush_range");
+    mmap.flush_range(200, "RANGE-ONLY".len() as u64)
+        .expect("flush_range");
 
     // Re-open RO and verify:
     // - The flushed range must be visible
@@ -62,7 +68,9 @@ fn parity_flush_visibility_range() {
     //   but our contract guarantees visibility for flushed regions.
     let ro = MemoryMappedFile::open_ro(&path).expect("open_ro");
 
-    let flushed = ro.as_slice(200, "RANGE-ONLY".len() as u64).expect("slice flushed");
+    let flushed = ro
+        .as_slice(200, "RANGE-ONLY".len() as u64)
+        .expect("slice flushed");
     assert_eq!(flushed, b"RANGE-ONLY");
 
     // For non-flushed ranges, do not assert visibility; just ensure access is valid.

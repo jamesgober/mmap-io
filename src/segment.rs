@@ -40,7 +40,11 @@ impl Segment {
         // Validate bounds once at construction
         let total = parent.current_len()?;
         let _ = slice_range(offset, len, total)?;
-        Ok(Self { parent, offset, len })
+        Ok(Self {
+            parent,
+            offset,
+            len,
+        })
     }
 
     /// Return the segment as a read-only byte slice.
@@ -116,7 +120,11 @@ impl SegmentMut {
         // Validate bounds once at construction
         let total = parent.current_len()?;
         let _ = slice_range(offset, len, total)?;
-        Ok(Self { parent, offset, len })
+        Ok(Self {
+            parent,
+            offset,
+            len,
+        })
     }
 
     /// Return a write-capable guard to the underlying bytes for this segment.

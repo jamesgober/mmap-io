@@ -45,12 +45,7 @@ impl MemoryMappedFile {
         #[cfg(unix)]
         {
             // SAFETY: mlock is safe to call with validated parameters
-            let result = unsafe {
-                libc::mlock(
-                    addr as *const libc::c_void,
-                    length,
-                )
-            };
+            let result = unsafe { libc::mlock(addr as *const libc::c_void, length) };
 
             if result != 0 {
                 let err = std::io::Error::last_os_error();
@@ -65,19 +60,11 @@ impl MemoryMappedFile {
             use std::ptr;
 
             extern "system" {
-                fn VirtualLock(
-                    lpAddress: *const core::ffi::c_void,
-                    dwSize: usize,
-                ) -> i32;
+                fn VirtualLock(lpAddress: *const core::ffi::c_void, dwSize: usize) -> i32;
             }
 
             // SAFETY: VirtualLock is safe with valid memory range
-            let result = unsafe {
-                VirtualLock(
-                    addr as *const core::ffi::c_void,
-                    length,
-                )
-            };
+            let result = unsafe { VirtualLock(addr as *const core::ffi::c_void, length) };
 
             if result == 0 {
                 let err = std::io::Error::last_os_error();
@@ -129,43 +116,29 @@ impl MemoryMappedFile {
         #[cfg(unix)]
         {
             // SAFETY: munlock is safe to call with validated parameters
-            let result = unsafe {
-                libc::munlock(
-                    addr as *const libc::c_void,
-                    length,
-                )
-            };
+            let result = unsafe { libc::munlock(addr as *const libc::c_void, length) };
 
             if result != 0 {
                 let err = std::io::Error::last_os_error();
-                return Err(MmapIoError::UnlockFailed(format!(
-                    "munlock failed: {err}"
-                )));
+                return Err(MmapIoError::UnlockFailed(format!("munlock failed: {err}")));
             }
         }
 
         #[cfg(windows)]
         {
             extern "system" {
-                fn VirtualUnlock(
-                    lpAddress: *const core::ffi::c_void,
-                    dwSize: usize,
-                ) -> i32;
+                fn VirtualUnlock(lpAddress: *const core::ffi::c_void, dwSize: usize) -> i32;
             }
 
             // SAFETY: VirtualUnlock is safe with valid memory range
-            let result = unsafe {
-                VirtualUnlock(
-                    addr as *const core::ffi::c_void,
-                    length,
-                )
-            };
+            let result = unsafe { VirtualUnlock(addr as *const core::ffi::c_void, length) };
 
             if result == 0 {
                 let err = std::io::Error::last_os_error();
                 // VirtualUnlock can fail if pages weren't locked, which is often not an error
                 let err_code = err.raw_os_error().unwrap_or(0);
-                if err_code != 158 { // ERROR_NOT_LOCKED
+                if err_code != 158 {
+                    // ERROR_NOT_LOCKED
                     return Err(MmapIoError::UnlockFailed(format!(
                         "VirtualUnlock failed: {err}"
                     )));
@@ -226,12 +199,13 @@ mod tests {
 
         // Note: These operations may fail without appropriate privileges
         // We test that they at least don't panic
-        
+
         // Test locking a range
         let lock_result = mmap.lock(0, 4096);
         if lock_result.is_ok() {
             // If we successfully locked, we should be able to unlock
-            mmap.unlock(0, 4096).expect("unlock should succeed after lock");
+            mmap.unlock(0, 4096)
+                .expect("unlock should succeed after lock");
         } else {
             // Expected on systems without privileges
             println!("Lock failed (expected without privileges): {lock_result:?}");
@@ -248,7 +222,8 @@ mod tests {
         // Test lock_all/unlock_all
         let lock_all_result = mmap.lock_all();
         if lock_all_result.is_ok() {
-            mmap.unlock_all().expect("unlock_all should succeed after lock_all");
+            mmap.unlock_all()
+                .expect("unlock_all should succeed after lock_all");
         }
 
         fs::remove_file(&path).expect("cleanup");

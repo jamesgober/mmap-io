@@ -13,11 +13,11 @@ use std::marker::PhantomData;
 /// use mmap_io::MemoryMappedFile;
 ///
 /// let mmap = MemoryMappedFile::open_ro("data.bin")?;
-/// 
+///
 /// // Iterate over 4KB chunks
 /// for (offset, chunk) in mmap.chunks(4096).enumerate() {
 ///     let chunk_data = chunk?;
-///     println!("Chunk {} at offset {}: {} bytes", 
+///     println!("Chunk {} at offset {}: {} bytes",
 ///              offset, offset * 4096, chunk_data.len());
 /// }
 /// # Ok::<(), mmap_io::MmapIoError>(())
@@ -60,7 +60,7 @@ impl<'a> Iterator for ChunkIterator<'a> {
 
         // Resize the reusable buffer to the exact chunk size needed
         self.buffer.resize(chunk_len as usize, 0);
-        
+
         // For RW mappings, we need to use read_into
         match self.mmap.read_into(self.current_offset, &mut self.buffer) {
             Ok(()) => {
@@ -92,7 +92,7 @@ impl<'a> ExactSizeIterator for ChunkIterator<'a> {}
 /// use mmap_io::MemoryMappedFile;
 ///
 /// let mmap = MemoryMappedFile::open_ro("data.bin")?;
-/// 
+///
 /// // Iterate over system pages
 /// for page in mmap.pages() {
 ///     let page_data = page?;
@@ -167,9 +167,9 @@ impl<'a> ChunkIteratorMut<'a> {
 
             let mut guard = self.mmap.as_slice_mut(self.current_offset, chunk_len)?;
             let slice = guard.as_mut();
-            
+
             match f(self.current_offset, slice) {
-                Ok(()) => {},
+                Ok(()) => {}
                 Err(e) => return Ok(Err(e)),
             }
 
@@ -195,7 +195,7 @@ impl MemoryMappedFile {
     /// use mmap_io::MemoryMappedFile;
     ///
     /// let mmap = MemoryMappedFile::open_ro("data.bin")?;
-    /// 
+    ///
     /// // Process file in 1MB chunks
     /// for chunk in mmap.chunks(1024 * 1024) {
     ///     let data = chunk?;
@@ -219,7 +219,7 @@ impl MemoryMappedFile {
     /// use mmap_io::MemoryMappedFile;
     ///
     /// let mmap = MemoryMappedFile::open_ro("data.bin")?;
-    /// 
+    ///
     /// // Process file page by page
     /// for page in mmap.pages() {
     ///     let data = page?;
@@ -247,7 +247,7 @@ impl MemoryMappedFile {
     /// use mmap_io::{MemoryMappedFile, MmapMode};
     ///
     /// let mmap = MemoryMappedFile::open_rw("data.bin")?;
-    /// 
+    ///
     /// // Zero out file in 4KB chunks
     /// mmap.chunks_mut(4096).for_each_mut(|offset, chunk| {
     ///     chunk.fill(0);
@@ -257,7 +257,8 @@ impl MemoryMappedFile {
     /// ```
     #[cfg(feature = "iterator")]
     pub fn chunks_mut(&self, chunk_size: usize) -> ChunkIteratorMut<'_> {
-        ChunkIteratorMut::new(self, chunk_size).expect("mutable chunk iterator creation should not fail")
+        ChunkIteratorMut::new(self, chunk_size)
+            .expect("mutable chunk iterator creation should not fail")
     }
 }
 
@@ -270,7 +271,11 @@ mod tests {
 
     fn tmp_path(name: &str) -> PathBuf {
         let mut p = std::env::temp_dir();
-        p.push(format!("mmap_io_iterator_test_{}_{}", name, std::process::id()));
+        p.push(format!(
+            "mmap_io_iterator_test_{}_{}",
+            name,
+            std::process::id()
+        ));
         p
     }
 
@@ -289,10 +294,11 @@ mod tests {
         mmap.flush().expect("flush");
 
         // Test chunk iteration
-        let chunks: Vec<_> = mmap.chunks(1024)
+        let chunks: Vec<_> = mmap
+            .chunks(1024)
             .collect::<Result<Vec<_>>>()
             .expect("collect chunks");
-        
+
         assert_eq!(chunks.len(), 10);
         for (i, chunk) in chunks.iter().enumerate() {
             assert_eq!(chunk.len(), 1024);
@@ -300,10 +306,11 @@ mod tests {
         }
 
         // Test with non-aligned chunk size
-        let chunks: Vec<_> = mmap.chunks(3000)
+        let chunks: Vec<_> = mmap
+            .chunks(3000)
             .collect::<Result<Vec<_>>>()
             .expect("collect chunks");
-        
+
         assert_eq!(chunks.len(), 4); // 3000, 3000, 3000, 1240
         assert_eq!(chunks[3].len(), 1240);
 
@@ -320,11 +327,12 @@ mod tests {
         let file_size = ps * 3 + 100; // 3 full pages + partial
 
         let mmap = create_mmap(&path, file_size as u64).expect("create");
-        
-        let pages: Vec<_> = mmap.pages()
+
+        let pages: Vec<_> = mmap
+            .pages()
             .collect::<Result<Vec<_>>>()
             .expect("collect pages");
-        
+
         assert_eq!(pages.len(), 4); // 3 full + 1 partial
         assert_eq!(pages[0].len(), ps);
         assert_eq!(pages[1].len(), ps);
@@ -341,17 +349,17 @@ mod tests {
         let _ = fs::remove_file(&path);
 
         let mmap = create_mmap(&path, 4096).expect("create");
-        
+
         // Fill chunks with different values
         let result = mmap.chunks_mut(1024).for_each_mut(|offset, chunk| {
             let value = (offset / 1024) as u8;
             chunk.fill(value);
             Ok::<(), std::io::Error>(())
         });
-        
+
         assert!(result.is_ok());
         assert!(result.unwrap().is_ok());
-        
+
         mmap.flush().expect("flush");
 
         // Verify
@@ -371,10 +379,10 @@ mod tests {
         let _ = fs::remove_file(&path);
 
         let mmap = create_mmap(&path, 10000).expect("create");
-        
+
         let iter = mmap.chunks(1000);
         assert_eq!(iter.size_hint(), (10, Some(10)));
-        
+
         let iter = mmap.chunks(3000);
         assert_eq!(iter.size_hint(), (4, Some(4)));
 
@@ -389,11 +397,12 @@ mod tests {
 
         let mmap = create_mmap(&path, 1).expect("create"); // Can't create 0-size
         mmap.resize(1).expect("resize"); // Keep it minimal
-        
-        let chunks: Vec<_> = mmap.chunks(1024)
+
+        let chunks: Vec<_> = mmap
+            .chunks(1024)
             .collect::<Result<Vec<_>>>()
             .expect("collect");
-        
+
         assert_eq!(chunks.len(), 1);
         assert_eq!(chunks[0].len(), 1);
 

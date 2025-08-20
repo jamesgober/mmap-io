@@ -91,17 +91,17 @@ impl MemoryMappedFile {
         F: Fn(ChangeEvent) + Send + 'static,
     {
         let path = self.path().to_path_buf();
-        
+
         // For this implementation, we'll use a simple polling approach
         // In a production implementation, you'd use platform-specific APIs
         let thread = thread::spawn(move || {
             let mut last_modified = std::fs::metadata(&path)
                 .ok()
                 .and_then(|m| m.modified().ok());
-            
+
             loop {
                 thread::sleep(Duration::from_millis(WATCH_POLL_INTERVAL_MS));
-                
+
                 // Check if file still exists
                 let metadata = match std::fs::metadata(&path) {
                     Ok(m) => m,
@@ -114,7 +114,7 @@ impl MemoryMappedFile {
                         break;
                     }
                 };
-                
+
                 // Check modification time
                 if let Ok(modified) = metadata.modified() {
                     if Some(modified) != last_modified {
@@ -128,7 +128,7 @@ impl MemoryMappedFile {
                 }
             }
         });
-        
+
         Ok(WatchHandle { thread })
     }
 }
@@ -144,18 +144,16 @@ where
     F: Fn(ChangeEvent) + Send + 'static,
 {
     let path = path.to_path_buf();
-    
+
     let thread = thread::spawn(move || {
         let mut last_modified = std::fs::metadata(&path)
             .ok()
             .and_then(|m| m.modified().ok());
-        let mut last_len = std::fs::metadata(&path)
-            .ok()
-            .map(|m| m.len());
-        
+        let mut last_len = std::fs::metadata(&path).ok().map(|m| m.len());
+
         loop {
             thread::sleep(Duration::from_millis(WATCH_POLL_INTERVAL_MS));
-            
+
             // Check if file still exists
             let metadata = match std::fs::metadata(&path) {
                 Ok(m) => m,
@@ -168,10 +166,10 @@ where
                     break;
                 }
             };
-            
+
             let current_len = metadata.len();
             let current_modified = metadata.modified().ok();
-            
+
             // Check for changes
             if current_modified != last_modified || Some(current_len) != last_len {
                 let kind = if Some(current_len) != last_len {
@@ -179,19 +177,19 @@ where
                 } else {
                     ChangeKind::Metadata
                 };
-                
+
                 callback(ChangeEvent {
                     offset: None,
                     len: None,
                     kind,
                 });
-                
+
                 last_modified = current_modified;
                 last_len = Some(current_len);
             }
         }
     });
-    
+
     Ok(WatchHandle { thread })
 }
 
@@ -206,7 +204,11 @@ mod tests {
 
     fn tmp_path(name: &str) -> PathBuf {
         let mut p = std::env::temp_dir();
-        p.push(format!("mmap_io_watch_test_{}_{}", name, std::process::id()));
+        p.push(format!(
+            "mmap_io_watch_test_{}_{}",
+            name,
+            std::process::id()
+        ));
         p
     }
 
@@ -227,18 +229,21 @@ mod tests {
         let event_count = Arc::new(AtomicUsize::new(0));
         let event_count_clone = Arc::clone(&event_count);
 
-        let _handle = mmap.watch(move |event| {
-            println!("Detected change: {event:?}");
-            changed_clone.store(true, Ordering::SeqCst);
-            event_count_clone.fetch_add(1, Ordering::SeqCst);
-        }).expect("watch");
+        let _handle = mmap
+            .watch(move |event| {
+                println!("Detected change: {event:?}");
+                changed_clone.store(true, Ordering::SeqCst);
+                event_count_clone.fetch_add(1, Ordering::SeqCst);
+            })
+            .expect("watch");
 
         // Give watcher time to start (5 polling intervals)
         thread::sleep(Duration::from_millis(WATCH_POLL_INTERVAL_MS * 5));
 
         // Modify file and ensure mtime changes:
         mmap.update_region(0, b"modified").expect("write");
-        mmap.flush().expect("flush after write for watch visibility");
+        mmap.flush()
+            .expect("flush after write for watch visibility");
 
         // Force timestamp change using utime/utimes fallback to increase detection reliability
         #[allow(unused_variables)]
@@ -289,11 +294,13 @@ mod tests {
         let removed = Arc::new(AtomicBool::new(false));
         let removed_clone = Arc::clone(&removed);
 
-        let _handle = mmap.watch(move |event| {
-            if event.kind == ChangeKind::Removed {
-                removed_clone.store(true, Ordering::SeqCst);
-            }
-        }).expect("watch");
+        let _handle = mmap
+            .watch(move |event| {
+                if event.kind == ChangeKind::Removed {
+                    removed_clone.store(true, Ordering::SeqCst);
+                }
+            })
+            .expect("watch");
 
         // Give watcher time to start (2 polling intervals)
         thread::sleep(Duration::from_millis(WATCH_POLL_INTERVAL_MS * 2));
@@ -318,17 +325,21 @@ mod tests {
 
         // Test watching with RO mode
         let ro_mmap = MemoryMappedFile::open_ro(&path).expect("open ro");
-        let _handle = ro_mmap.watch(|_event| {
-            // Just test that we can set up a watch
-        }).expect("watch ro");
+        let _handle = ro_mmap
+            .watch(|_event| {
+                // Just test that we can set up a watch
+            })
+            .expect("watch ro");
 
         #[cfg(feature = "cow")]
         {
             // Test watching with COW mode
             let cow_mmap = MemoryMappedFile::open_cow(&path).expect("open cow");
-            let _handle = cow_mmap.watch(|_event| {
-                // Just test that we can set up a watch
-            }).expect("watch cow");
+            let _handle = cow_mmap
+                .watch(|_event| {
+                    // Just test that we can set up a watch
+                })
+                .expect("watch cow");
         }
 
         fs::remove_file(&path).expect("cleanup");
@@ -345,22 +356,27 @@ mod tests {
         // Set up multiple watchers
         let count1 = Arc::new(AtomicUsize::new(0));
         let count1_clone = Arc::clone(&count1);
-        let _handle1 = mmap.watch(move |_event| {
-            count1_clone.fetch_add(1, Ordering::SeqCst);
-        }).expect("watch 1");
+        let _handle1 = mmap
+            .watch(move |_event| {
+                count1_clone.fetch_add(1, Ordering::SeqCst);
+            })
+            .expect("watch 1");
 
         let count2 = Arc::new(AtomicUsize::new(0));
         let count2_clone = Arc::clone(&count2);
-        let _handle2 = mmap.watch(move |_event| {
-            count2_clone.fetch_add(1, Ordering::SeqCst);
-        }).expect("watch 2");
+        let _handle2 = mmap
+            .watch(move |_event| {
+                count2_clone.fetch_add(1, Ordering::SeqCst);
+            })
+            .expect("watch 2");
 
         // Give watchers time to start (6 polling intervals)
         thread::sleep(Duration::from_millis(WATCH_POLL_INTERVAL_MS * 6));
 
         // Modify file and ensure mtime changes
         mmap.update_region(0, b"change").expect("write");
-        mmap.flush().expect("flush after write for watch visibility");
+        mmap.flush()
+            .expect("flush after write for watch visibility");
 
         #[allow(unused_variables)]
         {
@@ -388,8 +404,14 @@ mod tests {
         thread::sleep(Duration::from_millis(WATCH_POLL_INTERVAL_MS * 15));
 
         // Both watchers should detect the change
-        assert!(count1.load(Ordering::SeqCst) > 0, "Watcher 1 should detect change");
-        assert!(count2.load(Ordering::SeqCst) > 0, "Watcher 2 should detect change");
+        assert!(
+            count1.load(Ordering::SeqCst) > 0,
+            "Watcher 1 should detect change"
+        );
+        assert!(
+            count2.load(Ordering::SeqCst) > 0,
+            "Watcher 2 should detect change"
+        );
 
         fs::remove_file(&path).expect("cleanup");
     }

@@ -44,10 +44,11 @@
 #![doc(html_root_url = "https://docs.rs/mmap-io")]
 
 pub mod errors;
-pub mod utils;
+pub mod manager;
+/// Memory-mapped file support.
 pub mod mmap;
 pub mod segment;
-pub mod manager;
+pub mod utils;
 
 /// Provides functions for flushing memory-mapped file changes to disk.
 pub mod flush;
@@ -68,10 +69,10 @@ pub mod atomic;
 pub mod watch;
 
 pub use errors::MmapIoError;
-pub use mmap::{MemoryMappedFile, MmapMode};
 pub use manager::{
     copy_mmap, create_mmap, delete_mmap, flush, load_mmap, update_region, write_mmap,
 };
+pub use mmap::{MemoryMappedFile, MmapMode, TouchHint};
 
 #[cfg(feature = "advise")]
 pub use advise::MmapAdvice;

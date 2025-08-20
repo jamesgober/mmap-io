@@ -59,8 +59,10 @@ impl MemoryMappedFile {
 
         #[cfg(unix)]
         {
-            use libc::{madvise, MADV_NORMAL, MADV_RANDOM, MADV_SEQUENTIAL, MADV_WILLNEED, MADV_DONTNEED};
-            
+            use libc::{
+                madvise, MADV_DONTNEED, MADV_NORMAL, MADV_RANDOM, MADV_SEQUENTIAL, MADV_WILLNEED,
+            };
+
             let advice_flag = match advice {
                 MmapAdvice::Normal => MADV_NORMAL,
                 MmapAdvice::Random => MADV_RANDOM,
@@ -70,19 +72,11 @@ impl MemoryMappedFile {
             };
 
             // SAFETY: madvise is safe to call with validated parameters
-            let result = unsafe {
-                madvise(
-                    addr as *mut libc::c_void,
-                    length,
-                    advice_flag,
-                )
-            };
+            let result = unsafe { madvise(addr as *mut libc::c_void, length, advice_flag) };
 
             if result != 0 {
                 let err = std::io::Error::last_os_error();
-                return Err(MmapIoError::AdviceFailed(format!(
-                    "madvise failed: {err}"
-                )));
+                return Err(MmapIoError::AdviceFailed(format!("madvise failed: {err}")));
             }
         }
 
@@ -149,7 +143,11 @@ mod tests {
 
     fn tmp_path(name: &str) -> PathBuf {
         let mut p = std::env::temp_dir();
-        p.push(format!("mmap_io_advise_test_{}_{}", name, std::process::id()));
+        p.push(format!(
+            "mmap_io_advise_test_{}_{}",
+            name,
+            std::process::id()
+        ));
         p
     }
 
@@ -177,7 +175,8 @@ mod tests {
 
         // Call advise on full region
         let len = file.len();
-        file.advise(0, len, MmapAdvice::Sequential).expect("memory advice sequential failed");
+        file.advise(0, len, MmapAdvice::Sequential)
+            .expect("memory advice sequential failed");
 
         std::fs::remove_file(file_path).unwrap();
     }
@@ -190,7 +189,8 @@ mod tests {
 
         // Create and test with RW mode
         let mmap = create_mmap(&path, 4096).expect("create");
-        mmap.advise(0, 4096, MmapAdvice::Sequential).expect("rw advise");
+        mmap.advise(0, 4096, MmapAdvice::Sequential)
+            .expect("rw advise");
         drop(mmap);
 
         // Test with RO mode
@@ -201,7 +201,8 @@ mod tests {
         {
             // Test with COW mode
             let mmap = MemoryMappedFile::open_cow(&path).expect("open cow");
-            mmap.advise(0, 4096, MmapAdvice::WillNeed).expect("cow advise");
+            mmap.advise(0, 4096, MmapAdvice::WillNeed)
+                .expect("cow advise");
         }
 
         fs::remove_file(&path).expect("cleanup");

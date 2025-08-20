@@ -60,8 +60,11 @@ impl MemoryMappedFile {
         // 4. Lifetime: The returned reference is bound to 'self', ensuring the mapping outlives it
         // 5. Validity: The memory is mapped and valid for the entire file size
         // 6. Atomicity: The hardware guarantees atomic operations on aligned 8-byte values
-        let offset_usize = offset.try_into()
-            .map_err(|_| MmapIoError::OutOfBounds { offset, len: SIZE, total })?;
+        let offset_usize = offset.try_into().map_err(|_| MmapIoError::OutOfBounds {
+            offset,
+            len: SIZE,
+            total,
+        })?;
         unsafe {
             // ptr.add() is safe because:
             // - offset_usize is guaranteed to be within bounds (checked above)
@@ -127,8 +130,11 @@ impl MemoryMappedFile {
         // 4. Lifetime: The returned reference is bound to 'self', ensuring the mapping outlives it
         // 5. Validity: The memory is mapped and valid for the entire file size
         // 6. Atomicity: The hardware guarantees atomic operations on aligned 4-byte values
-        let offset_usize = offset.try_into()
-            .map_err(|_| MmapIoError::OutOfBounds { offset, len: SIZE, total })?;
+        let offset_usize = offset.try_into().map_err(|_| MmapIoError::OutOfBounds {
+            offset,
+            len: SIZE,
+            total,
+        })?;
         unsafe {
             // ptr.add() is safe because:
             // - offset_usize is guaranteed to be within bounds (checked above)
@@ -189,8 +195,11 @@ impl MemoryMappedFile {
         // 4. Lifetime: The returned slice is bound to 'self', ensuring the mapping outlives it
         // 5. Validity: The memory is mapped and valid for the entire requested range
         // 6. Atomicity: Each element in the slice maintains 8-byte alignment for atomic operations
-        let offset_usize = offset.try_into()
-            .map_err(|_| MmapIoError::OutOfBounds { offset, len: total_size, total })?;
+        let offset_usize = offset.try_into().map_err(|_| MmapIoError::OutOfBounds {
+            offset,
+            len: total_size,
+            total,
+        })?;
         unsafe {
             // ptr.add() is safe because:
             // - offset_usize is guaranteed to be within bounds (checked above)
@@ -254,8 +263,11 @@ impl MemoryMappedFile {
         // 4. Lifetime: The returned slice is bound to 'self', ensuring the mapping outlives it
         // 5. Validity: The memory is mapped and valid for the entire requested range
         // 6. Atomicity: Each element in the slice maintains 4-byte alignment for atomic operations
-        let offset_usize = offset.try_into()
-            .map_err(|_| MmapIoError::OutOfBounds { offset, len: total_size, total })?;
+        let offset_usize = offset.try_into().map_err(|_| MmapIoError::OutOfBounds {
+            offset,
+            len: total_size,
+            total,
+        })?;
         unsafe {
             // ptr.add() is safe because:
             // - offset_usize is guaranteed to be within bounds (checked above)
@@ -280,7 +292,11 @@ mod tests {
 
     fn tmp_path(name: &str) -> PathBuf {
         let mut p = std::env::temp_dir();
-        p.push(format!("mmap_io_atomic_test_{}_{}", name, std::process::id()));
+        p.push(format!(
+            "mmap_io_atomic_test_{}_{}",
+            name,
+            std::process::id()
+        ));
         p
     }
 
@@ -305,11 +321,17 @@ mod tests {
         // Test misaligned access
         assert!(matches!(
             mmap.atomic_u64(1),
-            Err(MmapIoError::Misaligned { required: 8, offset: 1 })
+            Err(MmapIoError::Misaligned {
+                required: 8,
+                offset: 1
+            })
         ));
         assert!(matches!(
             mmap.atomic_u64(7),
-            Err(MmapIoError::Misaligned { required: 8, offset: 7 })
+            Err(MmapIoError::Misaligned {
+                required: 8,
+                offset: 7
+            })
         ));
 
         // Test out of bounds
@@ -340,11 +362,17 @@ mod tests {
         // Test misaligned access
         assert!(matches!(
             mmap.atomic_u32(1),
-            Err(MmapIoError::Misaligned { required: 4, offset: 1 })
+            Err(MmapIoError::Misaligned {
+                required: 4,
+                offset: 1
+            })
         ));
         assert!(matches!(
             mmap.atomic_u32(3),
-            Err(MmapIoError::Misaligned { required: 4, offset: 3 })
+            Err(MmapIoError::Misaligned {
+                required: 4,
+                offset: 3
+            })
         ));
 
         // Test out of bounds
