@@ -72,7 +72,7 @@ pub use errors::MmapIoError;
 pub use manager::{
     copy_mmap, create_mmap, delete_mmap, flush, load_mmap, update_region, write_mmap,
 };
-pub use mmap::{MemoryMappedFile, MmapMode, TouchHint};
+pub use mmap::{MappedSlice, MappedSliceMut, MemoryMappedFile, MmapMode, TouchHint};
 
 #[cfg(feature = "advise")]
 pub use advise::MmapAdvice;

@@ -1,0 +1,57 @@
+name: bench-regression
+
+on:
+  push:
+    branches: [ main ]
+  pull_request:
+    branches: [ main ]
+  workflow_dispatch:
+
+jobs:
+  bench:
+    name: Run benches (Linux)
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Install Rust (stable)
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache cargo registry + target
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: bench-${{ runner.os }}-${{ hashFiles('Cargo.lock') }}
+          restore-keys: |
+            bench-${{ runner.os }}-
+
+      # Criterion writes its results to `target/criterion`. The
+      # `--save-baseline` flag tags this run so a follow-up workflow
+      # can compare against it. The threshold gate is intentionally
+      # deferred: we surface the JSON as an artifact for the
+      # maintainer to diff against the checked-in baseline in
+      # `.dev/baselines/`. Hard CI failure on >10% regression is the
+      # 0.9.10 deliverable per ROADMAP.
+      - name: Run benchmarks (--save-baseline ci-${{ github.sha }})
+        run: cargo bench --all-features -- --save-baseline ci-${{ github.sha }}
+
+      - name: Upload criterion results
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: criterion-${{ github.sha }}
+          path: target/criterion/
+          retention-days: 14
+
+      - name: Compare against checked-in baseline (best-effort)
+        if: hashFiles('.dev/baselines/bench-0.9.7.json') != ''
+        continue-on-error: true
+        run: |
+          echo "::notice::Baseline diff is a manual maintainer review for 0.9.7."
+          echo "Checked-in baseline: .dev/baselines/bench-0.9.7.json"
+          echo "This run: ci-${{ github.sha }} (uploaded as artifact)"

@@ -51,18 +51,14 @@ mod all_features {
             .for_each_mut(|offset, chunk| {
                 let value = (offset / 1024) as u8;
                 chunk.fill(value);
-                Ok::<(), std::io::Error>(())
+                Ok(())
             })
-            .expect("chunks_mut")
             .expect("for_each_mut");
 
         mmap.flush().expect("flush");
 
-        // Test iterator - read and verify using chunks
-        let chunks: Vec<_> = mmap
-            .chunks(1024)
-            .collect::<Result<Vec<_>, _>>()
-            .expect("collect chunks");
+        // Test iterator - zero-copy read and verify using chunks
+        let chunks: Vec<Vec<u8>> = mmap.chunks(1024).map(|s| s.as_slice().to_vec()).collect();
 
         assert_eq!(chunks.len(), 8);
         for (i, chunk) in chunks.iter().enumerate() {
@@ -153,12 +149,9 @@ mod all_features {
             .advise(0, 4096, MmapAdvice::WillNeed)
             .expect("advise cow");
 
-        // Test iterator on COW
-        let pages: Vec<_> = cow_mmap
-            .pages()
-            .collect::<Result<Vec<_>, _>>()
-            .expect("collect pages");
-        assert!(!pages.is_empty());
+        // Test iterator on COW (zero-copy; each item is MappedSlice).
+        let page_count = cow_mmap.pages().count();
+        assert!(page_count > 0);
 
         // Test atomic on COW (read-only)
         let atomic = cow_mmap.atomic_u64(16).expect("atomic cow");
@@ -199,7 +192,7 @@ mod all_features {
                         iter.next(); // Skip to thread's region
                     }
 
-                    if let Some(Ok(chunk)) = iter.next() {
+                    if let Some(chunk) = iter.next() {
                         assert_eq!(chunk.len(), 512);
                     }
 
@@ -251,13 +244,10 @@ mod all_features {
         // Lock first page (may fail without privileges)
         let _ = mmap.lock(0, ps as u64);
 
-        // Write pattern to each page
-        for (i, page) in mmap.pages().enumerate() {
-            if let Ok(page_data) = page {
-                // Verify page size
-                if i < 3 {
-                    assert_eq!(page_data.len(), ps);
-                }
+        // Verify page sizes via the zero-copy iterator.
+        for (i, page_data) in mmap.pages().enumerate() {
+            if i < 3 {
+                assert_eq!(page_data.len(), ps);
             }
         }
 
@@ -299,10 +289,8 @@ fn test_iterator_only() {
     let _ = std::fs::remove_file(path);
 
     let mmap = create_mmap(path, 4096).expect("create");
-    let _chunks: Vec<_> = mmap
-        .chunks(1024)
-        .collect::<Result<Vec<_>, _>>()
-        .expect("chunks");
+    let count = mmap.chunks(1024).count();
+    assert_eq!(count, 4);
 
     std::fs::remove_file(path).expect("cleanup");
 }

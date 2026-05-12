@@ -66,7 +66,9 @@ impl Segment {
         })
     }
 
-    /// Return the segment as a read-only byte slice.
+    /// Return a zero-copy view of the segment as
+    /// [`MappedSlice<'_>`](crate::mmap::MappedSlice). Works on all
+    /// mapping modes (RO, COW, RW) since 0.9.7.
     ///
     /// Bounds are re-validated on every call. If the parent has been
     /// shrunk such that the segment's range no longer fits, returns
@@ -77,10 +79,7 @@ impl Segment {
     /// Returns `MmapIoError::OutOfBounds` if the segment's range is no
     /// longer within the parent's current bounds (e.g., after a
     /// shrinking resize).
-    /// Returns `MmapIoError::InvalidMode` if the parent is a RW
-    /// mapping (use [`MemoryMappedFile::read_slice`] when available,
-    /// or [`MemoryMappedFile::read_into`] for a copy).
-    pub fn as_slice(&self) -> Result<&[u8]> {
+    pub fn as_slice(&self) -> Result<crate::mmap::MappedSlice<'_>> {
         // Re-validate on every access: parent could have been resized
         // since the segment was constructed.
         self.parent.as_slice(self.offset, self.len)

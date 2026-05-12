@@ -313,8 +313,17 @@ impl MemoryMappedFile {
         self.len() == 0
     }
 
-    /// Get a zero-copy read-only slice for the given [offset, offset+len).
-    /// For RW mappings, cannot return a reference bound to a temporary guard; use `read_into` instead.
+    /// Get a zero-copy read-only slice for the given `[offset, offset + len)`.
+    ///
+    /// Works on all three mapping modes. The returned [`MappedSlice`]
+    /// implements `Deref<Target = [u8]>`, so callers use it directly
+    /// (indexing, iteration, passing as `&[u8]` via `&*slice` or
+    /// `slice.as_ref()`).
+    ///
+    /// For RW mappings the slice holds an internal read guard for its
+    /// lifetime, which blocks any concurrent `resize()` (which needs
+    /// the write lock) until the slice is dropped. Other readers and
+    /// writes to disjoint regions are not blocked.
     ///
     /// # Performance
     ///
@@ -324,21 +333,18 @@ impl MemoryMappedFile {
     ///
     /// # Errors
     ///
-    /// Returns `MmapIoError::OutOfBounds` if range exceeds file bounds.
-    /// Returns `MmapIoError::InvalidMode` for RW mappings (use `read_into` instead).
-    pub fn as_slice(&self, offset: u64, len: u64) -> Result<&[u8]> {
+    /// Returns [`MmapIoError::OutOfBounds`] if `offset + len` exceeds
+    /// the file's current length.
+    pub fn as_slice(&self, offset: u64, len: u64) -> Result<MappedSlice<'_>> {
         let total = self.current_len()?;
-        ensure_in_bounds(offset, len, total)?;
+        let (start, end) = slice_range(offset, len, total)?;
         match &self.inner.map {
-            MapVariant::Ro(m) => {
-                let (start, end) = slice_range(offset, len, total)?;
-                Ok(&m[start..end])
+            MapVariant::Ro(m) => Ok(MappedSlice::owned(&m[start..end])),
+            MapVariant::Rw(lock) => {
+                let guard = lock.read();
+                Ok(MappedSlice::guarded(guard, start..end))
             }
-            MapVariant::Rw(_lock) => Err(MmapIoError::InvalidMode("use read_into for RW mappings")),
-            MapVariant::Cow(m) => {
-                let (start, end) = slice_range(offset, len, total)?;
-                Ok(&m[start..end])
-            }
+            MapVariant::Cow(m) => Ok(MappedSlice::owned(&m[start..end])),
         }
     }
 
@@ -724,18 +730,29 @@ impl MemoryMappedFile {
             return Ok(());
         }
 
-        let page_sz = page_size() as u64;
-        let mut offset = 0;
+        let page_sz = page_size();
+        let total = total_len as usize;
 
-        // Touch the first byte of each page to force it into memory
-        while offset < total_len {
-            // Read a single byte to trigger page fault if needed
-            let mut buf = [0u8; 1];
-            let read_len = std::cmp::min(1, total_len - offset);
-            if read_len > 0 {
-                self.read_into(offset, &mut buf[..read_len as usize])?;
+        // Acquire the appropriate base pointer ONCE, then walk the
+        // mapping with a tight pointer loop. The lock (for RW) is held
+        // only for the duration of this call; we never form a Rust
+        // reference to the mapped memory, only a single-byte volatile
+        // read per page.
+        match &self.inner.map {
+            MapVariant::Ro(m) => {
+                let base = m.as_ptr();
+                touch_range_with_ptr(base, 0, total, page_sz);
             }
-            offset += page_sz;
+            MapVariant::Cow(m) => {
+                let base = m.as_ptr();
+                touch_range_with_ptr(base, 0, total, page_sz);
+            }
+            MapVariant::Rw(lock) => {
+                let guard = lock.read();
+                let base = guard.as_ptr();
+                touch_range_with_ptr(base, 0, total, page_sz);
+                drop(guard);
+            }
         }
 
         Ok(())
@@ -754,7 +771,7 @@ impl MemoryMappedFile {
     /// Returns `MmapIoError::OutOfBounds` if range exceeds file bounds.
     /// Returns `MmapIoError::Io` if memory access fails.
     pub fn touch_pages_range(&self, offset: u64, len: u64) -> Result<()> {
-        use crate::utils::{align_up, page_size};
+        use crate::utils::page_size;
 
         if len == 0 {
             return Ok(());
@@ -763,24 +780,74 @@ impl MemoryMappedFile {
         let total_len = self.current_len()?;
         crate::utils::ensure_in_bounds(offset, len, total_len)?;
 
-        let page_sz = page_size() as u64;
-        let start_page = (offset / page_sz) * page_sz;
-        let end_offset = offset + len;
-        let end_page = align_up(end_offset, page_sz);
+        let page_sz = page_size();
+        let total = total_len as usize;
+        // Walk pages that intersect [offset, offset + len).
+        let start_page_aligned = (offset as usize / page_sz) * page_sz;
+        let end_offset = (offset + len) as usize;
+        let end_page_aligned = std::cmp::min(
+            crate::utils::align_up(end_offset as u64, page_sz as u64) as usize,
+            total,
+        );
+        if start_page_aligned >= end_page_aligned {
+            return Ok(());
+        }
+        let walk_len = end_page_aligned - start_page_aligned;
 
-        let mut page_offset = start_page;
-
-        // Touch the first byte of each page in the range
-        while page_offset < end_page && page_offset < total_len {
-            let mut buf = [0u8; 1];
-            let read_len = std::cmp::min(1, total_len - page_offset);
-            if read_len > 0 {
-                self.read_into(page_offset, &mut buf[..read_len as usize])?;
+        match &self.inner.map {
+            MapVariant::Ro(m) => {
+                touch_range_with_ptr(m.as_ptr(), start_page_aligned, walk_len, page_sz);
             }
-            page_offset += page_sz;
+            MapVariant::Cow(m) => {
+                touch_range_with_ptr(m.as_ptr(), start_page_aligned, walk_len, page_sz);
+            }
+            MapVariant::Rw(lock) => {
+                let guard = lock.read();
+                let base = guard.as_ptr();
+                touch_range_with_ptr(base, start_page_aligned, walk_len, page_sz);
+                drop(guard);
+            }
         }
 
         Ok(())
+    }
+}
+
+/// Walk a mapped region with stride `page_sz`, performing one volatile
+/// byte read per page to force the OS to fault each page into the
+/// process's resident set. The caller has already established (a) the
+/// pointer points to a valid mapping of at least `start + walk_len`
+/// bytes and (b) holds the lifetime guard required for the underlying
+/// mapping mode (read guard for RW; no guard needed for RO/COW which
+/// are inherently immutable). `read_volatile` is wrapped in
+/// `black_box` so the optimiser cannot eliminate the dead read.
+#[inline]
+fn touch_range_with_ptr(base: *const u8, start: usize, walk_len: usize, page_sz: usize) {
+    if walk_len == 0 || page_sz == 0 {
+        return;
+    }
+    let end = start + walk_len;
+    let mut off = start;
+    // SAFETY:
+    //   1. `base.add(off)` produces a pointer inside the mapped region
+    //      because `off < end <= mapping length` (the caller validates
+    //      this before invoking).
+    //   2. `read_volatile::<u8>` reads exactly one byte; the kernel
+    //      page-faults that page in if it isn't already resident. A
+    //      one-byte read is well-defined for any mapped page on every
+    //      supported OS (POSIX `mmap` / Windows `MapViewOfFile`).
+    //   3. The mapping cannot be remapped or shrunk while this loop
+    //      runs: for RW the caller holds the read lock; for RO/COW the
+    //      underlying mapping is immutable for `'self`.
+    //   4. `black_box` defeats LLVM dead-store elimination so the read
+    //      is observable and actually triggers the fault.
+    // Reference: https://doc.rust-lang.org/std/ptr/fn.read_volatile.html
+    while off < end {
+        unsafe {
+            let byte = std::ptr::read_volatile(base.add(off));
+            std::hint::black_box(byte);
+        }
+        off += page_sz;
     }
 }
 
@@ -1437,7 +1504,7 @@ impl MemoryMappedFileBuilder {
 }
 
 // Move this to the top-level with other use statements:
-use parking_lot::RwLockWriteGuard;
+use parking_lot::{RwLockReadGuard, RwLockWriteGuard};
 
 /// Wrapper for a mutable slice that holds a write lock guard,
 /// ensuring exclusive access for the lifetime of the slice.
@@ -1457,5 +1524,159 @@ impl<'a> MappedSliceMut<'a> {
         let start = self.range.start;
         let end = self.range.end;
         &mut self.guard[start..end]
+    }
+
+    /// Length of the mutable slice in bytes.
+    #[must_use]
+    pub fn len(&self) -> usize {
+        self.range.end - self.range.start
+    }
+
+    /// Whether the slice is empty.
+    #[must_use]
+    pub fn is_empty(&self) -> bool {
+        self.range.start == self.range.end
+    }
+}
+
+impl std::ops::Deref for MappedSliceMut<'_> {
+    type Target = [u8];
+
+    fn deref(&self) -> &[u8] {
+        &self.guard[self.range.clone()]
+    }
+}
+
+impl std::ops::DerefMut for MappedSliceMut<'_> {
+    fn deref_mut(&mut self) -> &mut [u8] {
+        let start = self.range.start;
+        let end = self.range.end;
+        &mut self.guard[start..end]
+    }
+}
+
+/// Wrapper for an immutable slice into a memory-mapped file.
+///
+/// For RO and COW mappings this is a thin wrapper around a `&[u8]`
+/// borrowed directly from the underlying immutable mapping. For RW
+/// mappings this also holds the `RwLock` read guard for its lifetime,
+/// blocking any concurrent `resize()` (which needs the write lock)
+/// while the slice is alive.
+///
+/// Implements [`Deref<Target = [u8]>`] and [`AsRef<[u8]>`], so callers
+/// can use it as a byte slice directly: indexing, iteration,
+/// `slice.len()`, `&slice[..]`, etc. all work.
+pub struct MappedSlice<'a> {
+    inner: MappedSliceInner<'a>,
+}
+
+enum MappedSliceInner<'a> {
+    /// RO / COW: the mapping is immutable; we lend a direct slice.
+    Owned(&'a [u8]),
+    /// RW: the read guard keeps the mapping alive (and prevents
+    /// `resize()` from running) for the slice's lifetime.
+    Guarded {
+        guard: RwLockReadGuard<'a, MmapMut>,
+        range: std::ops::Range<usize>,
+    },
+}
+
+impl<'a> MappedSlice<'a> {
+    /// Construct a `MappedSlice` from a direct `&[u8]`. Used for RO
+    /// and COW paths where the underlying mapping is already
+    /// immutable.
+    pub(crate) fn owned(slice: &'a [u8]) -> Self {
+        Self {
+            inner: MappedSliceInner::Owned(slice),
+        }
+    }
+
+    /// Construct a `MappedSlice` that holds a read guard for its
+    /// lifetime. Used for RW paths to keep the mapping stable.
+    pub(crate) fn guarded(
+        guard: RwLockReadGuard<'a, MmapMut>,
+        range: std::ops::Range<usize>,
+    ) -> Self {
+        Self {
+            inner: MappedSliceInner::Guarded { guard, range },
+        }
+    }
+
+    /// Borrow the underlying byte slice.
+    #[must_use]
+    pub fn as_slice(&self) -> &[u8] {
+        match &self.inner {
+            MappedSliceInner::Owned(s) => s,
+            MappedSliceInner::Guarded { guard, range } => &guard[range.clone()],
+        }
+    }
+
+    /// Length of the slice in bytes.
+    #[must_use]
+    pub fn len(&self) -> usize {
+        match &self.inner {
+            MappedSliceInner::Owned(s) => s.len(),
+            MappedSliceInner::Guarded { range, .. } => range.end - range.start,
+        }
+    }
+
+    /// Whether the slice is empty.
+    #[must_use]
+    pub fn is_empty(&self) -> bool {
+        self.len() == 0
+    }
+}
+
+impl std::ops::Deref for MappedSlice<'_> {
+    type Target = [u8];
+
+    fn deref(&self) -> &[u8] {
+        self.as_slice()
+    }
+}
+
+impl AsRef<[u8]> for MappedSlice<'_> {
+    fn as_ref(&self) -> &[u8] {
+        self.as_slice()
+    }
+}
+
+impl std::fmt::Debug for MappedSlice<'_> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        // Forward to byte-slice Debug so callers can use the wrapper
+        // with `assert_eq!` and `dbg!` without losing readability.
+        std::fmt::Debug::fmt(self.as_slice(), f)
+    }
+}
+
+impl PartialEq for MappedSlice<'_> {
+    fn eq(&self, other: &Self) -> bool {
+        self.as_slice() == other.as_slice()
+    }
+}
+
+impl Eq for MappedSlice<'_> {}
+
+impl PartialEq<[u8]> for MappedSlice<'_> {
+    fn eq(&self, other: &[u8]) -> bool {
+        self.as_slice() == other
+    }
+}
+
+impl PartialEq<&[u8]> for MappedSlice<'_> {
+    fn eq(&self, other: &&[u8]) -> bool {
+        self.as_slice() == *other
+    }
+}
+
+impl<const N: usize> PartialEq<[u8; N]> for MappedSlice<'_> {
+    fn eq(&self, other: &[u8; N]) -> bool {
+        self.as_slice() == other.as_slice()
+    }
+}
+
+impl<const N: usize> PartialEq<&[u8; N]> for MappedSlice<'_> {
+    fn eq(&self, other: &&[u8; N]) -> bool {
+        self.as_slice() == other.as_slice()
     }
 }
