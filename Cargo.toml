@@ -1,6 +1,6 @@
 [package]
 name = "mmap-io"
-version = "0.9.6"
+version = "0.9.7"
 edition = "2021"
 rust-version = "1.75"
 readme = "README.md"

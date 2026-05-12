@@ -36,14 +36,11 @@ fn segment_remains_valid_when_parent_grows() {
     mmap.resize(4096).expect("grow");
     assert!(seg.is_valid());
 
-    // Bounds-respecting access still works (RO path; create_mmap is RW
-    // so we'll hit InvalidMode here, which is expected).
-    match seg.as_slice() {
-        Err(MmapIoError::InvalidMode(_)) => {
-            // expected: as_slice on RW returns InvalidMode by design
-        }
-        Err(e) => panic!("unexpected error: {e}"),
-        Ok(_) => panic!("RW mapping should not allow as_slice (use read_slice when added)"),
+    // Bounds-respecting access works on RW since 0.9.7 (as_slice
+    // returns a MappedSlice<'_> that holds the read guard).
+    {
+        let s = seg.as_slice().expect("RW as_slice should succeed");
+        assert_eq!(s.len() as u64, seg.len());
     }
 
     let _ = fs::remove_file(&path);
@@ -70,14 +67,11 @@ fn segment_returns_oob_after_parent_shrinks_past_range() {
 
     // as_slice MUST now return OutOfBounds, not silently succeed and
     // not panic.
-    let err = seg.as_slice().expect_err("expected OutOfBounds");
-    assert!(
-        matches!(
-            err,
-            MmapIoError::OutOfBounds { .. } | MmapIoError::InvalidMode(_)
-        ),
-        "expected OutOfBounds (or InvalidMode for RW), got {err}"
-    );
+    match seg.as_slice() {
+        Err(MmapIoError::OutOfBounds { .. }) => {}
+        Err(e) => panic!("expected OutOfBounds, got {e}"),
+        Ok(_) => panic!("expected OutOfBounds, got Ok"),
+    }
 
     let _ = fs::remove_file(&path);
 }

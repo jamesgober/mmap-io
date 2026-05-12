@@ -9,6 +9,110 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 <br>
 
+<!-- VERSION: 0.9.7 -->
+## [0.9.7] - 2026-05-12
+
+### Changed (BREAKING)
+
+- **(H1, H4)** `MemoryMappedFile::as_slice(offset, len)` now returns
+  `Result<MappedSlice<'_>>` for all three mapping modes (RO, COW,
+  **and RW**). Previously RW returned `MmapIoError::InvalidMode`.
+  `MappedSlice<'_>` is a wrapper that derefs to `&[u8]` and, on RW
+  mappings, holds a read guard for its lifetime so concurrent
+  `resize()` blocks until the slice is dropped. Callers that
+  previously caught the `InvalidMode` error on RW should remove
+  that branch; the call now succeeds and returns a zero-copy view.
+  Callers that used `as_slice` on RO/COW and stored the result as
+  `&[u8]` should change the binding to `MappedSlice<'_>` or call
+  `.as_slice()` / `&*slice` / `slice.as_ref()` at the use site.
+- **(H1)** Iterator `Item` types changed. `ChunkIterator::Item` and
+  `PageIterator::Item` are now `MappedSlice<'a>` (was
+  `Result<Vec<u8>>`). The iterators no longer allocate or copy per
+  chunk; they yield direct views into the mapped region. For a
+  1 GiB file at 4 KiB chunks this eliminates 262,144 heap
+  allocations per scan and roughly 2x of the previous memory
+  bandwidth. Callers that genuinely need owned `Vec<u8>` buffers
+  should migrate to `chunks_owned()` / `pages_owned()` (added
+  below).
+- **(audit E4)** `ChunkIteratorMut::for_each_mut` flattened. New
+  signature: `fn for_each_mut<F>(self, F) -> Result<()>` where
+  `F: FnMut(u64, &mut [u8]) -> Result<()>`. The previous
+  triple-nested `Result<Result<(), E>>` is gone. Callers that
+  returned `Ok::<(), std::io::Error>(())` should return `Ok(())`
+  with `Result<()> = Result<(), MmapIoError>` and map any foreign
+  error into `MmapIoError::Io(...)` before returning. Iteration
+  now acquires the write guard ONCE for the entire iteration
+  instead of per-chunk.
+
+### Added
+
+- `MappedSlice<'a>` public wrapper type: derefs to `[u8]`,
+  implements `AsRef<[u8]>`, `Debug`, `PartialEq` (against itself,
+  `[u8]`, `&[u8]`, `[u8; N]`, `&[u8; N]`). Re-exported from the
+  crate root.
+- `MemoryMappedFile::chunks_owned(chunk_size)` returns
+  `ChunkIteratorOwned<'_>` yielding `Result<Vec<u8>>`. Migration
+  aid for callers that need owned chunks.
+- `MemoryMappedFile::pages_owned()` returns `PageIteratorOwned<'_>`.
+  Same as `chunks_owned` but page-sized.
+- `benches/mmap_bench.rs` workload-pattern benches:
+  - `sequential_read` at 1 MiB / 16 MiB / 256 MiB (`as_slice` vs
+    `read_into`)
+  - `random_read` with hand-rolled xorshift64 PRNG (no new dep) at
+    64 B / 256 B / 4 KiB / 64 KiB request sizes
+  - `sequential_write` under `Manual` / `EveryBytes(64 KiB)` /
+    `EveryMillis(10)` (post-C2)
+  - `iterator_throughput` at 4 KiB / 64 KiB chunks plus pages,
+    comparing zero-copy `chunks()` to `chunks_owned()` to
+    show the H1 win
+  - `touch_pages_large` on 1 GiB (post-H2)
+  - `atomic_contention` across 1 / 2 / 4 / 8 threads with
+    `fetch_add` on a shared `AtomicU64`
+- `.github/workflows/bench-regression.yml` runs the full bench
+  suite on every push and PR, uploads the criterion JSON as an
+  artifact for diffing against the checked-in baseline. The
+  10%-regression hard-fail gate is deferred to 0.9.10 per
+  ROADMAP; this workflow is the data plumbing.
+
+### Performance
+
+- **(H2)** `touch_pages` / `touch_pages_range` rewritten to acquire
+  the underlying lock (RW) or base pointer (RO/COW) ONCE per call
+  and walk pages in a tight `ptr::read_volatile` loop wrapped in
+  `std::hint::black_box`. Previously each page took a separate
+  `read_into(offset, &mut [0u8; 1])` call, which acquired the
+  lock, validated bounds, and memcpy'd a byte. Expected speedup
+  on a 1 GiB file: ~50-100x. Captured under the
+  `bench_touch_pages_large` group.
+- **(H1)** Iterator zero-copy: see "Changed" above. The yielded
+  `MappedSlice<'a>` borrows from the mapping directly with no
+  allocation and no per-chunk memcpy.
+- **(audit E4 follow-on)** `chunks_mut().for_each_mut(...)` now
+  acquires the write guard once for the entire iteration instead
+  of per-chunk. Other writers and readers see the same total
+  blocked window they did before; the change only eliminates the
+  per-chunk lock-acquire overhead inside the iteration.
+
+### Documentation
+
+- `docs/API.md`: `as_slice` examples updated to reflect the
+  unified `MappedSlice<'_>` return; iterator examples updated to
+  zero-copy form; new sections call out `chunks_owned` /
+  `pages_owned` as the migration path; install snippets bumped to
+  0.9.7.
+- `REPS.md` section 4 reflects the new return types and adds
+  `MappedSlice<'a>` to the public surface.
+
+### Internals
+
+- `tests/feature_integration.rs`, `tests/proptest_bounds.rs`,
+  `tests/segment_after_resize.rs`, `tests/basic.rs`,
+  `tests/platform_parity.rs` all updated for the new API. The
+  obsolete `as_slice_rw_invalid_mode` property test was rewritten
+  to verify the new `as_slice` succeeds on RW.
+
+<br>
+
 <!-- VERSION: 0.9.6 -->
 ## [0.9.6] - 2026-05-12
 
@@ -396,7 +500,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Basic README.
 
 <!-- LINK REFERENCE -->
-[Unreleased]: https://github.com/jamesgober/mmap-io/compare/v0.9.6...HEAD
+[Unreleased]: https://github.com/jamesgober/mmap-io/compare/v0.9.7...HEAD
+[0.9.7]: https://github.com/jamesgober/mmap-io/compare/v0.9.6...v0.9.7
 [0.9.6]: https://github.com/jamesgober/mmap-io/compare/v0.9.5...v0.9.6
 [0.9.5]: https://github.com/jamesgober/mmap-io/compare/v0.9.4...v0.9.5
 [0.9.4]: https://github.com/jamesgober/mmap-io/compare/v0.9.3...v0.9.4

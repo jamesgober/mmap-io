@@ -148,7 +148,7 @@ By default, the following features are enabled:
 > Add the following to your Cargo.toml file:
 ```toml
 [dependencies]
-mmap-io = { version = "0.9.6" }
+mmap-io = { version = "0.9.7" }
 ```
 
 > Or install using Cargo:
@@ -164,7 +164,7 @@ Enable additional features by using the pre-defined [features flags](#features) 
 > ##### Manual Install with Features:
 ```toml
 [dependencies]
-mmap-io = { version = "0.9.6", features = ["cow", "locking"] }
+mmap-io = { version = "0.9.7", features = ["cow", "locking"] }
 ```
 > ##### Cargo Install with Features:
 ```bash
@@ -179,7 +179,7 @@ If you're building for minimal environments or want total control over feature f
 > ##### Manual Install without Default Features:
 ```toml
 [dependencies]
-mmap-io = { version = "0.9.6", default-features = false, features = ["locking"] }
+mmap-io = { version = "0.9.7", default-features = false, features = ["locking"] }
 ```
 
 > ##### Cargo Install without Default Features:
@@ -553,25 +553,30 @@ let mmap = MemoryMappedFile::open_cow("shared.bin")?;
 ### as_slice
 
 ```rust
-pub fn as_slice(&self, offset: u64, len: u64) -> Result<&[u8]>
+pub fn as_slice(&self, offset: u64, len: u64) -> Result<MappedSlice<'_>>
 ```
 
-**Description**: Returns a read-only slice of the mapped memory. Only works for ReadOnly and CopyOnWrite modes.
+**Description**: Returns a zero-copy read-only view of `[offset, offset + len)`. Since 0.9.7 this works on **all** mapping modes (ReadOnly, CopyOnWrite, and ReadWrite). `MappedSlice<'_>` implements `Deref<Target = [u8]>` and `AsRef<[u8]>` so it can be used as a `&[u8]` directly (indexing, iteration, passing to functions that take `&[u8]` via `&*slice` or `slice.as_ref()`).
+
+On ReadWrite mappings, the returned slice holds an internal read guard for its lifetime. Concurrent `resize()` (which requires the write lock) blocks until the slice is dropped. Other readers and disjoint writes are not blocked.
 
 **Parameters**:
 - `offset`: Starting byte offset
 - `len`: Number of bytes to include
 
-**Returns**: `Result<&[u8]>` - Immutable byte slice
+**Returns**: `Result<MappedSlice<'_>>` - Wrapper around the immutable byte slice
 
 **Errors**:
 - `MmapIoError::OutOfBounds` if range exceeds file bounds
-- `MmapIoError::InvalidMode` for ReadWrite mappings (use `read_into` instead)
 
 **Example**:
 ```rust
 let mmap = MemoryMappedFile::open_ro("data.bin")?;
 let data = mmap.as_slice(100, 50)?;
+let first_byte = data[0];
+// pass to a function that wants `&[u8]`:
+fn consume(_: &[u8]) {}
+consume(&*data);
 ```
 
 <br>
@@ -929,6 +934,12 @@ pub enum MmapAdvice {
 
 ### Iterator-Based Access (feature = "iterator")
 
+> Since 0.9.7 the chunk and page iterators are zero-copy: they yield
+> `MappedSlice<'a>` items directly from the mapped region with no
+> allocation and no memcpy. Callers who genuinely need owned `Vec<u8>`
+> buffers can use `chunks_owned()` / `pages_owned()` as a migration
+> aid.
+
 #### chunks
 
 ```rust
@@ -936,19 +947,19 @@ pub enum MmapAdvice {
 pub fn chunks(&self, chunk_size: usize) -> ChunkIterator<'_>
 ```
 
-**Description**: Creates an iterator over fixed-size chunks of the file.
+**Description**: Zero-copy iterator over fixed-size chunks. The iterator holds a read guard (on RW mappings) for its lifetime; concurrent `resize()` blocks until the iterator is dropped.
 
 **Parameters**:
-- `chunk_size`: Size of each chunk in bytes
+- `chunk_size`: Size of each chunk in bytes (final chunk may be shorter)
 
-**Returns**: `ChunkIterator` yielding `Result<Vec<u8>>`
+**Returns**: `ChunkIterator` yielding `MappedSlice<'a>` (derefs to `&[u8]`)
 
 **Example**:
 ```rust
 #[cfg(feature = "iterator")]
 for chunk in mmap.chunks(4096) {
-    let data = chunk?;
-    // Process 4KB chunk...
+    let _len = chunk.len();
+    let _first = chunk[0];
 }
 ```
 
@@ -961,16 +972,37 @@ for chunk in mmap.chunks(4096) {
 pub fn pages(&self) -> PageIterator<'_>
 ```
 
-**Description**: Creates an iterator over page-aligned chunks (optimal for OS).
+**Description**: Zero-copy iterator over page-aligned chunks. Same lifetime guarantees as `chunks()`.
 
-**Returns**: `PageIterator` yielding `Result<Vec<u8>>`
+**Returns**: `PageIterator` yielding `MappedSlice<'a>`
 
 **Example**:
 ```rust
 #[cfg(feature = "iterator")]
 for page in mmap.pages() {
-    let data = page?;
-    // Process page...
+    let _ = page.len();
+}
+```
+
+<br>
+
+#### chunks_owned / pages_owned
+
+```rust
+#[cfg(feature = "iterator")]
+pub fn chunks_owned(&self, chunk_size: usize) -> ChunkIteratorOwned<'_>
+#[cfg(feature = "iterator")]
+pub fn pages_owned(&self) -> PageIteratorOwned<'_>
+```
+
+**Description**: Migration-aid iterators that yield `Result<Vec<u8>>`. Each item is allocated and the chunk's bytes are copied into it. Prefer the zero-copy `chunks()` / `pages()` for performance; reach for the owned variants only when you must hand off ownership.
+
+**Example**:
+```rust
+#[cfg(feature = "iterator")]
+for chunk in mmap.chunks_owned(4096) {
+    let bytes: Vec<u8> = chunk?;
+    let _ = bytes;
 }
 ```
 
@@ -983,7 +1015,7 @@ for page in mmap.pages() {
 pub fn chunks_mut(&self, chunk_size: usize) -> ChunkIteratorMut<'_>
 ```
 
-**Description**: Creates a mutable iterator that processes chunks via callback.
+**Description**: Creates a mutable iterator that processes chunks via callback. Since 0.9.7 the write guard is acquired ONCE for the entire iteration (instead of per-chunk).
 
 **Parameters**:
 - `chunk_size`: Size of each chunk in bytes
@@ -993,11 +1025,16 @@ pub fn chunks_mut(&self, chunk_size: usize) -> ChunkIteratorMut<'_>
 **Example**:
 ```rust
 #[cfg(feature = "iterator")]
-mmap.chunks_mut(1024).for_each_mut(|offset, chunk| {
-    chunk.fill(0); // Zero out each 1KB chunk
-    Ok::<(), std::io::Error>(())
-})??;
+mmap.chunks_mut(1024).for_each_mut(|_offset, chunk| {
+    chunk.fill(0);
+    Ok(())
+})?;
 ```
+
+Note: since 0.9.7 the closure returns the crate's `Result<()>`
+(was `std::result::Result<(), E>`); the outer `Result` is no longer
+nested. If your closure needs to surface a foreign error type, map
+it into `MmapIoError::Io(...)` before returning.
 
 <br>
 
@@ -1626,6 +1663,7 @@ for handle in handles {
 <br><br>
 
 ## Version History
+- **0.9.7**: Performance milestone (closes audit H1, H2, H4, E4). `as_slice` returns `MappedSlice<'_>` and works uniformly on RO / COW / RW (breaking). Iterators are zero-copy and yield `MappedSlice<'a>` directly (breaking); `chunks_owned` / `pages_owned` provided as migration aids. `touch_pages` rewritten as a tight `ptr::read_volatile` loop holding the lock once (~50-100x speedup on multi-GiB files). `chunks_mut().for_each_mut` flattened to `Result<()>` and holds the write guard once for the whole iteration. New workload-pattern benches and `bench-regression.yml` CI workflow.
 - **0.9.6**: Unsafe audit (closes audit S2, S3); SAFETY comments rewritten with platform-spec citations; `docs/SAFETY.md` added; property-test suite (`tests/proptest_bounds.rs`, `tests/proptest_atomic.rs`, `tests/proptest_flush.rs`) added via `proptest 1.5`; CI matrix-feature gate fix.
 - **0.9.5**: Correctness bugfix release. Closes audit C1 (`flush_range` accumulator), C2 (`FlushPolicy::EveryMillis` now actually flushes), C3 (atomic-view UAF; methods now return `AtomicView<'_, T>` / `AtomicSliceView<'_, T>` wrappers), H5 (`WatchHandle::drop` signals thread), H6 (`Segment::as_slice` re-validates bounds), H7 (`page_size()` cached via `OnceLock`).
 - **0.9.4**: Production-Ready Performance 

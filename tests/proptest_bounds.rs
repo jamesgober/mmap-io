@@ -95,29 +95,31 @@ proptest! {
         len in 0u64..MAX_FILE * 2,
     ) {
         let (mmap, path) = ro_mmap(size, "as_slice_ro", offset.wrapping_add(len));
-        let result = mmap.as_slice(offset, len);
-
-        if is_in_bounds(offset, len, size) {
-            let s = result.expect("in-bounds as_slice");
-            prop_assert_eq!(s.len() as u64, len);
-            // Verify content matches the deterministic pattern we
-            // wrote during setup (offset i has byte (i & 0xFF)).
-            for (i, byte) in s.iter().enumerate() {
-                let want = ((offset as usize + i) & 0xFF) as u8;
-                prop_assert_eq!(*byte, want, "byte mismatch at offset+{}", i);
-            }
-        } else {
-            match result {
-                Err(MmapIoError::OutOfBounds { offset: e_off, len: e_len, total }) => {
-                    prop_assert_eq!(e_off, offset);
-                    prop_assert_eq!(e_len, len);
-                    prop_assert_eq!(total, size);
+        {
+            let result = mmap.as_slice(offset, len);
+            if is_in_bounds(offset, len, size) {
+                let s = result.expect("in-bounds as_slice");
+                prop_assert_eq!(s.len() as u64, len);
+                // Verify content matches the deterministic pattern we
+                // wrote during setup (offset i has byte (i & 0xFF)).
+                for (i, byte) in s.iter().enumerate() {
+                    let want = ((offset as usize + i) & 0xFF) as u8;
+                    prop_assert_eq!(*byte, want, "byte mismatch at offset+{}", i);
                 }
-                other => prop_assert!(
-                    false,
-                    "expected OutOfBounds, got {:?}",
-                    other
-                ),
+            } else {
+                match result {
+                    Err(MmapIoError::OutOfBounds { offset: e_off, len: e_len, total }) => {
+                        prop_assert_eq!(e_off, offset);
+                        prop_assert_eq!(e_len, len);
+                        prop_assert_eq!(total, size);
+                    }
+                    Ok(_) => prop_assert!(false, "expected OutOfBounds, got Ok"),
+                    Err(other) => prop_assert!(
+                        false,
+                        "expected OutOfBounds, got {:?}",
+                        other
+                    ),
+                }
             }
         }
 
@@ -125,38 +127,38 @@ proptest! {
         let _ = std::fs::remove_file(&path);
     }
 
-    /// `as_slice` on an RW mapping must always return `InvalidMode`
-    /// (the documented behavior - RW callers use `read_into`). No
-    /// bounds-related error is reachable on this path.
+    /// Since 0.9.7 `as_slice` works uniformly on RW mappings (returns
+    /// `MappedSlice<'_>` that holds a read guard). The property: every
+    /// in-bounds request yields a `MappedSlice` of the right length;
+    /// every OOB request yields `OutOfBounds`. No `InvalidMode` reaches
+    /// the RW path anymore.
     #[test]
-    fn as_slice_rw_invalid_mode(
+    fn as_slice_rw_returns_mapped_slice(
         size in MIN_FILE..MAX_FILE,
         offset in 0u64..MAX_FILE * 2,
         len in 0u64..MAX_FILE * 2,
     ) {
-        let (mmap, path) = rw_mmap(size, "as_slice_rw", offset.wrapping_add(len));
-        let result = mmap.as_slice(offset, len);
-
-        // The crate decides bounds first OR mode first depending on
-        // the implementation. Either is acceptable as long as the
-        // error is one of the documented variants.
-        match result {
-            Err(MmapIoError::InvalidMode(_)) => { /* expected */ }
-            Err(MmapIoError::OutOfBounds { .. }) => {
-                prop_assert!(
-                    !is_in_bounds(offset, len, size),
-                    "OutOfBounds returned for in-bounds RW as_slice request"
-                );
+        let (mmap, path) = rw_mmap(size, "as_slice_rw_ok", offset.wrapping_add(len));
+        {
+            let result = mmap.as_slice(offset, len);
+            if is_in_bounds(offset, len, size) {
+                let s = result.expect("in-bounds as_slice on RW");
+                prop_assert_eq!(s.len() as u64, len);
+            } else {
+                match result {
+                    Err(MmapIoError::OutOfBounds { offset: e_off, len: e_len, total }) => {
+                        prop_assert_eq!(e_off, offset);
+                        prop_assert_eq!(e_len, len);
+                        prop_assert_eq!(total, size);
+                    }
+                    Ok(_) => prop_assert!(false, "expected OutOfBounds for OOB request"),
+                    Err(other) => prop_assert!(
+                        false,
+                        "unexpected error variant: {:?}",
+                        other
+                    ),
+                }
             }
-            Err(other) => prop_assert!(
-                false,
-                "unexpected error variant: {:?}",
-                other
-            ),
-            Ok(_) => prop_assert!(
-                false,
-                "RW as_slice unexpectedly returned Ok"
-            ),
         }
 
         drop(mmap);

@@ -75,16 +75,21 @@ pub struct MemoryMappedFile { /* private */ }
 pub enum MmapMode { ReadOnly, ReadWrite, CopyOnWrite }
 pub enum TouchHint { Never, Eager, Lazy }
 
-// `MappedSliceMut<'_>` is the write-guard wrapper returned by
-// `as_slice_mut`. It holds the RW write lock for its lifetime and
-// derefs to `&mut [u8]` via `.as_mut()`.
+// Read-side wrapper. Holds the RW read guard for its lifetime (None
+// for RO/COW). Derefs to `[u8]`. Implements Debug + PartialEq with
+// byte slices for ergonomic test/assert use. Since 0.9.7.
+pub struct MappedSlice<'a> { /* private */ }
+
+// Write-side wrapper. Holds the RW write lock for its lifetime. Use
+// `.as_mut()` or DerefMut to access `&mut [u8]`.
 pub struct MappedSliceMut<'a> { /* private */ }
 
 impl MemoryMappedFile {
     pub fn create_rw<P: AsRef<Path>>(path: P, size: u64) -> Result<Self>;
     pub fn open_ro<P: AsRef<Path>>(path: P) -> Result<Self>;
     pub fn open_rw<P: AsRef<Path>>(path: P) -> Result<Self>;
-    pub fn as_slice(&self, offset: u64, len: u64) -> Result<&[u8]>;
+    // Since 0.9.7: works uniformly on RO, COW, AND RW.
+    pub fn as_slice(&self, offset: u64, len: u64) -> Result<MappedSlice<'_>>;
     pub fn as_slice_mut(&self, offset: u64, len: u64) -> Result<MappedSliceMut<'_>>;
     pub fn read_into(&self, offset: u64, dst: &mut [u8]) -> Result<()>;
     pub fn update_region(&self, offset: u64, data: &[u8]) -> Result<()>;
@@ -129,13 +134,26 @@ impl MemoryMappedFile {
 }
 
 // iterator (feature = "iterator", default-on)
-pub struct ChunkIterator<'a> { /* private */ }
-pub struct PageIterator<'a> { /* private */ }
+// Since 0.9.7: chunks() and pages() are zero-copy and yield
+// MappedSlice<'a>. chunks_owned() / pages_owned() preserve the old
+// Vec<u8> ergonomics for callers that need owned buffers.
+pub struct ChunkIterator<'a> { /* private */ }       // Item = MappedSlice<'a>
+pub struct PageIterator<'a> { /* private */ }        // Item = MappedSlice<'a>
+pub struct ChunkIteratorOwned<'a> { /* private */ }  // Item = Result<Vec<u8>>
+pub struct PageIteratorOwned<'a> { /* private */ }   // Item = Result<Vec<u8>>
 pub struct ChunkIteratorMut<'a> { /* private */ }
 impl MemoryMappedFile {
     pub fn chunks(&self, chunk_size: usize) -> ChunkIterator<'_>;
     pub fn pages(&self) -> PageIterator<'_>;
+    pub fn chunks_owned(&self, chunk_size: usize) -> ChunkIteratorOwned<'_>;
+    pub fn pages_owned(&self) -> PageIteratorOwned<'_>;
     pub fn chunks_mut(&self, chunk_size: usize) -> ChunkIteratorMut<'_>;
+}
+impl<'a> ChunkIteratorMut<'a> {
+    // Since 0.9.7: flattened return (was Result<Result<(), E>>).
+    // Acquires the write guard ONCE for the entire iteration.
+    pub fn for_each_mut<F>(self, f: F) -> Result<()>
+        where F: FnMut(u64, &mut [u8]) -> Result<()>;
 }
 
 // cow (feature = "cow")
