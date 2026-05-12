@@ -17,6 +17,8 @@
 //! require running under MIRI or AddressSanitizer); these tests verify
 //! the lock-based protection that makes UB impossible.
 
+#![cfg(feature = "atomic")]
+
 use mmap_io::create_mmap;
 use std::fs;
 use std::path::PathBuf;
