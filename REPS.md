@@ -88,7 +88,11 @@ impl MemoryMappedFile {
     pub fn create_rw<P: AsRef<Path>>(path: P, size: u64) -> Result<Self>;
     pub fn open_ro<P: AsRef<Path>>(path: P) -> Result<Self>;
     pub fn open_rw<P: AsRef<Path>>(path: P) -> Result<Self>;
-    // Since 0.9.7: works uniformly on RO, COW, AND RW.
+    // Since 0.9.8: ergonomic constructors and teardown.
+    pub fn open_or_create<P: AsRef<Path>>(path: P, default_size: u64) -> Result<Self>;
+    pub fn from_file<P: AsRef<Path>>(file: File, mode: MmapMode, path: P) -> Result<Self>;
+    pub fn unmap(self) -> std::result::Result<File, Self>;
+    // Since 0.9.7: as_slice works uniformly on RO, COW, AND RW.
     pub fn as_slice(&self, offset: u64, len: u64) -> Result<MappedSlice<'_>>;
     pub fn as_slice_mut(&self, offset: u64, len: u64) -> Result<MappedSliceMut<'_>>;
     pub fn read_into(&self, offset: u64, dst: &mut [u8]) -> Result<()>;
@@ -102,6 +106,21 @@ impl MemoryMappedFile {
     pub fn is_empty(&self) -> bool;
     pub fn path(&self) -> &Path;
     pub fn mode(&self) -> MmapMode;
+    // Since 0.9.8: introspection accessors.
+    pub fn flush_policy(&self) -> FlushPolicy;
+    pub fn pending_bytes(&self) -> u64;
+    // Since 0.9.8: FFI escape hatches.
+    pub unsafe fn as_ptr(&self) -> *const u8;
+    pub unsafe fn as_mut_ptr(&self) -> Result<*mut u8>;
+    // Since 0.9.8: kernel-side prefetch hint (posix_fadvise on
+    // Linux; no-op elsewhere). Complementary to MmapAdvice::WillNeed
+    // (which is a VM-side hint via madvise).
+    pub fn prefetch_range(&self, offset: u64, len: u64) -> Result<()>;
+}
+
+// Builder additions since 0.9.8:
+impl MemoryMappedFileBuilder {
+    pub fn open_or_create(self) -> Result<MemoryMappedFile>;
 }
 
 // manager (high-level)

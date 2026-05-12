@@ -9,6 +9,91 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 <br>
 
+<!-- VERSION: 0.9.8 -->
+## [0.9.8] - 2026-05-12
+
+### Added
+
+- **(E1, E6)** `MemoryMappedFile::open_or_create(path, default_size)`
+  and `MemoryMappedFileBuilder::open_or_create()` for the
+  open-if-present / create-if-absent pattern in one call.
+- **(F9)** `MemoryMappedFile::from_file(file, mode, path)` to wrap a
+  pre-opened `std::fs::File` (e.g. one opened with custom
+  `OpenOptions` flags like `O_DIRECT` / `O_NOATIME` or inherited
+  from a parent process).
+- **(F5)** `MemoryMappedFile::unmap(self) -> Result<File, Self>`
+  consumes the mapping, drops the underlying mapping + background
+  flusher in safe order, and returns the underlying `File`. Returns
+  `Err(self)` unchanged if other clones of the mapping are alive.
+- **(E7)** `flush_policy()` returns the configured `FlushPolicy`;
+  `pending_bytes()` returns the live `EveryBytes` / `EveryWrites`
+  accumulator value. Both are `#[inline]` and `O(1)`; useful for
+  diagnostics and observability dashboards.
+- **(E2)** `unsafe fn as_ptr(&self) -> *const u8` and `unsafe fn
+  as_mut_ptr(&self) -> Result<*mut u8>` expose raw base pointers
+  to the mapping for FFI / advanced use. Full safety contract in
+  the rustdoc.
+- **(F2)** `prefetch_range(offset, len)` issues
+  `posix_fadvise(POSIX_FADV_WILLNEED)` on the file descriptor on
+  Linux (warms the page cache from the file side, complementary to
+  `advise(MmapAdvice::WillNeed)` which warms via `madvise` on the
+  VM side). No-op fallback on non-Linux. Bounds-checked.
+- `tests/ergonomic_api.rs` (17 tests) covers every new method:
+  open_or_create both paths, builder open_or_create, from_file
+  RO/RW/zero-length, unmap unique/shared, flush_policy /
+  pending_bytes, as_ptr / as_mut_ptr roundtrips, prefetch_range
+  in-bounds / OOB / zero-length.
+
+### Fixed
+
+- **`flush::TimeBasedFlusher`** thread loop used `interval -
+  elapsed` directly. If `thread::sleep` overshot under heavy
+  scheduler contention `elapsed` could exceed `interval` and the
+  subtraction would panic on Duration underflow. Switched to
+  `interval.saturating_sub(elapsed)` so the next slice clamps to
+  zero (immediate retry) instead of panicking.
+
+### Performance
+
+- **Bounds-check helpers `#[inline]`-ed.** `ensure_in_bounds` and
+  `slice_range` are called from every bounds-checked public method
+  (`as_slice`, `as_slice_mut`, `read_into`, `update_region`,
+  `flush_range`, `touch_pages_range`, `prefetch_range`, advise,
+  lock, segment access). Inlining removes a call/return boundary
+  on every read/write. Also merged the two-branch bounds check
+  into a single `saturating_add` comparison.
+- **`len()` / `is_empty()` / `mode()` / `flush_policy()` /
+  `pending_bytes()` marked `#[inline]`**: trivial accessors that
+  the optimiser should fold into the call site every time.
+
+### Documentation
+
+- `docs/API.md`: full sections for all eight new methods, TOC
+  updated, version snippets bumped to 0.9.8, Version History
+  entry added.
+- `REPS.md` section 4: new ergonomic methods + builder addition
+  listed with `// Since 0.9.8` markers.
+- `Cargo.toml` SEO: description leads with the unique selling
+  point (zero-copy), names the supported platforms, and lists use
+  cases concretely; keywords tightened to the highest-volume
+  search terms (`mmap`, `memory-mapped`, `zero-copy`, `filesystem`,
+  `io`); categories include `concurrency`.
+- `README.md`: opening hook rewritten around the actual
+  differentiators (zero-copy on every mode, zero-allocation
+  iteration, lock-free atomic views, configurable durability).
+
+### Notes
+
+- No new runtime dependencies. The Linux `posix_fadvise` path uses
+  the already-required `libc` crate.
+- MSRV unchanged at Rust 1.75.
+- **F1** (anonymous shared-memory mapping) remains open. The
+  refactor (Inner.file: `Option<File>`, sentinel path handling,
+  per-method "anonymous-aware" branches) is sized for a focused
+  pass rather than rolled into this ergonomic milestone.
+
+<br>
+
 <!-- VERSION: 0.9.7 -->
 ## [0.9.7] - 2026-05-12
 
@@ -500,7 +585,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Basic README.
 
 <!-- LINK REFERENCE -->
-[Unreleased]: https://github.com/jamesgober/mmap-io/compare/v0.9.7...HEAD
+[Unreleased]: https://github.com/jamesgober/mmap-io/compare/v0.9.8...HEAD
+[0.9.8]: https://github.com/jamesgober/mmap-io/compare/v0.9.7...v0.9.8
 [0.9.7]: https://github.com/jamesgober/mmap-io/compare/v0.9.6...v0.9.7
 [0.9.6]: https://github.com/jamesgober/mmap-io/compare/v0.9.5...v0.9.6
 [0.9.5]: https://github.com/jamesgober/mmap-io/compare/v0.9.4...v0.9.5

@@ -96,6 +96,7 @@ fn unix_page_size() -> usize {
 /// Returns the original value unchanged when `alignment == 0` (a
 /// permissive convention rather than a panic; callers passing 0 are
 /// presumed to mean "no alignment requested").
+#[inline]
 #[must_use]
 pub fn align_up(value: u64, alignment: u64) -> u64 {
     if alignment == 0 {
@@ -113,15 +114,24 @@ pub fn align_up(value: u64, alignment: u64) -> u64 {
 /// Ensure the requested [offset, offset+len) range is within [0, total).
 /// Returns `Ok(())` if valid; otherwise an `OutOfBounds` error.
 ///
+/// This function is called from every bounds-checked public method in
+/// the crate (`as_slice`, `as_slice_mut`, `read_into`, `update_region`,
+/// `flush_range`, `touch_pages_range`, `prefetch_range`, advise, lock,
+/// segment access). It is marked `#[inline]` so the compiler can fuse
+/// the check into the calling stack frame and avoid a function-call
+/// boundary on the hot path.
+///
 /// # Errors
 ///
 /// Returns `MmapIoError::OutOfBounds` if the range exceeds bounds.
+#[inline]
 pub fn ensure_in_bounds(offset: u64, len: u64, total: u64) -> Result<()> {
-    if offset > total {
-        return Err(MmapIoError::OutOfBounds { offset, len, total });
-    }
+    // Use a single saturating-add comparison rather than two branches.
+    // `offset > total` is implied by `offset + len > total` when
+    // `len == 0` is paired with `offset > total`; in the common case
+    // (len > 0) the saturating_add catches both overflow and OOB.
     let end = offset.saturating_add(len);
-    if end > total {
+    if end > total || offset > total {
         return Err(MmapIoError::OutOfBounds { offset, len, total });
     }
     Ok(())
@@ -129,9 +139,14 @@ pub fn ensure_in_bounds(offset: u64, len: u64, total: u64) -> Result<()> {
 
 /// Compute a safe byte slice range for a given total length, returning start..end as usize tuple.
 ///
+/// `#[inline]` because this is on every read/write hot path; the
+/// function body is small (one bounds check + two casts) and inlining
+/// removes the call/return overhead.
+///
 /// # Errors
 ///
 /// Returns `MmapIoError::OutOfBounds` if the requested range exceeds the total length.
+#[inline]
 #[allow(clippy::cast_possible_truncation)]
 pub fn slice_range(offset: u64, len: u64, total: u64) -> Result<(usize, usize)> {
     ensure_in_bounds(offset, len, total)?;
