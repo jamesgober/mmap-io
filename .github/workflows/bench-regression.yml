@@ -30,15 +30,18 @@ jobs:
           restore-keys: |
             bench-${{ runner.os }}-
 
-      # Criterion writes its results to `target/criterion`. The
-      # `--save-baseline` flag tags this run so a follow-up workflow
-      # can compare against it. The threshold gate is intentionally
-      # deferred: we surface the JSON as an artifact for the
-      # maintainer to diff against the checked-in baseline in
-      # `.dev/baselines/`. Hard CI failure on >10% regression is the
-      # 0.9.10 deliverable per ROADMAP.
+      # Criterion writes its results to `target/criterion`. We target
+      # the `mmap_bench` bench explicitly so cargo does not also try
+      # to invoke the lib unittests and integration tests in bench
+      # mode (their harness does not understand `--save-baseline`).
+      # The `--save-baseline` flag tags this run so a follow-up
+      # workflow can compare against it. The threshold gate is
+      # intentionally deferred: we surface the JSON as an artifact
+      # for the maintainer to diff against the checked-in baseline
+      # in `.dev/baselines/`. Hard CI failure on >10% regression is
+      # the 0.9.10 deliverable per ROADMAP.
       - name: Run benchmarks (--save-baseline ci-${{ github.sha }})
-        run: cargo bench --all-features -- --save-baseline ci-${{ github.sha }}
+        run: cargo bench --all-features --bench mmap_bench -- --save-baseline ci-${{ github.sha }}
 
       - name: Upload criterion results
         if: always()
