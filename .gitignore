@@ -1,5 +1,6 @@
 # Development
 /dev
+/.dev/
 
 # Rust/Cargo Build Artifacts
 /target/

@@ -57,8 +57,6 @@ impl MemoryMappedFile {
 
         #[cfg(windows)]
         {
-            use std::ptr;
-
             extern "system" {
                 fn VirtualLock(lpAddress: *const core::ffi::c_void, dwSize: usize) -> i32;
             }
