@@ -73,6 +73,10 @@ mod all_features {
         let atomic = mmap.atomic_u64(0).expect("atomic u64");
         atomic.store(0x1234567890ABCDEF, Ordering::SeqCst);
         assert_eq!(atomic.load(Ordering::SeqCst), 0x1234567890ABCDEF);
+        // Drop the view before any subsequent write op on this mmap:
+        // the view holds the read lock; update_region/flush need the
+        // write lock and would deadlock the test thread otherwise.
+        drop(atomic);
 
         // Test locking (may fail without privileges)
         let _ = mmap.lock(0, 4096);

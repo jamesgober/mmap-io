@@ -1,8 +1,5 @@
 <div id="doc-top" align="center">
-    <picture>
-        <source media="(prefers-color-scheme: dark)" srcset="https://raw.githubusercontent.com/asotex/.github/refs/heads/main/media/asotex-icon-white.png">
-        <img width="81px" alt="Asotex brand logo, featuring the Asotex A-Icon, followed by the word Asotex." src="https://raw.githubusercontent.com/asotex/.github/refs/heads/main/media/asotex-icon-dark.png">
-    </picture>
+    <img width="99" alt="Rust logo" src="https://raw.githubusercontent.com/jamesgober/rust-collection/72baabd71f00e14aa9184efcb16fa3deddda3a0a/assets/rust-logo.svg">
     <h1>
         <strong>mmap-io</strong>
         <sup><br><sub>API REFERENCE</sub><br></sup>
@@ -1575,31 +1572,14 @@ View the [CHANGELOG](../CHANGELOG.md).
     <p>
         Licensed under the <b>Apache License</b>, <b>Version 2.0</b>. 
         <br>
-        See <code>LICENSE</code> file for details.
+        See <b><a href="../LICENSE">LICENSE</a></b> file for details.
     </p>
 </div>
 
 
-<!--// FOOTER // -->
+<!--// COPYRIGHT // -->
 <div align="center">
     <br>
     <h2></h2>
-    <div><!-- FOOT: NAVIGATION -->
-        <sup> 
-            <a href="https://asotex.com" title="Asotex Website">ASOTEX.COM</a>
-            <span>&nbsp;&middot;&nbsp;</span>
-            <a href="https://asotex.com/about" title="About Asotex">ABOUT</a>
-            <span>&nbsp;&middot;&nbsp;</span>
-            <a href="https://asotex.com/corporate/investors/" title="Asotex Investors">INVESTORS</a>
-            <span>&nbsp;&middot;&nbsp;</span>
-            <a href="https://asotex.com/corporate/partners/" title="Asotex Partners">PARTNERS</a>
-            <span>&nbsp;&middot;&nbsp;</span>
-            <a href="https://asotex.com/legal/" title="Asotex Legal Documentation">LEGAL</a>
-            <span>&nbsp;&middot;&nbsp;</span>
-            <a href="https://asotex.com/contact/" title="Contact Asotex">CONTACT</a>
-        </sup>
-    </div>
-    <sub><!-- FOOT: COPYRIGHT -->
-        Copyright &copy; 2025 Asotex Inc. All Rights Reserved.
-    </sub>
+    <sub>Copyright &copy; 2026 James Gober.</sub>
 </div>

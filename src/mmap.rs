@@ -68,6 +68,11 @@ pub struct Inner {
     // Flush policy and accounting (RW only)
     pub(crate) flush_policy: FlushPolicy,
     pub(crate) written_since_last_flush: RwLock<u64>,
+    // Time-based flusher background thread (used only when
+    // FlushPolicy::EveryMillis is selected on the builder path). Held
+    // here so the worker thread's lifetime is bound to the mapping;
+    // Drop signals shutdown. See C2 fix in .dev/AUDIT.md.
+    pub(crate) flusher: RwLock<Option<crate::flush::TimeBasedFlusher>>,
     // Huge pages preference (builder-set), effective on supported platforms
     #[cfg(feature = "hugepages")]
     pub(crate) huge_pages: bool,
@@ -195,6 +200,7 @@ impl MemoryMappedFile {
             map: MapVariant::Rw(RwLock::new(mmap)),
             flush_policy: FlushPolicy::default(),
             written_since_last_flush: RwLock::new(0),
+            flusher: RwLock::new(None),
             #[cfg(feature = "hugepages")]
             huge_pages: false,
         };
@@ -222,6 +228,7 @@ impl MemoryMappedFile {
             map: MapVariant::Ro(mmap),
             flush_policy: FlushPolicy::Never,
             written_since_last_flush: RwLock::new(0),
+            flusher: RwLock::new(None),
             #[cfg(feature = "hugepages")]
             huge_pages: false,
         };
@@ -255,6 +262,7 @@ impl MemoryMappedFile {
             map: MapVariant::Rw(RwLock::new(mmap)),
             flush_policy: FlushPolicy::default(),
             written_since_last_flush: RwLock::new(0),
+            flusher: RwLock::new(None),
             #[cfg(feature = "hugepages")]
             huge_pages: false,
         };
@@ -521,7 +529,13 @@ impl MemoryMappedFile {
                 // Linux MS_ASYNC optimization
                 #[cfg(all(unix, target_os = "linux"))]
                 {
-                    // SAFETY: msync on a valid mapped range. We translate to a pointer within the map.
+                    // SAFETY: `optimized_start` is within the mapped region (bounded above
+                    // by `file_len` via the microflush calculation, or by the validated
+                    // `start` from `slice_range` on the non-micro path), so `base.add(...)`
+                    // produces a pointer inside the mapping. `msync` (POSIX) on a valid
+                    // pointer + length within a mapped region with MS_ASYNC schedules an
+                    // asynchronous writeback and does not access the memory after the call
+                    // returns. Reference: https://man7.org/linux/man-pages/man2/msync.2.html
                     let msync_res: i32 = {
                         let guard = lock.read();
                         let base = guard.as_ptr();
@@ -529,8 +543,12 @@ impl MemoryMappedFile {
                         unsafe { libc::msync(ptr, optimized_len, libc::MS_ASYNC) }
                     };
                     if msync_res == 0 {
-                        // Consider MS_ASYNC success and reset accumulator
-                        *self.inner.written_since_last_flush.write() = 0;
+                        // C1 fix: a range flush must NOT zero the global accumulator.
+                        // Debit by the bytes actually flushed (clamped at zero) so the
+                        // FlushPolicy threshold tracking remains accurate for the
+                        // unflushed pages. See .dev/AUDIT.md C1.
+                        let mut acc = self.inner.written_since_last_flush.write();
+                        *acc = acc.saturating_sub(optimized_len as u64);
                         return Ok(());
                     }
                     // else fall through to full flush_range
@@ -540,8 +558,9 @@ impl MemoryMappedFile {
                 guard
                     .flush_range(optimized_start, optimized_len)
                     .map_err(|e| MmapIoError::FlushFailed(e.to_string()))?;
-                // Reset accumulator after a successful flush
-                *self.inner.written_since_last_flush.write() = 0;
+                // C1 fix: same debit logic as the MS_ASYNC path above.
+                let mut acc = self.inner.written_since_last_flush.write();
+                *acc = acc.saturating_sub(optimized_len as u64);
                 Ok(())
             }
         }
@@ -914,6 +933,7 @@ impl MemoryMappedFile {
             // COW never flushes underlying file in phase-1
             flush_policy: FlushPolicy::Never,
             written_since_last_flush: RwLock::new(0),
+            flusher: RwLock::new(None),
             #[cfg(feature = "hugepages")]
             huge_pages: false,
         };
@@ -1097,28 +1117,10 @@ impl MemoryMappedFileBuilder {
                 #[cfg(not(feature = "hugepages"))]
                 let mmap = unsafe { MmapMut::map_mut(&file)? };
 
-                // Set up time-based flusher if needed (placeholder, not used)
-                if let FlushPolicy::EveryMillis(ms) = self.flush_policy {
-                    if ms > 0 {
-                        let mmap_weak: std::sync::Weak<Inner> = std::sync::Weak::new(); // Will be set after Arc creation
-                        crate::flush::TimeBasedFlusher::new(ms, move || {
-                            // Try to upgrade weak reference to check if mmap still exists
-                            if let Some(inner) = mmap_weak.upgrade() {
-                                // Check if there are pending writes
-                                let pending = *inner.written_since_last_flush.read() > 0;
-                                if pending {
-                                    // Create a temp MemoryMappedFile to call flush
-                                    let temp_mmap = MemoryMappedFile { inner };
-                                    if temp_mmap.flush().is_ok() {
-                                        return true; // Successfully flushed
-                                    }
-                                }
-                            }
-                            false // No flush performed
-                        });
-                    }
-                }
-
+                // Build the Inner now (without a live flusher), wrap in Arc.
+                // We attach the time-based flusher AFTER the Arc exists so that
+                // Arc::downgrade produces a real Weak that can later upgrade,
+                // unlike the previous Weak::new() (dangling). C2 fix.
                 let inner = Inner {
                     path: path_ref.clone(),
                     file,
@@ -1127,6 +1129,7 @@ impl MemoryMappedFileBuilder {
                     map: MapVariant::Rw(RwLock::new(mmap)),
                     flush_policy: self.flush_policy,
                     written_since_last_flush: RwLock::new(0),
+                    flusher: RwLock::new(None),
                     #[cfg(feature = "hugepages")]
                     huge_pages: self.huge_pages,
                 };
@@ -1135,22 +1138,41 @@ impl MemoryMappedFileBuilder {
                     inner: Arc::new(inner),
                 };
 
+                // C2 fix: install the time-based flusher with a real weak ref.
+                // The flusher is stored on Inner so its background thread's
+                // lifetime is bound to the mapping. When the last Arc<Inner>
+                // drops, the flusher's Drop runs and signals the thread to exit.
+                if let FlushPolicy::EveryMillis(ms) = self.flush_policy {
+                    if ms > 0 {
+                        let inner_weak = Arc::downgrade(&mmap_file.inner);
+                        let flusher = crate::flush::TimeBasedFlusher::new(ms, move || {
+                            // Upgrade the weak ref. Returns None once the
+                            // mapping has been dropped; thread will continue
+                            // to wake but the callback short-circuits.
+                            let Some(inner) = inner_weak.upgrade() else {
+                                return false;
+                            };
+                            // Only flush if there are pending writes.
+                            let pending = *inner.written_since_last_flush.read() > 0;
+                            if !pending {
+                                return false;
+                            }
+                            let temp = MemoryMappedFile { inner };
+                            temp.flush().is_ok()
+                        });
+                        // Store the flusher on Inner so its background thread
+                        // lives as long as the mapping. The Option allows for
+                        // ms == 0 (which TimeBasedFlusher::new returns None for).
+                        *mmap_file.inner.flusher.write() = flusher;
+                    }
+                }
+
                 // Apply touch hint if specified
                 if self.touch_hint == TouchHint::Eager {
                     log::debug!("Eagerly touching all pages for {size} bytes");
                     if let Err(e) = mmap_file.touch_pages() {
                         log::warn!("Failed to eagerly touch pages: {e}");
                         // Don't fail the creation, just log the warning
-                    }
-                }
-
-                // If we have a time flusher, we need to set up the weak reference properly
-                // This is a placeholder for future implementation.
-                if let FlushPolicy::EveryMillis(ms) = self.flush_policy {
-                    if ms > 0 {
-                        log::debug!(
-                            "Time-based flushing policy set to {ms} ms (implementation simplified)"
-                        );
                     }
                 }
 
@@ -1169,6 +1191,7 @@ impl MemoryMappedFileBuilder {
                     map: MapVariant::Ro(mmap),
                     flush_policy: FlushPolicy::Never,
                     written_since_last_flush: RwLock::new(0),
+                    flusher: RwLock::new(None),
                     #[cfg(feature = "hugepages")]
                     huge_pages: false,
                 };
@@ -1197,6 +1220,7 @@ impl MemoryMappedFileBuilder {
                     map: MapVariant::Cow(mmap),
                     flush_policy: FlushPolicy::Never,
                     written_since_last_flush: RwLock::new(0),
+                    flusher: RwLock::new(None),
                     #[cfg(feature = "hugepages")]
                     huge_pages: false,
                 };
@@ -1228,6 +1252,7 @@ impl MemoryMappedFileBuilder {
                     map: MapVariant::Ro(mmap),
                     flush_policy: FlushPolicy::Never,
                     written_since_last_flush: RwLock::new(0),
+                    flusher: RwLock::new(None),
                     #[cfg(feature = "hugepages")]
                     huge_pages: false,
                 };
@@ -1254,6 +1279,7 @@ impl MemoryMappedFileBuilder {
                     map: MapVariant::Rw(RwLock::new(mmap)),
                     flush_policy: self.flush_policy,
                     written_since_last_flush: RwLock::new(0),
+                    flusher: RwLock::new(None),
                     #[cfg(feature = "hugepages")]
                     huge_pages: self.huge_pages,
                 };
@@ -1282,6 +1308,7 @@ impl MemoryMappedFileBuilder {
                     map: MapVariant::Cow(mmap),
                     flush_policy: FlushPolicy::Never,
                     written_since_last_flush: RwLock::new(0),
+                    flusher: RwLock::new(None),
                     #[cfg(feature = "hugepages")]
                     huge_pages: false,
                 };
