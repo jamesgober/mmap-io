@@ -54,7 +54,16 @@ impl MemoryMappedFile {
             crate::mmap::MapVariant::Cow(m) => m.as_ptr(),
         };
 
-        // SAFETY: We've validated the range is within bounds
+        // SAFETY: `start` satisfies `start < total` because `slice_range`
+        // returns `(start, end)` with `start + (end - start) <= total`,
+        // and `total` is the byte length of the mapping owned by
+        // `self.inner.map`. Therefore `ptr.add(start)` stays in-bounds
+        // of the same allocated object (the OS mapping), which is the
+        // precondition for `<*const u8>::add` under the Rust memory
+        // model. The pointer is not dereferenced here; the resulting
+        // address is only handed to a kernel syscall below, which
+        // operates on the address range without forming a Rust
+        // reference to the memory.
         let addr = unsafe { ptr.add(start) };
 
         #[cfg(unix)]
@@ -71,7 +80,27 @@ impl MemoryMappedFile {
                 MmapAdvice::DontNeed => MADV_DONTNEED,
             };
 
-            // SAFETY: madvise is safe to call with validated parameters
+            // SAFETY: POSIX `madvise` (and Linux's extension) requires:
+            //   1. `addr` is page-aligned, OR the kernel will return
+            //      EINVAL and we surface that as `AdviceFailed` instead
+            //      of triggering UB. (We do not pre-align here; the
+            //      caller's offset/len is honored as-is.)
+            //   2. The range `[addr, addr + length)` lies within a
+            //      mapped region of the process. This is established by
+            //      the `slice_range`/`ensure_in_bounds` check above:
+            //      `start + length <= total` where `total` is the
+            //      current mapped length.
+            //   3. `advice_flag` is one of the documented constants.
+            //      Each branch of the match above selects exactly one
+            //      libc constant.
+            // `madvise` does not access the memory at `addr` in the
+            // sense of forming a reference to it; it advises the
+            // kernel's VM subsystem about expected access patterns. For
+            // MADV_DONTNEED specifically, the kernel may zero pages
+            // backed by anonymous memory, but for our file-backed
+            // mappings the next read will re-fault from the file, so
+            // there is no soundness issue.
+            // Reference: https://man7.org/linux/man-pages/man2/madvise.2.html
             let result = unsafe { madvise(addr as *mut libc::c_void, length, advice_flag) };
 
             if result != 0 {
@@ -107,7 +136,26 @@ impl MemoryMappedFile {
                     NumberOfBytes: length,
                 };
 
-                // SAFETY: PrefetchVirtualMemory is safe with valid memory range
+                // SAFETY: `PrefetchVirtualMemory` (kernel32.dll,
+                // documented on MSDN) requires:
+                //   1. `hProcess` is a valid process handle with the
+                //      PROCESS_QUERY_INFORMATION and PROCESS_VM_READ
+                //      access rights. `GetCurrentProcess()` returns a
+                //      pseudo-handle to the current process which
+                //      always has full rights.
+                //   2. `NumberOfEntries == 1` matches the size of the
+                //      single-element `entry` array pointed to by
+                //      `VirtualAddresses`.
+                //   3. Each `WIN32_MEMORY_RANGE_ENTRY` describes a
+                //      region within the caller's address space.
+                //      `addr` was derived from a valid mapped region
+                //      (bounds-checked above) and `length` does not
+                //      extend past the mapping.
+                //   4. `Flags` is reserved and must be 0.
+                // The function does not retain pointers past the call
+                // and does not mutate the described memory; it merely
+                // hints the page cache to load the pages.
+                // Reference: https://learn.microsoft.com/en-us/windows/win32/api/memoryapi/nf-memoryapi-prefetchvirtualmemory
                 let result = unsafe {
                     PrefetchVirtualMemory(
                         GetCurrentProcess(),

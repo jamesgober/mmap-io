@@ -39,12 +39,32 @@ impl MemoryMappedFile {
             crate::mmap::MapVariant::Cow(m) => m.as_ptr(),
         };
 
-        // SAFETY: We've validated the range is within bounds
+        // SAFETY: `start` satisfies `start + length <= total` per
+        // `slice_range` above, where `total` is the current mapped
+        // length owned by `self.inner.map`. `ptr.add(start)` therefore
+        // remains within the same allocated object (the OS mapping).
+        // We never form a Rust reference to the memory at `addr`; only
+        // the kernel reads it (via `mlock`/`VirtualLock`), which
+        // operates on the address range itself.
         let addr = unsafe { ptr.add(start) };
 
         #[cfg(unix)]
         {
-            // SAFETY: mlock is safe to call with validated parameters
+            // SAFETY: POSIX `mlock` requires:
+            //   1. `[addr, addr + length)` lies within a mapped region
+            //      of the process. Established by the
+            //      `slice_range`/`ensure_in_bounds` check above.
+            //   2. `length > 0` (we early-return on `len == 0` at the
+            //      top of this method, and the bounds check guarantees
+            //      `length == end - start > 0` reaches here).
+            // The call locks the resident pages into RAM, preventing
+            // them from being paged out. It does not access the memory
+            // contents and does not retain `addr` after the call. On
+            // failure (typically EPERM without CAP_IPC_LOCK, or ENOMEM
+            // exceeding RLIMIT_MEMLOCK) it returns -1 and we surface
+            // that as `LockFailed`. No UB is reachable from any failure
+            // mode.
+            // Reference: https://man7.org/linux/man-pages/man2/mlock.2.html
             let result = unsafe { libc::mlock(addr as *const libc::c_void, length) };
 
             if result != 0 {
@@ -61,7 +81,20 @@ impl MemoryMappedFile {
                 fn VirtualLock(lpAddress: *const core::ffi::c_void, dwSize: usize) -> i32;
             }
 
-            // SAFETY: VirtualLock is safe with valid memory range
+            // SAFETY: `VirtualLock` (kernel32.dll) requires:
+            //   1. `lpAddress` points within a committed region of the
+            //      caller's address space, and
+            //      `[lpAddress, lpAddress + dwSize)` does not cross a
+            //      region boundary. The mmap-io mapping is a single
+            //      committed region of length `total`, and our bounds
+            //      check guarantees the range is inside it.
+            //   2. `dwSize > 0` (guaranteed by the early-return on
+            //      `len == 0` and the bounds-check arithmetic).
+            // Like `mlock`, the function operates on the address range
+            // without accessing the memory contents or retaining the
+            // pointer. A return of 0 indicates failure; we read the
+            // last OS error and return `LockFailed`.
+            // Reference: https://learn.microsoft.com/en-us/windows/win32/api/memoryapi/nf-memoryapi-virtuallock
             let result = unsafe { VirtualLock(addr as *const core::ffi::c_void, length) };
 
             if result == 0 {
@@ -108,12 +141,24 @@ impl MemoryMappedFile {
             crate::mmap::MapVariant::Cow(m) => m.as_ptr(),
         };
 
-        // SAFETY: We've validated the range is within bounds
+        // SAFETY: same justification as in `lock`: `start + length`
+        // is within the mapping per the prior `slice_range` check, so
+        // `ptr.add(start)` is in-bounds of the underlying allocated
+        // object. The resulting pointer is only handed to a kernel
+        // syscall below; no Rust reference is formed.
         let addr = unsafe { ptr.add(start) };
 
         #[cfg(unix)]
         {
-            // SAFETY: munlock is safe to call with validated parameters
+            // SAFETY: POSIX `munlock` requires the same range
+            // preconditions as `mlock` (range lies within a mapped
+            // region, length > 0). Both are established above.
+            // `munlock` does not access the memory contents; it removes
+            // the lock that prevented paging. If the range was not
+            // previously locked, the syscall is still well-defined and
+            // simply succeeds (or returns ENOMEM on Linux, which we
+            // surface as `UnlockFailed` rather than treating as UB).
+            // Reference: https://man7.org/linux/man-pages/man2/mlock.2.html
             let result = unsafe { libc::munlock(addr as *const libc::c_void, length) };
 
             if result != 0 {
@@ -128,7 +173,14 @@ impl MemoryMappedFile {
                 fn VirtualUnlock(lpAddress: *const core::ffi::c_void, dwSize: usize) -> i32;
             }
 
-            // SAFETY: VirtualUnlock is safe with valid memory range
+            // SAFETY: `VirtualUnlock` (kernel32.dll) requires the same
+            // range preconditions as `VirtualLock`. The function does
+            // not read or write the memory; it operates on the locked-
+            // pages bookkeeping for the address range. If the range
+            // was not previously locked, the function returns 0 with
+            // `GetLastError() == ERROR_NOT_LOCKED` (158), which we
+            // detect below and treat as a soft success.
+            // Reference: https://learn.microsoft.com/en-us/windows/win32/api/memoryapi/nf-memoryapi-virtualunlock
             let result = unsafe { VirtualUnlock(addr as *const core::ffi::c_void, length) };
 
             if result == 0 {

@@ -243,7 +243,19 @@ mod tests {
                 use std::ffi::CString;
                 use std::os::unix::ffi::OsStrExt;
                 let cpath = CString::new(path.as_os_str().as_bytes()).unwrap();
-                // SAFETY: utime with null sets times to current time
+                // SAFETY: POSIX `utime` requires:
+                //   1. `filename` is a valid NUL-terminated C string.
+                //      `CString::new` guarantees this; `cpath` is held
+                //      live across the call.
+                //   2. `times` may be NULL, in which case the kernel
+                //      uses the current time for both atime and mtime.
+                //      `std::ptr::null()` produces a valid NULL pointer
+                //      of the required type.
+                // The function does not retain either pointer after
+                // it returns. Failure (e.g., file gone, permission
+                // denied) is silently ignored here because this is a
+                // best-effort timestamp bump for a polling-watch test.
+                // Reference: https://man7.org/linux/man-pages/man2/utime.2.html
                 unsafe {
                     libc::utime(cpath.as_ptr(), std::ptr::null());
                 }
@@ -379,6 +391,9 @@ mod tests {
                 use std::ffi::CString;
                 use std::os::unix::ffi::OsStrExt;
                 let cpath = CString::new(path.as_os_str().as_bytes()).unwrap();
+                // SAFETY: see the `utime` block earlier in this file
+                // (test helper that nudges the file's mtime).
+                // Reference: https://man7.org/linux/man-pages/man2/utime.2.html
                 unsafe { libc::utime(cpath.as_ptr(), std::ptr::null()) };
             }
             #[cfg(windows)]

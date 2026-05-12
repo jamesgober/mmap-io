@@ -188,9 +188,21 @@ impl MemoryMappedFile {
             .truncate(true)
             .open(path_ref)?;
         file.set_len(size)?;
-        // SAFETY: The file has been created with the correct size and permissions.
-        // memmap2 handles platform-specific mmap details safely.
-        // Note: create_rw convenience ignores huge pages; use builder for that.
+        // SAFETY: `MmapMut::map_mut` is `unsafe` because the OS does
+        // not prevent another process from concurrently modifying the
+        // backing file under the mapping, which would violate Rust's
+        // aliasing model if anyone holds a `&mut [u8]` into the
+        // mapping. We do not enforce single-writer at the OS level;
+        // callers who share the file across processes are responsible
+        // for synchronization (the crate documents this in REPS.md
+        // section 5.1). Within this process, all mutable access to
+        // the `MmapMut` is mediated by `parking_lot::RwLock`, so the
+        // standard aliasing rules hold for intra-process access.
+        // The file has just been created and `set_len(size)` succeeded,
+        // so the kernel will produce a mapping of exactly `size` bytes.
+        // Note: `create_rw` convenience ignores huge pages; use builder
+        // for that.
+        // Reference: https://docs.rs/memmap2/latest/memmap2/struct.MmapMut.html#method.map_mut
         let mmap = unsafe { MmapMut::map_mut(&file)? };
         let inner = Inner {
             path: path_ref.to_path_buf(),
@@ -218,7 +230,15 @@ impl MemoryMappedFile {
         let path_ref = path.as_ref();
         let file = OpenOptions::new().read(true).open(path_ref)?;
         let len = file.metadata()?.len();
-        // SAFETY: The file is opened read-only and memmap2 ensures safe mapping.
+        // SAFETY: `Mmap::map` is `unsafe` for the same cross-process
+        // reason as `MmapMut::map_mut` (see `create_rw` above): the OS
+        // does not prevent another process from writing to the backing
+        // file. For a read-only mapping the in-process aliasing
+        // hazard is reduced because we never hand out `&mut [u8]` into
+        // the mapping, but cross-process modification can still cause
+        // a race that surfaces as a torn read. This is documented as
+        // out-of-scope; intra-process access is sound.
+        // Reference: https://docs.rs/memmap2/latest/memmap2/struct.Mmap.html#method.map
         let mmap = unsafe { Mmap::map(&file)? };
         let inner = Inner {
             path: path_ref.to_path_buf(),
@@ -250,9 +270,13 @@ impl MemoryMappedFile {
         if len == 0 {
             return Err(MmapIoError::ResizeFailed(ERR_ZERO_LENGTH_FILE.into()));
         }
-        // SAFETY: The file is opened read-write with proper permissions.
-        // We've verified the file is not zero-length.
-        // Note: open_rw convenience ignores huge pages; use builder for that.
+        // SAFETY: see `create_rw` above for the full justification of
+        // calling `MmapMut::map_mut`. Additionally, we have verified
+        // here that the file is not zero-length (`len != 0`), which
+        // avoids `EINVAL` from `mmap(2)` on Linux for zero-length
+        // mappings. Note: `open_rw` convenience ignores huge pages;
+        // use the builder for that.
+        // Reference: https://docs.rs/memmap2/latest/memmap2/struct.MmapMut.html#method.map_mut
         let mmap = unsafe { MmapMut::map_mut(&file)? };
         let inner = Inner {
             path: path_ref.to_path_buf(),
@@ -624,7 +648,20 @@ impl MemoryMappedFile {
         let _ = &current;
         self.inner.file.set_len(new_size)?;
 
-        // Remap with the new size.
+        // SAFETY: `MmapMut::map_mut` carries the cross-process aliasing
+        // hazard documented elsewhere in this file. The file backing
+        // `self.inner.file` is the original RW file we created/opened,
+        // and we have just called `set_len(new_size)`, so the kernel
+        // sees the file at exactly `new_size` bytes. Critically, the
+        // old `MmapMut` is NOT dropped before this call: it lives
+        // inside `MapVariant::Rw(RwLock<MmapMut>)` and is only replaced
+        // under the write guard below. That means we briefly hold two
+        // mappings of the same file; this is benign because the second
+        // mapping does not invalidate the first (mmap creates an
+        // independent view of the file). C3 fix relies on this: any
+        // live AtomicView holds the read lock and prevents reaching
+        // the write-guard swap below.
+        // Reference: https://docs.rs/memmap2/latest/memmap2/struct.MmapMut.html#method.map_mut
         let new_map = unsafe { MmapMut::map_mut(&self.inner.file)? };
         match &self.inner.map {
             MapVariant::Ro(_) => Err(MmapIoError::InvalidMode(
@@ -762,7 +799,22 @@ impl MemoryMappedFile {
                 let guard = lock.read();
                 let ptr = guard.as_ptr() as *mut libc::c_void;
 
-                // SAFETY: msync requires a valid mapping address/len; memmap2 handles mapping
+                // SAFETY: POSIX `msync` requires:
+                //   1. `addr` is page-aligned. `guard.as_ptr()` returns
+                //      the base of the mapping, which the kernel
+                //      page-aligned at `mmap(2)` time.
+                //   2. `[addr, addr + len)` lies within a mapped region.
+                //      `len` is `self.current_len()` which equals the
+                //      mapping length at the time the read guard was
+                //      acquired (the guard prevents `resize` from
+                //      shrinking the mapping under us).
+                //   3. `flags` is a valid combination. `MS_ASYNC` is a
+                //      defined Linux/POSIX flag that schedules
+                //      asynchronous writeback and returns immediately.
+                // `msync` does not access the memory at `ptr` from
+                // Rust's perspective; it queues a kernel writeback. The
+                // pointer is not retained past the call.
+                // Reference: https://man7.org/linux/man-pages/man2/msync.2.html
                 let ret = unsafe { libc::msync(ptr, len, libc::MS_ASYNC) };
 
                 if ret == 0 {
@@ -806,12 +858,26 @@ fn map_mut_with_options(file: &File, len: u64, huge: bool) -> Result<MmapMut> {
             }
         }
 
-        // Create standard mapping
+        // SAFETY: see `create_rw` for the general justification of
+        // calling `MmapMut::map_mut`. This call path is the
+        // hugepages-feature fallback after the optimized hugepage map
+        // attempt failed; it always maps a regular-page mapping of the
+        // file as-is.
         let mmap = unsafe { MmapMut::map_mut(file) }.map_err(MmapIoError::Io)?;
 
         if huge {
             // Request Transparent Huge Pages (THP) for existing mapping
             // This is a hint to the kernel - not a guarantee
+            // SAFETY: `madvise(addr, length, MADV_HUGEPAGE)` requires
+            // the same range preconditions as the generic `madvise`
+            // path in `advise.rs`: `addr` page-aligned and the range
+            // within a mapped region. Both are satisfied here:
+            // `mmap.as_ptr()` is the kernel-aligned base of the
+            // freshly created mapping, and `len` is exactly the
+            // mapping length. `MADV_HUGEPAGE` is a Linux extension
+            // that hints the kernel to back the region with huge
+            // pages; it does not access the memory contents.
+            // Reference: https://man7.org/linux/man-pages/man2/madvise.2.html
             unsafe {
                 let mmap_ptr = mmap.as_ptr() as *mut libc::c_void;
 
@@ -832,6 +898,9 @@ fn map_mut_with_options(file: &File, len: u64, huge: bool) -> Result<MmapMut> {
     {
         // Huge pages are Linux-specific, ignore the flag on other platforms
         let _ = (len, huge);
+        // SAFETY: see `create_rw`. This is the non-Linux fallback;
+        // huge pages have no effect outside Linux so we just produce
+        // a normal mapping.
         unsafe { MmapMut::map_mut(file) }.map_err(MmapIoError::Io)
     }
 }
@@ -846,8 +915,24 @@ fn try_create_optimized_mapping(file: &File, len: u64) -> Result<MmapMut> {
 
     if len >= HUGE_PAGE_SIZE {
         // Create the mapping and immediately advise huge pages
+        // SAFETY: see `create_rw` for the general `MmapMut::map_mut`
+        // contract. This is the first-tier hugepages attempt: we map
+        // the file normally then immediately request THP backing
+        // before any access touches the pages.
         let mmap = unsafe { MmapMut::map_mut(file) }.map_err(MmapIoError::Io)?;
 
+        // SAFETY: both `madvise` calls below operate on the freshly
+        // created mapping's full extent (`mmap_ptr`, `len`). The base
+        // is page-aligned by `mmap(2)` construction, and `len` is the
+        // mapping length, so `[mmap_ptr, mmap_ptr + len)` is exactly
+        // the mapped region. `MADV_HUGEPAGE` and `MADV_POPULATE_WRITE`
+        // (a Linux 5.14+ flag, defined locally because libc's constant
+        // is gated behind a more recent libc version than our MSRV
+        // permits) both operate on the address range without forming
+        // a Rust reference; failures are non-fatal hints.
+        // References:
+        //   https://man7.org/linux/man-pages/man2/madvise.2.html
+        //   https://man7.org/linux/man-pages/man2/madvise.2.html (MADV_POPULATE_WRITE)
         unsafe {
             let mmap_ptr = mmap.as_ptr() as *mut libc::c_void;
 
@@ -906,7 +991,16 @@ impl MemoryMappedFile {
         if len == 0 {
             return Err(MmapIoError::ResizeFailed(ERR_ZERO_LENGTH_FILE.into()));
         }
-        // SAFETY: memmap2 handles platform specifics. We request a private (copy-on-write) mapping.
+        // SAFETY: `MmapOptions::map` carries the same cross-process
+        // aliasing hazard as `Mmap::map`: another process modifying
+        // the backing file can produce torn reads. The crate marks
+        // this as out-of-scope per REPS.md section 5.1. Within this
+        // process, no `&mut [u8]` ever points into a COW mapping
+        // (phase-1 COW is read-only at the Rust API level), so the
+        // aliasing rules are trivially satisfied.
+        // `opts.len(len as usize)` constrains the mapping to the file
+        // size we just queried; `len > 0` is verified above.
+        // Reference: https://docs.rs/memmap2/latest/memmap2/struct.MmapOptions.html#method.map
         let mmap = unsafe {
             let mut opts = MmapOptions::new();
             opts.len(len as usize);
@@ -1115,6 +1209,11 @@ impl MemoryMappedFileBuilder {
                 #[cfg(feature = "hugepages")]
                 let mmap = map_mut_with_options(&file, size, self.huge_pages)?;
                 #[cfg(not(feature = "hugepages"))]
+                // SAFETY: see `MemoryMappedFile::create_rw` for the
+                // full justification. Identical preconditions: we just
+                // created/truncated the file and set its length to
+                // `size` via `set_len`; the kernel will produce a
+                // mapping of exactly that length.
                 let mmap = unsafe { MmapMut::map_mut(&file)? };
 
                 // Build the Inner now (without a live flusher), wrap in Arc.
@@ -1182,6 +1281,11 @@ impl MemoryMappedFileBuilder {
                 let path_ref = &self.path;
                 let file = OpenOptions::new().read(true).open(path_ref)?;
                 let len = file.metadata()?.len();
+                // SAFETY: see `MemoryMappedFile::open_ro` for the full
+                // justification of calling `Mmap::map`. The file was
+                // just opened read-only; cross-process modification is
+                // the only residual hazard and is documented as
+                // out-of-scope.
                 let mmap = unsafe { Mmap::map(&file)? };
                 let inner = Inner {
                     path: path_ref.clone(),
@@ -1207,6 +1311,10 @@ impl MemoryMappedFileBuilder {
                 if len == 0 {
                     return Err(MmapIoError::ResizeFailed(ERR_ZERO_LENGTH_FILE.into()));
                 }
+                // SAFETY: see `open_cow` above for the full
+                // justification. Identical preconditions: file just
+                // opened read-only, `len > 0` verified, and the COW
+                // mapping is exposed as read-only at the Rust API.
                 let mmap = unsafe {
                     let mut opts = MmapOptions::new();
                     opts.len(len as usize);
@@ -1243,6 +1351,7 @@ impl MemoryMappedFileBuilder {
                 let path_ref = &self.path;
                 let file = OpenOptions::new().read(true).open(path_ref)?;
                 let len = file.metadata()?.len();
+                // SAFETY: see `MemoryMappedFile::open_ro`.
                 let mmap = unsafe { Mmap::map(&file)? };
                 let inner = Inner {
                     path: path_ref.clone(),
@@ -1270,6 +1379,8 @@ impl MemoryMappedFileBuilder {
                 #[cfg(feature = "hugepages")]
                 let mmap = map_mut_with_options(&file, len, self.huge_pages)?;
                 #[cfg(not(feature = "hugepages"))]
+                // SAFETY: see `MemoryMappedFile::open_rw`. File opened
+                // read+write, `len > 0` verified above.
                 let mmap = unsafe { MmapMut::map_mut(&file)? };
                 let inner = Inner {
                     path: path_ref.clone(),
@@ -1295,6 +1406,7 @@ impl MemoryMappedFileBuilder {
                 if len == 0 {
                     return Err(MmapIoError::ResizeFailed(ERR_ZERO_LENGTH_FILE.into()));
                 }
+                // SAFETY: see `open_cow`.
                 let mmap = unsafe {
                     let mut opts = MmapOptions::new();
                     opts.len(len as usize);

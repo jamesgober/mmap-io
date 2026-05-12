@@ -7,6 +7,45 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- `proptest` 1.5 added to `[dev-dependencies]` (default-features off;
+  `std`, `bit-set`, `fork`, `timeout` opted in). Holds MSRV 1.75.
+- `tests/proptest_bounds.rs` exercises bounds-checking on `as_slice`,
+  `as_slice_mut`, `read_into`, `update_region`, and `flush_range`
+  across random `(offset, len)` pairs and explicit boundary picks
+  (off-by-one, wrapping-add overflow, zero-length at end, etc.).
+- `tests/proptest_atomic.rs` exercises alignment + bounds on
+  `atomic_u32`, `atomic_u64`, `atomic_u32_slice`, and
+  `atomic_u64_slice`. Verifies the correct `Misaligned` /
+  `OutOfBounds` variant fires for every misaligned or out-of-range
+  offset and that aligned in-bounds slots round-trip via
+  store/load.
+- `tests/proptest_flush.rs` exercises `FlushPolicy` state transitions
+  including the C1 regression scenario under random mixed
+  `update_region` + `flush_range` sequences, plus `EveryWrites` and
+  `Manual` policies.
+- Each property test runs at least 1,024 cases per property by
+  default; set `PROPTEST_CASES=10000` for the deep sweep run before
+  releases.
+
+### Documentation
+
+- `docs/SAFETY.md` added: the authoritative catalog of every
+  `unsafe` block in the crate, grouped by category (mapping
+  construction, advise, locking, atomic views, flush, platform
+  shims, test helpers), with the invariants each block relies on
+  and citations to the relevant man page / MSDN page.
+- Every `unsafe` block in `src/advise.rs`, `src/lock.rs`, and the
+  non-atomic paths of `src/mmap.rs` (open / create / resize / COW /
+  hugepages / msync) now has a `// SAFETY:` comment that states the
+  invariants the syscall requires, demonstrates how local context
+  establishes them, and cites the platform spec. Closes audit
+  findings **S2** and **S3**.
+- The two `libc::utime` test helpers in `src/watch.rs` (gated on
+  `#[cfg(test)]`) now have explicit SAFETY comments citing
+  POSIX `utime(2)`.
+
 <br>
 
 <!-- VERSION: 0.9.5 -->
