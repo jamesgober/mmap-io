@@ -43,6 +43,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   test failed to compile under every such combination. The
   `full-build` job (all-features) masked it during the 0.9.5 cycle.
 
+### Changed
+
+- CI: bumped `actions/checkout@v4` to `actions/checkout@v5` across
+  `.github/workflows/CI.yml` (4 occurrences). The v4 action runs on
+  Node 20, which GitHub deprecated on 2025-09-19 (forced to Node 24
+  starting 2026-06-02; removed 2026-09-16). v5 supports Node 24
+  natively. No behavior change in the workflow itself.
+
 ### Documentation
 
 - `docs/SAFETY.md` added: the authoritative catalog of every
