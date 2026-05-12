@@ -69,6 +69,9 @@ Complete reference for public-facing APIs. Each item lists its signature, parame
   - [Segment](#segment)
   - [SegmentMut](#segmentmut)
 - **[Async Operations](#async-operations-feature--async)**
+  - [update_region_async](#update_region_async)
+  - [flush_async](#flush_async)
+  - [flush_range_async](#flush_range_async)
   - [create_mmap_async](#create_mmap_async)
   - [copy_mmap_async](#copy_mmap_async)
   - [delete_mmap_async](#delete_mmap_async)
@@ -94,7 +97,7 @@ Complete reference for public-facing APIs. Each item lists its signature, parame
 <br><br>
 
 ## Prerequisites:
-- **MSRV: 1.76**
+- **MSRV: 1.75**
 - **Default (*sync*) APIs**: *always available*.
 - **Feature-gated APIs**: *require enabling specific features*.
 
@@ -145,7 +148,7 @@ By default, the following features are enabled:
 > Add the following to your Cargo.toml file:
 ```toml
 [dependencies]
-mmap-io = { version = "0.9.4" }
+mmap-io = { version = "0.9.6" }
 ```
 
 > Or install using Cargo:
@@ -161,7 +164,7 @@ Enable additional features by using the pre-defined [features flags](#features) 
 > ##### Manual Install with Features:
 ```toml
 [dependencies]
-mmap-io = { version = 0.9.4", features = ["cow", "locking"] }
+mmap-io = { version = "0.9.6", features = ["cow", "locking"] }
 ```
 > ##### Cargo Install with Features:
 ```bash
@@ -176,7 +179,7 @@ If you're building for minimal environments or want total control over feature f
 > ##### Manual Install without Default Features:
 ```toml
 [dependencies]
-mmap-io = { version = "0.9.0", default-features = false, features = ["locking"] }
+mmap-io = { version = "0.9.6", default-features = false, features = ["locking"] }
 ```
 
 > ##### Cargo Install without Default Features:
@@ -1000,12 +1003,19 @@ mmap.chunks_mut(1024).for_each_mut(|offset, chunk| {
 
 ### Atomic Operations (feature = "atomic")
 
+> Since 0.9.5, atomic methods return wrapper types
+> (`AtomicView<'_, T>` for single atoms, `AtomicSliceView<'_, T>` for
+> slices) instead of bare `&T` / `&[T]`. The wrappers `Deref` to the
+> underlying atomic, so call sites that do
+> `view.fetch_add(...)` / `slice.iter()` keep working unchanged. The
+> wrapper holds the read lock for its lifetime, so a concurrent
+> `resize()` blocks while the view is alive (C3 fix).
 
 #### atomic_u64
 
 ```rust
 #[cfg(feature = "atomic")]
-pub fn atomic_u64(&self, offset: u64) -> Result<&AtomicU64>
+pub fn atomic_u64(&self, offset: u64) -> Result<AtomicView<'_, AtomicU64>>
 ```
 
 **Description**: Returns an atomic view of a u64 value at the specified offset.
@@ -1013,7 +1023,7 @@ pub fn atomic_u64(&self, offset: u64) -> Result<&AtomicU64>
 **Parameters**:
 - `offset`: Byte offset (must be 8-byte aligned)
 
-**Returns**: `Result<&AtomicU64>`
+**Returns**: `Result<AtomicView<'_, AtomicU64>>` - wrapper that derefs to `&AtomicU64`
 
 **Errors**:
 - `MmapIoError::Misaligned` if offset is not 8-byte aligned
@@ -1034,7 +1044,7 @@ counter.fetch_add(1, Ordering::SeqCst);
 
 ```rust
 #[cfg(feature = "atomic")]
-pub fn atomic_u32(&self, offset: u64) -> Result<&AtomicU32>
+pub fn atomic_u32(&self, offset: u64) -> Result<AtomicView<'_, AtomicU32>>
 ```
 
 **Description**: Returns an atomic view of a u32 value at the specified offset.
@@ -1042,7 +1052,7 @@ pub fn atomic_u32(&self, offset: u64) -> Result<&AtomicU32>
 **Parameters**:
 - `offset`: Byte offset (must be 4-byte aligned)
 
-**Returns**: `Result<&AtomicU32>`
+**Returns**: `Result<AtomicView<'_, AtomicU32>>` - wrapper that derefs to `&AtomicU32`
 
 **Errors**:
 - `MmapIoError::Misaligned` if offset is not 4-byte aligned
@@ -1054,7 +1064,7 @@ pub fn atomic_u32(&self, offset: u64) -> Result<&AtomicU32>
 
 ```rust
 #[cfg(feature = "atomic")]
-pub fn atomic_u64_slice(&self, offset: u64, count: usize) -> Result<&[AtomicU64]>
+pub fn atomic_u64_slice(&self, offset: u64, count: usize) -> Result<AtomicSliceView<'_, AtomicU64>>
 ```
 
 **Description**: Returns a slice of atomic u64 values.
@@ -1063,7 +1073,7 @@ pub fn atomic_u64_slice(&self, offset: u64, count: usize) -> Result<&[AtomicU64]
 - `offset`: Starting byte offset (must be 8-byte aligned)
 - `count`: Number of u64 values
 
-**Returns**: `Result<&[AtomicU64]>`
+**Returns**: `Result<AtomicSliceView<'_, AtomicU64>>` - wrapper that derefs to `&[AtomicU64]`
 
 <br>
 
@@ -1071,7 +1081,7 @@ pub fn atomic_u64_slice(&self, offset: u64, count: usize) -> Result<&[AtomicU64]
 
 ```rust
 #[cfg(feature = "atomic")]
-pub fn atomic_u32_slice(&self, offset: u64, count: usize) -> Result<&[AtomicU32]>
+pub fn atomic_u32_slice(&self, offset: u64, count: usize) -> Result<AtomicSliceView<'_, AtomicU32>>
 ```
 
 **Description**: Returns a slice of atomic u32 values.
@@ -1080,7 +1090,7 @@ pub fn atomic_u32_slice(&self, offset: u64, count: usize) -> Result<&[AtomicU32]
 - `offset`: Starting byte offset (must be 4-byte aligned)
 - `count`: Number of u32 values
 
-**Returns**: `Result<&[AtomicU32]>`
+**Returns**: `Result<AtomicSliceView<'_, AtomicU32>>` - wrapper that derefs to `&[AtomicU32]`
 
 <br>
 
@@ -1262,12 +1272,84 @@ pub struct SegmentMut { /* private fields */ }
 - `is_empty(&self) -> bool`
 - `offset(&self) -> u64`
 - `parent(&self) -> &MemoryMappedFile`
-å
+
 <hr>
 <div align="right"><a href="#doc-top">&uarr; TOP</a></div>
 <br>
 
 ## Async Operations (feature = "async")
+
+The crate exposes two layers of async helpers: manager-level
+free functions for file lifecycle (`create_mmap_async`,
+`copy_mmap_async`, `delete_mmap_async`) and instance methods on
+`MemoryMappedFile` for write / flush operations. The instance
+methods auto-flush after each call to guarantee post-await
+durability across platforms (Async-Only Flushing).
+
+### update_region_async
+
+```rust
+#[cfg(feature = "async")]
+pub async fn update_region_async(&self, offset: u64, data: &[u8]) -> Result<()>
+```
+
+**Description**: Async write that also flushes after the write completes. The write itself runs on a `tokio::spawn_blocking` task; the flush is unconditional regardless of the configured `FlushPolicy`. This is the cross-platform-safe write path for async code.
+
+**Parameters**:
+- `offset`: Starting byte offset
+- `data`: Bytes to write
+
+**Returns**: `Result<()>`
+
+**Errors**:
+- `MmapIoError::InvalidMode` if not in `ReadWrite` mode
+- `MmapIoError::OutOfBounds` if `offset + data.len()` exceeds file bounds
+- `MmapIoError::FlushFailed` if the post-write flush fails
+
+**Example**:
+```rust
+#[cfg(feature = "async")]
+mmap.update_region_async(128, b"ASYNC-FLUSH").await?;
+```
+
+<br>
+
+### flush_async
+
+```rust
+#[cfg(feature = "async")]
+pub async fn flush_async(&self) -> Result<()>
+```
+
+**Description**: Async equivalent of `flush()`. Runs the underlying flush in a `spawn_blocking` task so the async scheduler is not blocked on disk I/O.
+
+**Returns**: `Result<()>`
+
+**Errors**:
+- `MmapIoError::FlushFailed` if the flush operation fails
+
+<br>
+
+### flush_range_async
+
+```rust
+#[cfg(feature = "async")]
+pub async fn flush_range_async(&self, offset: u64, len: u64) -> Result<()>
+```
+
+**Description**: Async equivalent of `flush_range()`. Same cancellation semantics as `flush_async`.
+
+**Parameters**:
+- `offset`: Starting byte offset
+- `len`: Length of the range to flush
+
+**Returns**: `Result<()>`
+
+**Errors**:
+- `MmapIoError::OutOfBounds` if range exceeds file bounds
+- `MmapIoError::FlushFailed` if the flush operation fails
+
+<br>
 
 ### create_mmap_async
 
@@ -1544,6 +1626,8 @@ for handle in handles {
 <br><br>
 
 ## Version History
+- **0.9.6**: Unsafe audit (closes audit S2, S3); SAFETY comments rewritten with platform-spec citations; `docs/SAFETY.md` added; property-test suite (`tests/proptest_bounds.rs`, `tests/proptest_atomic.rs`, `tests/proptest_flush.rs`) added via `proptest 1.5`; CI matrix-feature gate fix.
+- **0.9.5**: Correctness bugfix release. Closes audit C1 (`flush_range` accumulator), C2 (`FlushPolicy::EveryMillis` now actually flushes), C3 (atomic-view UAF; methods now return `AtomicView<'_, T>` / `AtomicSliceView<'_, T>` wrappers), H5 (`WatchHandle::drop` signals thread), H6 (`Segment::as_slice` re-validates bounds), H7 (`page_size()` cached via `OnceLock`).
 - **0.9.4**: Production-Ready Performance 
 - **0.9.3**: Final optimizations, cleaned codebase.
 - **0.9.0**: Fixed Remaining Issues, Finalized Codebase for Stable Beta Release.
