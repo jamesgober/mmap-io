@@ -1,4 +1,4 @@
-//! Additional unit tests for comprehensive coverage.
+//! Additional unit tests for extended coverage.
 
 use mmap_io::{
     create_mmap, load_mmap,

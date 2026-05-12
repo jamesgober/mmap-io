@@ -1,4 +1,4 @@
-//! Comprehensive test for all the new critical features
+//! Integration test for all the new critical features
 
 use mmap_io::{flush::FlushPolicy, MemoryMappedFile, MmapMode, TouchHint};
 use std::fs;
@@ -162,7 +162,7 @@ fn test_microflush_optimization() {
 
 #[test]
 fn test_comprehensive_feature_combination() {
-    let path = tmp_path("comprehensive");
+    let path = tmp_path("all-features");
     let _ = fs::remove_file(&path);
 
     // Test combination of multiple features
@@ -178,7 +178,7 @@ fn test_comprehensive_feature_combination() {
         builder = builder.huge_pages(true);
     }
 
-    let mmap = builder.create().expect("create comprehensive mapping");
+    let mmap = builder.create().expect("create combined-features mapping");
 
     // Test various operations
     let data = vec![0xCD; 8192]; // 8KB chunks
@@ -203,6 +203,6 @@ fn test_comprehensive_feature_combination() {
         assert_eq!(buf[8191], 0xCD);
     }
 
-    println!("Comprehensive feature test completed successfully");
+    println!("All-features integration test completed successfully");
     fs::remove_file(&path).expect("cleanup");
 }

@@ -2,7 +2,7 @@
 name = "mmap-io"
 version = "0.9.4"
 edition = "2021"
-rust-version = "1.76"
+rust-version = "1.75"
 readme = "README.md"
 license = "Apache-2.0"
 publish = true
@@ -20,8 +20,8 @@ categories = [
     "asynchronous", 
     "database-implementations"
 ]
-homepage = "https://github.com/asotex/mmap-io"
-repository = "https://github.com/asotex/mmap-io"
+homepage = "https://github.com/jamesgober/mmap-io"
+repository = "https://github.com/jamesgober/mmap-io"
 documentation = "https://docs.rs/mmap-io"
 authors = [
     "James Gober <code@jamesgober.dev>",
@@ -59,7 +59,7 @@ watch     = []            # Watch/Notification (inotify/kqueue/FSEvents/Windows;
 
 
 [badges]
-github-actions = { repository = "asotex/mmap-io", workflow = "CI" }
+github-actions = { repository = "jamesgober/mmap-io", workflow = "CI" }
 maintenance = { status = "actively-developed" }
 
 # Criterion benches

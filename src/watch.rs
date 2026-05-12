@@ -194,6 +194,7 @@ where
 }
 
 #[cfg(test)]
+#[allow(clippy::permissions_set_readonly_false)]
 mod tests {
     use super::*;
     use crate::create_mmap;
@@ -214,6 +215,10 @@ mod tests {
 
     #[test]
     #[cfg(feature = "watch")]
+    #[cfg_attr(
+        windows,
+        ignore = "Windows mtime granularity makes polling-based change detection flaky; reliable detection requires native ReadDirectoryChangesW"
+    )]
     fn test_watch_file_changes() {
         let path = tmp_path("watch_changes");
         let _ = fs::remove_file(&path);
@@ -347,6 +352,10 @@ mod tests {
 
     #[test]
     #[cfg(feature = "watch")]
+    #[cfg_attr(
+        windows,
+        ignore = "Windows mtime granularity makes polling-based change detection flaky; reliable detection requires native ReadDirectoryChangesW"
+    )]
     fn test_multiple_watchers() {
         let path = tmp_path("multi_watch");
         let _ = fs::remove_file(&path);

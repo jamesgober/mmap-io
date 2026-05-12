@@ -1,4 +1,6 @@
-//! Example demonstrating all the critical new features
+//! Example demonstrating the major features of mmap-io: huge pages,
+//! eager page touching, time-based flushing, microflush optimization,
+//! and cold-vs-warm performance comparison.
 
 use mmap_io::{flush::FlushPolicy, MemoryMappedFile, MmapMode, TouchHint};
 use std::io::ErrorKind;
@@ -8,27 +10,29 @@ fn cleanup_path<P: AsRef<std::path::Path>>(p: P) {
     match std::fs::remove_file(p) {
         Ok(_) => {}
         Err(e) if e.kind() == ErrorKind::NotFound => {}
-        Err(e) if e.kind() == ErrorKind::IsADirectory => {
+        Err(_) => {
+            // Either it's a directory or some other error.
+            // Try removing as a directory; if that fails for any reason
+            // other than NotFound, panic.
             if let Err(e) = std::fs::remove_dir_all(p) {
                 if e.kind() != ErrorKind::NotFound {
                     panic!("cleanup: {e}");
                 }
             }
         }
-        Err(e) => panic!("cleanup: {e}"),
     }
 }
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
-    println!("🚀 Demonstrating all critical mmap-io features...\n");
+    println!("Demonstrating major mmap-io features...\n");
 
-    // 1. **Real Huge Page Retention with Multi-Tier Fallback**
+    // 1. Real huge page retention with multi-tier fallback.
     println!("1. Creating mapping with huge pages (multi-tier fallback)...");
     #[cfg(feature = "hugepages")]
     let mmap = MemoryMappedFile::builder("demo_huge.bin")
         .mode(MmapMode::ReadWrite)
         .size(4 * 1024 * 1024) // 4MB for huge page optimization
-        .huge_pages(true) // Tries: optimized mapping → THP → regular pages
+        .huge_pages(true) // Tries: optimized mapping -> THP -> regular pages
         .create()?;
 
     #[cfg(not(feature = "hugepages"))]
@@ -37,9 +41,9 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         .size(4 * 1024 * 1024)
         .create()?;
 
-    println!("✓ Huge pages mapping created (with automatic fallback)");
+    println!("  Huge pages mapping created (with automatic fallback)");
 
-    // 2. **TouchHint::Eager for Benchmarking**
+    // 2. TouchHint::Eager for benchmarking consistency.
     println!("\n2. Creating mapping with eager page touching...");
     let benchmark_mmap = MemoryMappedFile::builder("benchmark.bin")
         .mode(MmapMode::ReadWrite)
@@ -47,9 +51,9 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         .touch_hint(TouchHint::Eager) // Pre-touch all pages during creation
         .create()?;
 
-    println!("✓ All pages pre-touched for consistent benchmark timing");
+    println!("  All pages pre-touched for consistent benchmark timing");
 
-    // 3. **Time-Based Flushing**
+    // 3. Time-based flushing.
     println!("\n3. Creating mapping with automatic time-based flushing...");
     let auto_flush_mmap = MemoryMappedFile::builder("auto_flush.bin")
         .mode(MmapMode::ReadWrite)
@@ -57,10 +61,10 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         .flush_policy(FlushPolicy::EveryMillis(500)) // Auto-flush every 500ms
         .create()?;
 
-    println!("✓ Time-based flushing enabled (500ms intervals)");
+    println!("  Time-based flushing enabled (500ms intervals)");
 
-    // 4. **Combination: Huge Pages + Eager Touch + Automatic Flushing**
-    println!("\n4. Creating ultimate performance mapping with all features...");
+    // 4. Combination: huge pages + eager touch + automatic flushing.
+    println!("\n4. Creating mapping with all major optimizations enabled...");
     #[allow(unused_mut)]
     let mut ultimate_builder = MemoryMappedFile::builder("ultimate.bin")
         .mode(MmapMode::ReadWrite)
@@ -74,20 +78,20 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     }
 
     let ultimate_mmap = ultimate_builder.create()?;
-    println!("✓ Ultimate performance mapping created with all optimizations");
+    println!("  Combined mapping created with all optimizations");
 
-    // 5. **Demonstrate Touch Pages Functionality**
+    // 5. Touch pages functionality.
     println!("\n5. Demonstrating explicit page touching...");
 
     // Touch all pages explicitly
     ultimate_mmap.touch_pages()?;
-    println!("✓ All pages touched explicitly");
+    println!("  All pages touched explicitly");
 
     // Touch specific range
     ultimate_mmap.touch_pages_range(0, 1024 * 1024)?; // Touch first 1MB
-    println!("✓ First 1MB pages touched");
+    println!("  First 1MB pages touched");
 
-    // 6. **Demonstrate Microflush Optimization**
+    // 6. Microflush optimization.
     println!("\n6. Testing microflush optimization...");
 
     // Write small data (triggers microflush optimization)
@@ -96,9 +100,9 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     // Flush small range (automatically page-aligned)
     ultimate_mmap.flush_range(0, 512)?;
-    println!("✓ Microflush completed with page alignment optimization");
+    println!("  Microflush completed with page alignment optimization");
 
-    // 7. **Performance Comparison: Cold vs Warm Access**
+    // 7. Performance comparison: cold vs warm access.
     println!("\n7. Performance comparison demonstration...");
 
     // Create mapping without eager touch
@@ -123,20 +127,20 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     }
     let warm_time = start.elapsed();
 
-    println!("📊 Performance Results:");
-    println!("   Cold access (with page faults): {cold_time:?}");
-    println!("   Warm access (pre-touched): {warm_time:?}");
+    println!("  Performance results:");
+    println!("    Cold access (with page faults): {cold_time:?}");
+    println!("    Warm access (pre-touched):      {warm_time:?}");
     let speedup = cold_time.as_nanos() as f64 / warm_time.as_nanos() as f64;
-    println!("   Speedup: {speedup:.2}x faster with page prewarming");
+    println!("    Speedup: {speedup:.2}x faster with page prewarming");
 
-    // 8. **Demonstrate Fallback Behavior Documentation**
+    // 8. Huge pages fallback behavior documentation.
     println!("\n8. Huge pages fallback behavior:");
-    println!("   ✓ Tier 1: Optimized mapping with MADV_HUGEPAGE + populate");
-    println!("   ✓ Tier 2: Standard mapping with MADV_HUGEPAGE (THP)");
-    println!("   ✓ Tier 3: Silent fallback to regular pages");
-    println!("   ⚠️  Note: .huge_pages(true) does NOT guarantee huge pages");
+    println!("    Tier 1: Optimized mapping with MADV_HUGEPAGE + populate");
+    println!("    Tier 2: Standard mapping with MADV_HUGEPAGE (THP)");
+    println!("    Tier 3: Silent fallback to regular pages");
+    println!("    \u{26A0}\u{FE0F} Note: .huge_pages(true) does NOT guarantee huge pages");
 
-    // 9. **Clean Up**
+    // 9. Clean up.
     println!("\n9. Cleaning up...");
     drop(mmap);
     drop(benchmark_mmap);
@@ -151,15 +155,15 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     cleanup_path("ultimate.bin");
     cleanup_path("cold.bin");
 
-    println!("✓ Cleanup completed");
+    println!("  Cleanup completed");
 
-    println!("\n🎉 All critical features demonstrated successfully!");
-    println!("\n📚 Key Benefits:");
-    println!("   • Real huge page retention with automatic fallback");
-    println!("   • Eager page touching eliminates benchmark timing variance");
-    println!("   • Automatic time-based flushing reduces manual overhead");
-    println!("   • Microflush optimization improves small write performance");
-    println!("   • Comprehensive fallback ensures reliability across systems");
+    println!("\nAll major features demonstrated successfully.\n");
+    println!("Key benefits:");
+    println!("  - Real huge page retention with automatic fallback");
+    println!("  - Eager page touching eliminates benchmark timing variance");
+    println!("  - Automatic time-based flushing reduces manual overhead");
+    println!("  - Microflush optimization improves small write performance");
+    println!("  - Documented fallback behavior across systems");
 
     Ok(())
 }

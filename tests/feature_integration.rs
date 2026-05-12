@@ -8,6 +8,7 @@
     feature = "atomic",
     feature = "watch"
 ))]
+#[allow(clippy::permissions_set_readonly_false)]
 mod all_features {
     use mmap_io::{create_mmap, ChangeEvent, MemoryMappedFile, MmapAdvice};
     use std::fs;
@@ -28,6 +29,10 @@ mod all_features {
     }
 
     #[test]
+    #[cfg_attr(
+        windows,
+        ignore = "Windows mtime granularity makes polling-based change detection flaky; reliable detection requires native ReadDirectoryChangesW"
+    )]
     fn test_all_features_integration() {
         let path = tmp_path("all_features");
         let _ = fs::remove_file(&path);
