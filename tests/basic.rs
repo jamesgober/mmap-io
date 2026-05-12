@@ -93,28 +93,35 @@ fn flush_policy_threshold_triggers() {
 }
 
 #[test]
-fn flush_policy_interval_is_manual_now() {
+fn flush_policy_interval_flushes_automatically() {
+    // C2 regression: FlushPolicy::EveryMillis must trigger an
+    // automatic background flush. Before the C2 fix this was a
+    // silent no-op (the previous version of this test was named
+    // `flush_policy_interval_is_manual_now` and documented the bug
+    // as intentional). After the C2 fix, no manual flush() call is
+    // needed; the background thread does it.
     use mmap_io::flush::FlushPolicy;
 
-    let path = tmp_path("flush_policy_interval_is_manual_now");
+    let path = tmp_path("flush_policy_interval_flushes_automatically");
     let _ = fs::remove_file(&path);
 
-    // Interval is a no-op in current phase; treat as Manual.
     let mmap = MemoryMappedFile::builder(&path)
         .mode(MmapMode::ReadWrite)
         .size(4096)
-        .flush_policy(FlushPolicy::EveryMillis(10))
+        .flush_policy(FlushPolicy::EveryMillis(50))
         .create()
         .expect("builder create");
 
     mmap.update_region(10, b"INTV").expect("update");
-    // Manually flush to persist
-    mmap.flush().expect("flush");
+    // NO manual flush. Wait long enough for the background thread
+    // to wake up and flush at least once.
+    std::thread::sleep(std::time::Duration::from_millis(300));
 
     let ro = load_mmap(&path, MmapMode::ReadOnly).expect("open ro");
     let slice = ro.as_slice(10, 4).expect("slice");
     assert_eq!(slice, b"INTV");
 
+    drop(mmap);
     let _ = fs::remove_file(&path);
 }
 
