@@ -24,7 +24,7 @@ homepage = "https://github.com/jamesgober/mmap-io"
 repository = "https://github.com/jamesgober/mmap-io"
 documentation = "https://docs.rs/mmap-io"
 authors = [
-    "James Gober <code@jamesgober.dev>",
+    "James Gober <me@jamesgober.com>"
 ]
 
 
