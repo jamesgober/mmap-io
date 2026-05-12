@@ -73,14 +73,19 @@ pub enum MmapIoError { /* variants */ }
 // mmap (core)
 pub struct MemoryMappedFile { /* private */ }
 pub enum MmapMode { ReadOnly, ReadWrite, CopyOnWrite }
-pub enum TouchHint { None, Eager }
+pub enum TouchHint { Never, Eager, Lazy }
+
+// `MappedSliceMut<'_>` is the write-guard wrapper returned by
+// `as_slice_mut`. It holds the RW write lock for its lifetime and
+// derefs to `&mut [u8]` via `.as_mut()`.
+pub struct MappedSliceMut<'a> { /* private */ }
 
 impl MemoryMappedFile {
     pub fn create_rw<P: AsRef<Path>>(path: P, size: u64) -> Result<Self>;
     pub fn open_ro<P: AsRef<Path>>(path: P) -> Result<Self>;
     pub fn open_rw<P: AsRef<Path>>(path: P) -> Result<Self>;
     pub fn as_slice(&self, offset: u64, len: u64) -> Result<&[u8]>;
-    pub fn as_slice_mut(&self, offset: u64, len: u64) -> Result<&mut [u8]>;
+    pub fn as_slice_mut(&self, offset: u64, len: u64) -> Result<MappedSliceMut<'_>>;
     pub fn read_into(&self, offset: u64, dst: &mut [u8]) -> Result<()>;
     pub fn update_region(&self, offset: u64, data: &[u8]) -> Result<()>;
     pub fn flush(&self) -> Result<()>;
@@ -105,10 +110,12 @@ pub fn delete_mmap<P: AsRef<Path>>(path: P) -> Result<()>;
 
 // flush
 pub enum FlushPolicy {
-    Manual,
-    Always,
-    EveryBytes(u64),
-    EveryMillis(u64),
+    Never,             // (default) no implicit flush; user calls flush()
+    Manual,            // alias for Never
+    Always,            // flush after every update_region
+    EveryBytes(usize), // flush after >= N dirty bytes
+    EveryWrites(usize),// flush after every W update_region calls
+    EveryMillis(u64),  // background-thread time-based flush
 }
 ```
 
@@ -118,16 +125,17 @@ pub enum FlushPolicy {
 // advise (feature = "advise", default-on)
 pub enum MmapAdvice { Normal, Random, Sequential, WillNeed, DontNeed }
 impl MemoryMappedFile {
-    pub fn advise(&self, advice: MmapAdvice) -> Result<()>;
+    pub fn advise(&self, offset: u64, len: u64, advice: MmapAdvice) -> Result<()>;
 }
 
 // iterator (feature = "iterator", default-on)
 pub struct ChunkIterator<'a> { /* private */ }
 pub struct PageIterator<'a> { /* private */ }
+pub struct ChunkIteratorMut<'a> { /* private */ }
 impl MemoryMappedFile {
     pub fn chunks(&self, chunk_size: usize) -> ChunkIterator<'_>;
     pub fn pages(&self) -> PageIterator<'_>;
-    pub fn chunks_mut(&self, chunk_size: usize) -> /* mut iterator */;
+    pub fn chunks_mut(&self, chunk_size: usize) -> ChunkIteratorMut<'_>;
 }
 
 // cow (feature = "cow")
@@ -137,21 +145,30 @@ impl MemoryMappedFile {
 
 // locking (feature = "locking")
 impl MemoryMappedFile {
-    pub fn lock(&self) -> Result<()>;
-    pub fn unlock(&self) -> Result<()>;
-    pub fn lock_range(&self, offset: u64, len: u64) -> Result<()>;
-    pub fn unlock_range(&self, offset: u64, len: u64) -> Result<()>;
+    pub fn lock(&self, offset: u64, len: u64) -> Result<()>;
+    pub fn unlock(&self, offset: u64, len: u64) -> Result<()>;
+    pub fn lock_all(&self) -> Result<()>;
+    pub fn unlock_all(&self) -> Result<()>;
 }
 
 // atomic (feature = "atomic")
+// AtomicView<'_, T> / AtomicSliceView<'_, T> hold the read lock for
+// their lifetime; Deref<Target = T> / Deref<Target = [T]> so call
+// sites use the wrappers as if they were `&T` / `&[T]`. resize()
+// blocks until every live view is dropped (C3 fix).
+pub struct AtomicView<'a, T> { /* private */ }
+pub struct AtomicSliceView<'a, T> { /* private */ }
 impl MemoryMappedFile {
-    pub fn atomic_u32(&self, offset: u64) -> Result<&AtomicU32>;
-    pub fn atomic_u64(&self, offset: u64) -> Result<&AtomicU64>;
-    pub fn atomic_u64_slice(&self, offset: u64, len: usize) -> Result<&[AtomicU64]>;
+    pub fn atomic_u32(&self, offset: u64) -> Result<AtomicView<'_, AtomicU32>>;
+    pub fn atomic_u64(&self, offset: u64) -> Result<AtomicView<'_, AtomicU64>>;
+    pub fn atomic_u32_slice(&self, offset: u64, count: usize) -> Result<AtomicSliceView<'_, AtomicU32>>;
+    pub fn atomic_u64_slice(&self, offset: u64, count: usize) -> Result<AtomicSliceView<'_, AtomicU64>>;
 }
 
 // watch (feature = "watch")
-pub enum ChangeKind { Modified, Truncated, Extended }
+// ChangeKind reflects what the polling backend can detect today.
+// Native event backends (planned for 0.9.9) may enrich this set.
+pub enum ChangeKind { Modified, Metadata, Removed }
 pub struct ChangeEvent { /* private */ }
 pub struct WatchHandle { /* private */ }
 impl MemoryMappedFile {
@@ -161,9 +178,14 @@ impl MemoryMappedFile {
 
 // async (feature = "async")
 impl MemoryMappedFile {
+    pub async fn update_region_async(&self, offset: u64, data: &[u8]) -> Result<()>;
     pub async fn flush_async(&self) -> Result<()>;
     pub async fn flush_range_async(&self, offset: u64, len: u64) -> Result<()>;
 }
+// manager-level async helpers
+pub async fn create_mmap_async<P: AsRef<Path>>(path: P, size: u64) -> Result<MemoryMappedFile>;
+pub async fn copy_mmap_async<P: AsRef<Path>>(src: P, dst: P) -> Result<()>;
+pub async fn delete_mmap_async<P: AsRef<Path>>(path: P) -> Result<()>;
 ```
 
 ### 4.3 Hugepages
@@ -193,9 +215,10 @@ requests MUST return `MmapIoError::OutOfBounds`, not panic, not UB.
 
 ### 5.3 Alignment
 
-`atomic_u32` / `atomic_u64` / `atomic_u64_slice` MUST verify that
-the offset is naturally aligned. Misaligned access MUST return
-`MmapIoError::Alignment`, not unsafely transmute.
+`atomic_u32` / `atomic_u64` / `atomic_u32_slice` / `atomic_u64_slice`
+MUST verify that the offset is naturally aligned for the element type.
+Misaligned access MUST return `MmapIoError::Misaligned { required,
+offset }`, not unsafely transmute.
 
 ### 5.4 Unsafe blocks
 
@@ -302,9 +325,9 @@ New dependencies MUST be justified against:
 
 - Unit tests in each module's `#[cfg(test)] mod tests` block.
 - Integration tests in `tests/` for cross-module behavior.
-- Property-based tests (target: 0.9.5+) via `proptest` for: bounds
+- Property-based tests (added in 0.9.6) via `proptest` for: bounds
   checking, alignment validation, flush-policy state transitions.
-- Fuzz tests (target: 0.9.9) via `cargo-fuzz` for: `read_into`,
+- Fuzz tests (target: 0.9.10) via `cargo-fuzz` for: `read_into`,
   `update_region`, atomic-view access patterns.
 - CI MUST run on Linux, macOS, and Windows, on MSRV (1.75) and
   stable.

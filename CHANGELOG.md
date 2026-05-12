@@ -7,6 +7,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+<br>
+
+<!-- VERSION: 0.9.6 -->
+## [0.9.6] - 2026-05-12
+
 ### Added
 
 - `proptest` 1.5 added to `[dev-dependencies]` (default-features off;
@@ -29,6 +34,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   default; set `PROPTEST_CASES=10000` for the deep sweep run before
   releases.
 
+### Fixed
+
+- CI: `tests/atomic_view_resize_safety.rs` (added in 0.9.5) now
+  carries the `#![cfg(feature = "atomic")]` crate gate. The matrix
+  CI runs `cargo test --no-default-features --features "<combo>"`
+  across feature subsets that exclude `atomic`; before the gate the
+  test failed to compile under every such combination. The
+  `full-build` job (all-features) masked it during the 0.9.5 cycle.
+
 ### Documentation
 
 - `docs/SAFETY.md` added: the authoritative catalog of every
@@ -45,6 +59,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - The two `libc::utime` test helpers in `src/watch.rs` (gated on
   `#[cfg(test)]`) now have explicit SAFETY comments citing
   POSIX `utime(2)`.
+- `docs/API.md`: corrected MSRV to 1.75; version examples bumped to
+  0.9.6; atomic return types updated to reflect the C3 wrapper
+  types (`AtomicView<'_, T>` / `AtomicSliceView<'_, T>`); stray
+  character removed from the `SegmentMut` section; added 0.9.5 and
+  0.9.6 entries to the Version History.
+- `REPS.md` section 4 updated to match the actual implementation:
+  `TouchHint` variants (`Never`, `Eager`, `Lazy`); `as_slice_mut`
+  return type (`MappedSliceMut<'_>`); atomic API returns wrapper
+  types and includes `atomic_u32_slice`; locking API matches
+  `lock`/`unlock`/`lock_all`/`unlock_all`; `MmapAdvice::advise`
+  signature carries `(offset, len, advice)`; `ChangeKind` variants
+  align with the polling implementation (`Modified`/`Metadata`/
+  `Removed`).
 
 <br>
 
@@ -361,7 +388,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Basic README.
 
 <!-- LINK REFERENCE -->
-[Unreleased]: https://github.com/jamesgober/mmap-io/compare/v0.9.5...HEAD
+[Unreleased]: https://github.com/jamesgober/mmap-io/compare/v0.9.6...HEAD
+[0.9.6]: https://github.com/jamesgober/mmap-io/compare/v0.9.5...v0.9.6
 [0.9.5]: https://github.com/jamesgober/mmap-io/compare/v0.9.4...v0.9.5
 [0.9.4]: https://github.com/jamesgober/mmap-io/compare/v0.9.3...v0.9.4
 [0.9.3]: https://github.com/jamesgober/mmap-io/compare/v0.9.0...v0.9.3
