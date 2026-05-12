@@ -42,6 +42,10 @@ libc = { version = "0.2", optional = false }
 # Benchmarking framework
 criterion = { version = "0.5", default-features = false }
 tempfile = "3"
+# Property-based testing (0.9.6+). Pinned to a 1.x line that holds
+# MSRV 1.75. Default features disabled to avoid pulling in `regex`
+# extras we do not exercise; we opt back into the bits we need.
+proptest = { version = "1.5", default-features = false, features = ["std", "bit-set", "fork", "timeout"] }
 
 [features]
 # Default opt-ins: safe to enable and provide value without platform privileges
