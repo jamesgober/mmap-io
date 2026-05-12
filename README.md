@@ -1,4 +1,6 @@
 <h1 align="center">
+    <img width="99" alt="Rust logo" src="https://raw.githubusercontent.com/jamesgober/rust-collection/72baabd71f00e14aa9184efcb16fa3deddda3a0a/assets/rust-logo.svg">
+    <br>
     <strong>mmap-io</strong>
     <br>
     <sup><sub>MEMORY-MAPPED FILE I/O FOR RUST</sub></sup>
@@ -8,6 +10,7 @@
     <a href="https://crates.io/crates/mmap-io"><img alt="crates.io" src="https://img.shields.io/crates/v/mmap-io.svg"></a>
     <a href="https://crates.io/crates/mmap-io"><img alt="downloads" src="https://img.shields.io/crates/d/mmap-io.svg"></a>
     <a href="https://docs.rs/mmap-io"><img alt="docs.rs" src="https://docs.rs/mmap-io/badge.svg"></a>
+    <img alt="MSRV" src="https://img.shields.io/badge/MSRV-1.75%2B-blue.svg?style=flat-square" title="Rust Version">
     <a href="https://github.com/jamesgober/mmap-io/actions/workflows/ci.yml"><img alt="CI" src="https://github.com/jamesgober/mmap-io/actions/workflows/ci.yml/badge.svg"></a>
 </p>
 
