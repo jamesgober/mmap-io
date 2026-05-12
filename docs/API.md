@@ -32,6 +32,9 @@ Complete reference for public-facing APIs. Each item lists its signature, parame
   - [open_ro](#open_ro)
   - [open_rw](#open_rw)
   - [open_cow](#open_cow) (feature = "cow")
+  - [open_or_create](#open_or_create) (0.9.8)
+  - [from_file](#from_file) (0.9.8)
+  - [unmap](#unmap) (0.9.8)
   - [as_slice](#as_slice)
   - [as_slice_mut](#as_slice_mut)
   - [read_into](#read_into)
@@ -43,6 +46,11 @@ Complete reference for public-facing APIs. Each item lists its signature, parame
   - [is_empty](#is_empty)
   - [path](#path)
   - [mode](#mode)
+  - [flush_policy](#flush_policy) (0.9.8)
+  - [pending_bytes](#pending_bytes) (0.9.8)
+  - [as_ptr](#as_ptr) (0.9.8, unsafe)
+  - [as_mut_ptr](#as_mut_ptr) (0.9.8, unsafe)
+  - [prefetch_range](#prefetch_range) (0.9.8)
 - **[Feature-Gated APIs](#feature-gated-apis)**
   - [Memory Advise](#memory-advise-feature--advise)
     - [advise](#advise)
@@ -148,7 +156,7 @@ By default, the following features are enabled:
 > Add the following to your Cargo.toml file:
 ```toml
 [dependencies]
-mmap-io = { version = "0.9.7" }
+mmap-io = { version = "0.9.8" }
 ```
 
 > Or install using Cargo:
@@ -164,7 +172,7 @@ Enable additional features by using the pre-defined [features flags](#features) 
 > ##### Manual Install with Features:
 ```toml
 [dependencies]
-mmap-io = { version = "0.9.7", features = ["cow", "locking"] }
+mmap-io = { version = "0.9.8", features = ["cow", "locking"] }
 ```
 > ##### Cargo Install with Features:
 ```bash
@@ -179,7 +187,7 @@ If you're building for minimal environments or want total control over feature f
 > ##### Manual Install without Default Features:
 ```toml
 [dependencies]
-mmap-io = { version = "0.9.7", default-features = false, features = ["locking"] }
+mmap-io = { version = "0.9.8", default-features = false, features = ["locking"] }
 ```
 
 > ##### Cargo Install without Default Features:
@@ -769,6 +777,168 @@ pub fn mode(&self) -> MmapMode
 **Description**: Returns the current mapping mode.
 
 **Returns**: `MmapMode`
+
+<br>
+
+### open_or_create
+
+```rust
+pub fn open_or_create<P: AsRef<Path>>(path: P, default_size: u64) -> Result<Self>
+```
+
+**Description**: Opens `path` for read-write if it exists; creates it at `default_size` bytes otherwise. The classic "open if there, create if not" pattern in one call. Since 0.9.8.
+
+**Parameters**:
+- `path`: Path to open or create
+- `default_size`: Size used only on the create path; ignored when the file already exists
+
+**Returns**: `Result<MemoryMappedFile>` in ReadWrite mode
+
+**Errors**:
+- `MmapIoError::ResizeFailed` if creating and `default_size` is zero
+- `MmapIoError::Io` if the filesystem rejects the call
+
+**Example**:
+```rust
+use mmap_io::MemoryMappedFile;
+let mmap = MemoryMappedFile::open_or_create("data.bin", 1024 * 1024)?;
+```
+
+<br>
+
+### from_file
+
+```rust
+pub fn from_file<P: AsRef<Path>>(file: File, mode: MmapMode, path: P) -> Result<Self>
+```
+
+**Description**: Construct a `MemoryMappedFile` from a pre-opened `std::fs::File`. The escape hatch for callers that need custom `OpenOptions` (e.g. `O_DIRECT`, `O_NOATIME`, a specific security context, or a file inherited from a parent process). Since 0.9.8.
+
+**Parameters**:
+- `file`: An open File with permissions matching `mode`
+- `mode`: Access mode (ReadOnly / ReadWrite / CopyOnWrite)
+- `path`: Informational path for `path()` and error messages
+
+**Returns**: `Result<MemoryMappedFile>`
+
+**Errors**:
+- `MmapIoError::ResizeFailed` if the file is zero-length on ReadWrite or CopyOnWrite
+- `MmapIoError::Io` if metadata or mapping fails
+
+**Example**:
+```rust
+use std::fs::OpenOptions;
+use mmap_io::{MemoryMappedFile, MmapMode};
+
+let file = OpenOptions::new().read(true).write(true).open("data.bin")?;
+let mmap = MemoryMappedFile::from_file(file, MmapMode::ReadWrite, "data.bin")?;
+# Ok::<(), Box<dyn std::error::Error>>(())
+```
+
+<br>
+
+### unmap
+
+```rust
+pub fn unmap(self) -> std::result::Result<File, Self>
+```
+
+**Description**: Consume the mapping and return the underlying `File`. The mapping is dropped (memory unmapped, background flusher stopped) before the file is returned. Since 0.9.8.
+
+Returns the mapping unchanged (wrapped in `Err`) if other clones of this `MemoryMappedFile` exist; the underlying File cannot be extracted while other handles hold references.
+
+**Returns**: `Ok(File)` on success, `Err(MemoryMappedFile)` if other clones are alive
+
+**Example**:
+```rust
+use mmap_io::MemoryMappedFile;
+use std::io::Write;
+
+let mmap = MemoryMappedFile::create_rw("data.bin", 1024)?;
+mmap.update_region(0, b"done")?;
+mmap.flush()?;
+
+let mut file = mmap.unmap().expect("no clones alive");
+file.write_all(b"more bytes")?;
+# Ok::<(), Box<dyn std::error::Error>>(())
+```
+
+<br>
+
+### flush_policy
+
+```rust
+pub fn flush_policy(&self) -> FlushPolicy
+```
+
+**Description**: Returns the `FlushPolicy` this mapping was constructed with. Diagnostic accessor for introspection. Since 0.9.8.
+
+**Returns**: `FlushPolicy`
+
+<br>
+
+### pending_bytes
+
+```rust
+pub fn pending_bytes(&self) -> u64
+```
+
+**Description**: Bytes written since the last successful flush. Mainly useful for diagnostics under `FlushPolicy::EveryBytes` / `EveryWrites`: poll to see how close you are to the next auto-flush. One atomic read, no I/O. Since 0.9.8.
+
+**Returns**: `u64` accumulator value
+
+<br>
+
+### as_ptr
+
+```rust
+pub unsafe fn as_ptr(&self) -> *const u8
+```
+
+**Description**: Raw read-only pointer to the start of the mapped region, for FFI use cases that need to hand a `const void *` plus length to a C library. Since 0.9.8.
+
+**Safety**: The caller MUST NOT dereference past `self.len()` bytes, MUST NOT hold the pointer across a `resize()` (which can move the mapping to a new virtual address), and MUST honour Rust aliasing rules at the FFI boundary.
+
+**Returns**: `*const u8` to the base of the mapping
+
+<br>
+
+### as_mut_ptr
+
+```rust
+pub unsafe fn as_mut_ptr(&self) -> Result<*mut u8>
+```
+
+**Description**: Raw mutable pointer to the start of the mapped region (ReadWrite only). Since 0.9.8.
+
+**Safety**: Same contract as `as_ptr`, plus the caller MUST NOT alias this pointer with any live Rust `&` reference to the same bytes (a `MappedSlice` would alias).
+
+**Returns**: `Result<*mut u8>`
+
+**Errors**:
+- `MmapIoError::InvalidMode` if the mapping is not ReadWrite
+
+<br>
+
+### prefetch_range
+
+```rust
+pub fn prefetch_range(&self, offset: u64, len: u64) -> Result<()>
+```
+
+**Description**: Hint the kernel that the given range of the **backing file** will be read soon. On Linux issues `posix_fadvise(POSIX_FADV_WILLNEED)` against the file descriptor (warms the page cache from the file side). No-op on other platforms. Since 0.9.8.
+
+This is complementary to `advise(offset, len, MmapAdvice::WillNeed)`, which operates on the **mapped virtual memory range** via `madvise`. Both can be issued for cold reads of huge files.
+
+**Parameters**:
+- `offset`: Starting byte offset
+- `len`: Length of the range to prefetch
+
+**Returns**: `Result<()>`
+
+**Errors**:
+- `MmapIoError::OutOfBounds` if range exceeds file bounds
+- `MmapIoError::AdviceFailed` if the underlying syscall errors (Linux only)
 
 <br>
 
@@ -1663,6 +1833,7 @@ for handle in handles {
 <br><br>
 
 ## Version History
+- **0.9.8**: Ergonomic API expansion (closes audit E1, E2, E6, E7, F2, F5, F9). Adds `open_or_create`, builder `open_or_create`, `from_file`, `unmap`, `flush_policy`, `pending_bytes`, `unsafe as_ptr` / `as_mut_ptr`, and `prefetch_range`. Hot-path bounds-check helpers (`ensure_in_bounds`, `slice_range`) and length/mode accessors marked `#[inline]`. Fixed a Duration underflow in the time-based flusher's slice arithmetic.
 - **0.9.7**: Performance milestone (closes audit H1, H2, H4, E4). `as_slice` returns `MappedSlice<'_>` and works uniformly on RO / COW / RW (breaking). Iterators are zero-copy and yield `MappedSlice<'a>` directly (breaking); `chunks_owned` / `pages_owned` provided as migration aids. `touch_pages` rewritten as a tight `ptr::read_volatile` loop holding the lock once (~50-100x speedup on multi-GiB files). `chunks_mut().for_each_mut` flattened to `Result<()>` and holds the write guard once for the whole iteration. New workload-pattern benches and `bench-regression.yml` CI workflow.
 - **0.9.6**: Unsafe audit (closes audit S2, S3); SAFETY comments rewritten with platform-spec citations; `docs/SAFETY.md` added; property-test suite (`tests/proptest_bounds.rs`, `tests/proptest_atomic.rs`, `tests/proptest_flush.rs`) added via `proptest 1.5`; CI matrix-feature gate fix.
 - **0.9.5**: Correctness bugfix release. Closes audit C1 (`flush_range` accumulator), C2 (`FlushPolicy::EveryMillis` now actually flushes), C3 (atomic-view UAF; methods now return `AtomicView<'_, T>` / `AtomicSliceView<'_, T>` wrappers), H5 (`WatchHandle::drop` signals thread), H6 (`Segment::as_slice` re-validates bounds), H7 (`page_size()` cached via `OnceLock`).

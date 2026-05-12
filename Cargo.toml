@@ -1,23 +1,23 @@
 [package]
 name = "mmap-io"
-version = "0.9.7"
+version = "0.9.8"
 edition = "2021"
 rust-version = "1.75"
 readme = "README.md"
 license = "Apache-2.0"
 publish = true
-description = "High-performance, async-ready memory-mapped file I/O library for Rust. Supports fast segment-based loading, updates, and persistence. Designed for database engines, game runtimes, and real-time applications."
+description = "Zero-copy memory-mapped file I/O for Rust. Safe concurrent reads, writes, and atomic views across Linux, macOS, and Windows. Built for databases, log structures, game runtimes, caches, and IPC."
 keywords = [
-    "mmap", 
-    "memory-mapped", 
-    "file-io", 
-    "async",
-    "database"
+    "mmap",
+    "memory-mapped",
+    "zero-copy",
+    "filesystem",
+    "io"
 ]
 categories = [
-    "filesystem", 
-    "data-structures", 
-    "asynchronous", 
+    "filesystem",
+    "data-structures",
+    "concurrency",
     "database-implementations"
 ]
 homepage = "https://github.com/jamesgober/mmap-io"

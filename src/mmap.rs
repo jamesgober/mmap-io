@@ -296,18 +296,21 @@ impl MemoryMappedFile {
     }
 
     /// Return current mapping mode.
+    #[inline]
     #[must_use]
     pub fn mode(&self) -> MmapMode {
         self.inner.mode
     }
 
     /// Total length of the mapped file in bytes (cached).
+    #[inline]
     #[must_use]
     pub fn len(&self) -> u64 {
         *self.inner.cached_len.read()
     }
 
     /// Whether the mapped file is empty.
+    #[inline]
     #[must_use]
     pub fn is_empty(&self) -> bool {
         self.len() == 0
@@ -809,6 +812,354 @@ impl MemoryMappedFile {
             }
         }
 
+        Ok(())
+    }
+}
+
+// 0.9.8 ergonomic and introspection surface.
+//
+// These methods are additive (no breaking changes) and were tracked
+// under audit IDs E1, E2, E6, E7, F2, F5, F9.
+impl MemoryMappedFile {
+    /// Open `path` for read-write, creating it at `default_size` if
+    /// it does not exist. Convenience for the common pattern of
+    /// `if path.exists() { open_rw } else { create_rw }`.
+    ///
+    /// If the file already exists, `default_size` is **ignored** and
+    /// the file is opened at its current length. Use [`resize`](Self::resize)
+    /// afterward if you need to change the size.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`MmapIoError::Io`] if the filesystem rejects the
+    /// create or open call.
+    /// Returns [`MmapIoError::ResizeFailed`] if `default_size` is zero
+    /// (only checked on the create path; existing files of any size
+    /// are accepted).
+    ///
+    /// # Examples
+    ///
+    /// ```no_run
+    /// use mmap_io::MemoryMappedFile;
+    ///
+    /// // Either opens "data.bin" or creates it at 1 MiB if absent.
+    /// let mmap = MemoryMappedFile::open_or_create("data.bin", 1024 * 1024)?;
+    /// # Ok::<(), mmap_io::MmapIoError>(())
+    /// ```
+    pub fn open_or_create<P: AsRef<Path>>(path: P, default_size: u64) -> Result<Self> {
+        let p = path.as_ref();
+        if p.exists() {
+            Self::open_rw(p)
+        } else {
+            Self::create_rw(p, default_size)
+        }
+    }
+
+    /// Construct a `MemoryMappedFile` from a pre-opened `File`. The
+    /// `File` must have permissions matching `mode` (read for any
+    /// mode, write for `ReadWrite`).
+    ///
+    /// This is the escape hatch for callers that have already opened
+    /// the file via their own `OpenOptions` (e.g. with `O_DIRECT`,
+    /// `O_NOATIME`, or a custom security context) and want to mmap
+    /// it without re-opening.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`MmapIoError::ResizeFailed`] if the file is
+    /// zero-length on the `ReadWrite` or `CopyOnWrite` paths
+    /// (`mmap(2)` rejects zero-length mappings on Linux).
+    /// Returns [`MmapIoError::Io`] if `metadata()` or the mapping
+    /// call fails. The `path` argument is informational only; it
+    /// is used by [`path`](Self::path) and error messages.
+    pub fn from_file<P: AsRef<Path>>(file: File, mode: MmapMode, path: P) -> Result<Self> {
+        let path_ref = path.as_ref().to_path_buf();
+        let len = file.metadata()?.len();
+        match mode {
+            MmapMode::ReadOnly => {
+                // SAFETY: see `open_ro` for the full justification.
+                let mmap = unsafe { Mmap::map(&file)? };
+                let inner = Inner {
+                    path: path_ref,
+                    file,
+                    mode,
+                    cached_len: RwLock::new(len),
+                    map: MapVariant::Ro(mmap),
+                    flush_policy: FlushPolicy::Never,
+                    written_since_last_flush: RwLock::new(0),
+                    flusher: RwLock::new(None),
+                    #[cfg(feature = "hugepages")]
+                    huge_pages: false,
+                };
+                Ok(Self {
+                    inner: Arc::new(inner),
+                })
+            }
+            MmapMode::ReadWrite => {
+                if len == 0 {
+                    return Err(MmapIoError::ResizeFailed(ERR_ZERO_LENGTH_FILE.into()));
+                }
+                // SAFETY: see `open_rw`.
+                let mmap = unsafe { MmapMut::map_mut(&file)? };
+                let inner = Inner {
+                    path: path_ref,
+                    file,
+                    mode,
+                    cached_len: RwLock::new(len),
+                    map: MapVariant::Rw(RwLock::new(mmap)),
+                    flush_policy: FlushPolicy::default(),
+                    written_since_last_flush: RwLock::new(0),
+                    flusher: RwLock::new(None),
+                    #[cfg(feature = "hugepages")]
+                    huge_pages: false,
+                };
+                Ok(Self {
+                    inner: Arc::new(inner),
+                })
+            }
+            #[cfg(feature = "cow")]
+            MmapMode::CopyOnWrite => {
+                if len == 0 {
+                    return Err(MmapIoError::ResizeFailed(ERR_ZERO_LENGTH_FILE.into()));
+                }
+                // SAFETY: see `open_cow`.
+                let mmap = unsafe {
+                    let mut opts = MmapOptions::new();
+                    opts.len(len as usize);
+                    opts.map(&file)?
+                };
+                let inner = Inner {
+                    path: path_ref,
+                    file,
+                    mode,
+                    cached_len: RwLock::new(len),
+                    map: MapVariant::Cow(mmap),
+                    flush_policy: FlushPolicy::Never,
+                    written_since_last_flush: RwLock::new(0),
+                    flusher: RwLock::new(None),
+                    #[cfg(feature = "hugepages")]
+                    huge_pages: false,
+                };
+                Ok(Self {
+                    inner: Arc::new(inner),
+                })
+            }
+            #[cfg(not(feature = "cow"))]
+            MmapMode::CopyOnWrite => Err(MmapIoError::InvalidMode(
+                "CopyOnWrite mode requires 'cow' feature",
+            )),
+        }
+    }
+
+    /// Consume this mapping and return the underlying [`File`]. The
+    /// mapping is dropped (memory unmapped, background flusher
+    /// stopped) before the file is returned, so the caller can
+    /// safely perform file-level operations (truncate, sync_all,
+    /// rename, etc.) on the returned handle.
+    ///
+    /// Returns the mapping unchanged (wrapped in `Err`) if other
+    /// [`MemoryMappedFile`] clones of this mapping exist; the
+    /// underlying [`File`] is shared and cannot be extracted while
+    /// other handles hold references. Drop the other clones first.
+    ///
+    /// # Errors
+    ///
+    /// Returns `Err(self)` if other clones of this `MemoryMappedFile`
+    /// are alive when this call runs.
+    ///
+    /// # Examples
+    ///
+    /// ```no_run
+    /// use mmap_io::MemoryMappedFile;
+    /// use std::io::Write;
+    ///
+    /// let mmap = MemoryMappedFile::create_rw("data.bin", 1024)?;
+    /// mmap.update_region(0, b"hello")?;
+    /// mmap.flush()?;
+    ///
+    /// // Drop the mapping and reclaim the File.
+    /// let mut file = mmap.unmap().expect("no other clones alive");
+    /// file.write_all(b"more bytes via plain File")?;
+    /// # Ok::<(), mmap_io::MmapIoError>(())
+    /// ```
+    pub fn unmap(self) -> std::result::Result<File, Self> {
+        match Arc::try_unwrap(self.inner) {
+            Ok(inner) => {
+                // Destructure so we can control drop order: stop the
+                // background flusher first (it may hold a Weak ref
+                // back into Inner via Arc::downgrade), then drop the
+                // mapping (releases address space; on Windows this
+                // must happen BEFORE the file handle is closed), then
+                // hand back the file by value.
+                let Inner {
+                    file, map, flusher, ..
+                } = inner;
+                drop(flusher);
+                drop(map);
+                Ok(file)
+            }
+            Err(arc) => Err(Self { inner: arc }),
+        }
+    }
+
+    /// Return the [`FlushPolicy`] this mapping was constructed with.
+    ///
+    /// `FlushPolicy::Manual` (or the alias `Never`) is the default
+    /// when not set via the builder.
+    #[inline]
+    #[must_use]
+    pub fn flush_policy(&self) -> FlushPolicy {
+        self.inner.flush_policy
+    }
+
+    /// Bytes written since the last successful flush. Mainly useful
+    /// for diagnostics / observability under
+    /// [`FlushPolicy::EveryBytes`] and
+    /// [`FlushPolicy::EveryWrites`]: callers can poll this to see
+    /// how close they are to the next auto-flush.
+    ///
+    /// Reads only the accumulator (one atomic read of a `u64` under
+    /// the parking_lot read lock); no I/O is performed.
+    #[inline]
+    #[must_use]
+    pub fn pending_bytes(&self) -> u64 {
+        *self.inner.written_since_last_flush.read()
+    }
+
+    /// Raw read-only pointer to the start of the mapped region.
+    ///
+    /// Useful for handing the mapping to a C library expecting a
+    /// `const void *` plus a length. Combine with
+    /// [`len()`](Self::len) to express the full region. The caller
+    /// is responsible for not dereferencing past `len()`, not
+    /// retaining the pointer past a [`resize`](Self::resize) call,
+    /// and not holding the pointer across an `unmap`. The pointer
+    /// stays valid for as long as `&self` is alive and no
+    /// `resize()` has been called.
+    ///
+    /// On RW mappings the pointer aliases with the same memory that
+    /// [`as_slice`](Self::as_slice) and
+    /// [`as_slice_mut`](Self::as_slice_mut) lend out; honour Rust
+    /// aliasing rules at the FFI boundary.
+    ///
+    /// # Safety
+    ///
+    /// The caller MUST:
+    /// - Not dereference past `self.len()` bytes from the returned
+    ///   pointer.
+    /// - Not hold the pointer across calls to
+    ///   [`resize`](Self::resize), which can move the mapping to a
+    ///   different virtual address.
+    /// - Honour Rust aliasing rules: do not form a `&mut` reference
+    ///   to the same bytes while a Rust `&` (e.g. an active
+    ///   [`MappedSlice`]) exists.
+    #[must_use]
+    pub unsafe fn as_ptr(&self) -> *const u8 {
+        match &self.inner.map {
+            MapVariant::Ro(m) => m.as_ptr(),
+            MapVariant::Rw(lock) => {
+                let guard = lock.read();
+                let ptr = guard.as_ptr();
+                drop(guard);
+                ptr
+            }
+            MapVariant::Cow(m) => m.as_ptr(),
+        }
+    }
+
+    /// Raw mutable pointer to the start of the mapped region.
+    /// Available only on `ReadWrite` mappings.
+    ///
+    /// See [`as_ptr`](Self::as_ptr) for the safety contract; the
+    /// same rules apply, plus the caller MUST NOT alias this
+    /// pointer with any live Rust `&` reference to the same bytes
+    /// (a [`MappedSlice`] would alias).
+    ///
+    /// # Errors
+    ///
+    /// Returns [`MmapIoError::InvalidMode`] if the mapping is not
+    /// `ReadWrite`.
+    ///
+    /// # Safety
+    ///
+    /// Same as [`as_ptr`](Self::as_ptr), plus the no-aliasing rule
+    /// above.
+    pub unsafe fn as_mut_ptr(&self) -> Result<*mut u8> {
+        match &self.inner.map {
+            MapVariant::Rw(lock) => {
+                let mut guard = lock.write();
+                let ptr = guard.as_mut_ptr();
+                drop(guard);
+                Ok(ptr)
+            }
+            MapVariant::Ro(_) | MapVariant::Cow(_) => Err(MmapIoError::InvalidMode(
+                "as_mut_ptr requires ReadWrite mode",
+            )),
+        }
+    }
+
+    /// Hint the kernel that the given `[offset, offset + len)` range
+    /// of the **backing file** will be read soon. On Linux this
+    /// issues `posix_fadvise(POSIX_FADV_WILLNEED)` against the file
+    /// descriptor, which prompts the page cache to start
+    /// readahead. On platforms that do not expose an equivalent
+    /// syscall this is a no-op that returns `Ok(())`.
+    ///
+    /// This is distinct from [`advise`](Self::advise) (with
+    /// `MmapAdvice::WillNeed`), which operates on the **mapped
+    /// virtual memory range** via `madvise`. They are
+    /// complementary: `prefetch_range` warms the page cache from
+    /// the file side, `advise` from the VM side. Issuing both is
+    /// occasionally useful for cold reads of huge files.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`MmapIoError::OutOfBounds`] if the range exceeds the
+    /// mapping's current length.
+    /// Returns [`MmapIoError::AdviceFailed`] if the underlying
+    /// syscall reports an error.
+    #[cfg(any(target_os = "linux", target_os = "android"))]
+    pub fn prefetch_range(&self, offset: u64, len: u64) -> Result<()> {
+        use std::os::fd::AsRawFd;
+        if len == 0 {
+            return Ok(());
+        }
+        crate::utils::ensure_in_bounds(offset, len, self.current_len()?)?;
+        let fd = self.inner.file.as_raw_fd();
+        // SAFETY: `posix_fadvise64` is a documented syscall that
+        // takes an fd, offset, length, and advice flag. The fd is
+        // owned by `self.inner.file` and remains valid for the
+        // duration of the call. The kernel reads the file backing
+        // the fd; no Rust references are formed. Off-by-one on
+        // `offset + len > file size` is harmless on Linux (the
+        // kernel silently clamps), but we still bounds-check above
+        // so the documented contract holds.
+        // Reference: https://man7.org/linux/man-pages/man2/posix_fadvise.2.html
+        let ret = unsafe {
+            libc::posix_fadvise(
+                fd,
+                offset as libc::off_t,
+                len as libc::off_t,
+                libc::POSIX_FADV_WILLNEED,
+            )
+        };
+        if ret == 0 {
+            Ok(())
+        } else {
+            Err(MmapIoError::AdviceFailed(format!(
+                "posix_fadvise(WILLNEED) failed with errno {ret}"
+            )))
+        }
+    }
+
+    /// No-op fallback on non-Linux platforms. See the Linux variant
+    /// for the contract.
+    #[cfg(not(any(target_os = "linux", target_os = "android")))]
+    pub fn prefetch_range(&self, offset: u64, len: u64) -> Result<()> {
+        if len == 0 {
+            return Ok(());
+        }
+        crate::utils::ensure_in_bounds(offset, len, self.current_len()?)?;
         Ok(())
     }
 }
@@ -1499,6 +1850,41 @@ impl MemoryMappedFileBuilder {
             MmapMode::CopyOnWrite => Err(MmapIoError::InvalidMode(
                 "CopyOnWrite mode requires 'cow' feature",
             )),
+        }
+    }
+
+    /// Terminal builder method that opens the file if it exists, or
+    /// creates it (using the builder's configured size) if it does
+    /// not. Requires [`.size()`](Self::size) to be set for the
+    /// create path; the existing-file path uses the file's current
+    /// length. The configured `mode` (default `ReadWrite`),
+    /// `flush_policy`, `touch_hint`, and `huge_pages` apply to both
+    /// paths.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`MmapIoError::ResizeFailed`] if creating a new file
+    /// and `.size()` was not set or was set to zero.
+    /// Returns [`MmapIoError::Io`] if the open or create call fails.
+    ///
+    /// # Examples
+    ///
+    /// ```no_run
+    /// use mmap_io::{MemoryMappedFile, MmapMode};
+    /// use mmap_io::flush::FlushPolicy;
+    ///
+    /// let mmap = MemoryMappedFile::builder("data.bin")
+    ///     .mode(MmapMode::ReadWrite)
+    ///     .size(1024 * 1024) // used only if creating
+    ///     .flush_policy(FlushPolicy::EveryBytes(64 * 1024))
+    ///     .open_or_create()?;
+    /// # Ok::<(), mmap_io::MmapIoError>(())
+    /// ```
+    pub fn open_or_create(self) -> Result<MemoryMappedFile> {
+        if self.path.exists() {
+            self.open()
+        } else {
+            self.create()
         }
     }
 }

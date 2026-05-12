@@ -15,24 +15,22 @@
 </p>
 
 <p align="center">
-    Zero-copy reads. Efficient writes. Safe concurrent access.<br>
-    Built for databases, game runtimes, caches, and real-time applications.
+    Zero-copy reads. Lock-free atomic views. Safe concurrent access.<br>
+    Built for databases, log structures, caches, game runtimes, and shared-memory IPC.
 </p>
 
 ---
 
-## Capabilities
+## What you get
 
-- **Zero-copy reads** and efficient writes.
-- **Read-only**, **read-write**, and **copy-on-write** modes.
-- **Segment-based access** (offset + length).
-- **Thread-safe** via interior mutability (parking_lot `RwLock`).
-- **Cross-platform** via `memmap2`.
-- Optional **async** helpers with Tokio.
-- **Configurable flush policies** with smart microflush optimization.
-- **Page prewarming** for predictable benchmark timing.
-- **Huge pages support** (best-effort, Linux/Windows).
-- **MSRV: 1.75**.
+- **Zero-copy reads on every mode.** `as_slice` returns a `MappedSlice<'_>` borrowed directly from the mapping. No allocation. No memcpy. Works on read-only, read-write, and copy-on-write mappings uniformly.
+- **Zero-allocation iteration.** `mmap.chunks(N)` and `mmap.pages()` walk the file in fixed strides without ever heap-allocating. A 1 GiB scan at 4 KiB chunks skips 262,144 allocations and half the memory bandwidth of the naive approach.
+- **Aligned atomic views.** `atomic_u32` / `atomic_u64` return a wrapper that derefs to `&AtomicU64`. Multi-thread `fetch_add` over a memory-mapped counter is one cache-line ping; no cross-process locking required.
+- **Configurable durability.** `FlushPolicy::EveryBytes(N)`, `EveryWrites(N)`, `EveryMillis(N)`, `Always`, or `Manual`. The accumulator is correctly debited on partial flushes (audit C1) and the millis policy actually runs a background flusher (audit C2).
+- **Thread-safe.** Interior mutability via `parking_lot::RwLock`. Multiple concurrent readers, one writer at a time. Live atomic views block `resize()` until released so memory under your reference cannot move (audit C3).
+- **Cross-platform.** Linux, macOS, Windows. Per-platform fast paths (`MS_ASYNC` flush on Linux, `MADV_HUGEPAGE` on huge-page hints, `posix_fadvise` for OS-level prefetch).
+- **Opt-in surface.** Default features are `advise` + `iterator`. Everything else (`async`, `atomic`, `cow`, `locking`, `watch`, `hugepages`) is off by default to keep compile time tight.
+- **MSRV: 1.75.** Pinned and verified in CI.
 
 ## Quick start
 
@@ -45,26 +43,28 @@ mmap-io = "0.9"
 use mmap_io::MemoryMappedFile;
 
 fn main() -> Result<(), mmap_io::MmapIoError> {
-    // Open an existing file in read-only mode
+    // Open an existing file in read-only mode.
     let mmap = MemoryMappedFile::open_ro("data.bin")?;
 
-    // Zero-copy read of the first 16 bytes
+    // Zero-copy read of the first 16 bytes. `slice` derefs to &[u8].
     let slice = mmap.as_slice(0, 16)?;
-    println!("First bytes: {slice:?}");
+    println!("First bytes: {:?}", &*slice);
 
     Ok(())
 }
 ```
 
-Or write a fresh file:
+Open-or-create with one call:
 
 ```rust
-use mmap_io::{create_mmap, update_region, flush};
+use mmap_io::MemoryMappedFile;
 
 fn main() -> Result<(), mmap_io::MmapIoError> {
-    let mmap = create_mmap("data.bin", 1024 * 1024)?;
-    update_region(&mmap, 100, b"Hello, mmap!")?;
-    flush(&mmap)?;
+    // Opens "data.bin" if it exists; creates it at 1 MiB otherwise.
+    let mmap = MemoryMappedFile::open_or_create("data.bin", 1024 * 1024)?;
+
+    mmap.update_region(100, b"Hello, mmap!")?;
+    mmap.flush()?;
     Ok(())
 }
 ```

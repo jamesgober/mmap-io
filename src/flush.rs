@@ -81,7 +81,13 @@ impl TimeBasedFlusher {
             let mut elapsed = Duration::ZERO;
             while running_clone.load(Ordering::Acquire) {
                 // Sleep one slice, then check the shutdown flag.
-                let slice = shutdown_poll.min(interval - elapsed);
+                // `saturating_sub` guards against the case where a
+                // previous `thread::sleep` overshot and pushed
+                // `elapsed` past `interval`: the next slice clamps to
+                // zero (yielding immediately) rather than panicking
+                // on a Duration underflow.
+                let remaining = interval.saturating_sub(elapsed);
+                let slice = shutdown_poll.min(remaining);
                 thread::sleep(slice);
                 elapsed += slice;
 
