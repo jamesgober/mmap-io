@@ -203,8 +203,10 @@ impl MemoryMappedFile {
 }
 
 // watch (feature = "watch")
-// ChangeKind reflects what the polling backend can detect today.
-// Native event backends (planned for 0.9.9) may enrich this set.
+// Since 0.9.9: backed by `notify` (inotify on Linux, FSEvents on
+// macOS, ReadDirectoryChangesW on Windows). ChangeKind is the
+// coalesced verdict the crate exposes; the native backends provide
+// richer event data which is mapped down per `notify::EventKind`.
 pub enum ChangeKind { Modified, Metadata, Removed }
 pub struct ChangeEvent { /* private */ }
 pub struct WatchHandle { /* private */ }

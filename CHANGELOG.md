@@ -9,6 +9,87 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 <br>
 
+<!-- VERSION: 0.9.9 -->
+## [0.9.9] - 2026-05-12
+
+### Changed (BREAKING for watch implementors only)
+
+- **Native watch backends.** The polling-based watch implementation
+  is gone; the `watch` feature now uses `notify 6` under the hood,
+  which dispatches to `inotify` on Linux, FSEvents on macOS, and
+  `ReadDirectoryChangesW` on Windows. The public surface is
+  unchanged: `MemoryMappedFile::watch(callback) -> Result<WatchHandle>`
+  with `ChangeEvent { offset, len, kind }` and
+  `ChangeKind { Modified, Metadata, Removed }`. The breaking aspect
+  is implementation-side: anyone depending on polling-specific
+  timing (e.g. the previous ~100 ms polling interval as a debounce
+  floor) sees different timing now. Latency drops from 100 ms+ to
+  <10 ms on Linux/Windows and <50 ms on macOS (FSEvents
+  coalescing). Note: mmap-side writes (`update_region` + `flush`)
+  are not a reliable trigger for native FS watchers on any
+  platform; they reach the watcher only at OS-decided writeback
+  time. Reliable detection requires `std::fs` API writes from
+  another handle / process, which is the real-world use case for
+  the watch feature.
+
+### Added
+
+- `notify` 6.x as an optional dependency, gated on the `watch`
+  feature with `default-features = false` and only the
+  `macos_fsevent` feature enabled to keep the dep tree tight.
+- `tests/watch_native.rs` — five new integration tests
+  (`watch_modify_detected`, `watch_truncate_detected`,
+  `watch_extend_detected`,
+  `watch_rapid_sequence_coalesces_or_reports_each`,
+  `watch_removed_event_terminates_dispatcher`) that exercise the
+  native backends through `std::fs` API writes.
+- `src/watch.rs` gains a `WatchHandle::is_active()` method (was
+  previously gated behind `#[allow(dead_code)]`); useful for tests
+  and diagnostics.
+
+### Fixed
+
+- **Three previously-ignored Windows watch tests now pass live:**
+  `watch::tests::test_watch_file_changes`,
+  `watch::tests::test_multiple_watchers`,
+  `tests/feature_integration.rs::test_all_features_integration`.
+  The `#[cfg_attr(windows, ignore = "...")]` markers were the
+  symptom of Windows polling-watch unreliability; with
+  `ReadDirectoryChangesW` they pass on every platform.
+
+### Documentation
+
+- `README.md`: watch feature description updated to "native
+  inotify/FSEvents/RDCW" (not "polling fallback"). Added a note
+  about mmap-write detection limitations.
+- `docs/API.md`: full rewrite of the watch section. New
+  platform-behavior table (Linux <1 ms / macOS <50 ms / Windows
+  <10 ms typical latencies), coalescing notes, error contract.
+  Version history entry added. Install snippet bumped to 0.9.9.
+- `REPS.md`: watch surface annotated `Since 0.9.9: backed by
+  notify`.
+- `.dev/ROADMAP.md`: **1.0.0 placed on indefinite hold** pending
+  cross-repo presentation cleanup (consistent headers / branding /
+  SECURITY.md / CONTRIBUTING.md across the project family). The
+  previously-planned `1.0.0-rc.1` candidate phase is dropped:
+  hyphenated release tags caused tooling issues in prior cycles,
+  and the soak / hardening work happens on the last 0.9.x
+  in real-world deployment instead. Versioning strategy through
+  1.0.0 unblocks: continue with `0.9.x` minor / patch releases as
+  needed.
+
+### Notes
+
+- MSRV unchanged at Rust 1.75.
+- `notify 6.1.x` advertises MSRV 1.60; verified buildable on 1.75.
+- The transitive dep set added by `notify` (with default features
+  off and only `macos_fsevent` enabled) is bounded and stable:
+  `crossbeam-channel`, `mio` on Linux, `filetime`, and the
+  Windows-side `windows_x86_64_msvc` target shim. No surprise
+  pulls.
+
+<br>
+
 <!-- VERSION: 0.9.8 -->
 ## [0.9.8] - 2026-05-12
 
@@ -585,7 +666,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Basic README.
 
 <!-- LINK REFERENCE -->
-[Unreleased]: https://github.com/jamesgober/mmap-io/compare/v0.9.8...HEAD
+[Unreleased]: https://github.com/jamesgober/mmap-io/compare/v0.9.9...HEAD
+[0.9.9]: https://github.com/jamesgober/mmap-io/compare/v0.9.8...v0.9.9
 [0.9.8]: https://github.com/jamesgober/mmap-io/compare/v0.9.7...v0.9.8
 [0.9.7]: https://github.com/jamesgober/mmap-io/compare/v0.9.6...v0.9.7
 [0.9.6]: https://github.com/jamesgober/mmap-io/compare/v0.9.5...v0.9.6

@@ -1,6 +1,6 @@
 [package]
 name = "mmap-io"
-version = "0.9.8"
+version = "0.9.9"
 edition = "2021"
 rust-version = "1.75"
 readme = "README.md"
@@ -37,6 +37,10 @@ log = "0.4"
 thiserror = "1.0"
 cfg-if = "1.0"
 libc = { version = "0.2", optional = false }
+# Native file-change watchers (inotify on Linux, FSEvents on macOS,
+# ReadDirectoryChangesW on Windows). Optional; activated by the
+# `watch` feature. Default features off to keep the dep tree tight.
+notify = { version = "6", default-features = false, features = ["macos_fsevent"], optional = true }
 
 [dev-dependencies]
 # Benchmarking framework
@@ -59,7 +63,7 @@ hugepages = []            # Use MAP_HUGETLB / FILE_ATTRIBUTE_LARGE_PAGES
 cow       = []            # Copy-on-Write mapping mode (private mappings)
 locking   = []            # Lock / Unlock memory pages (mlock/munlock, VirtualLock)
 atomic    = []            # Atomic memory views (u32/u64) with strict alignment checks
-watch     = []            # Watch/Notification (inotify/kqueue/FSEvents/Windows; fallback polling)
+watch     = ["dep:notify"] # Native file-change notifications via `notify` (inotify on Linux, FSEvents on macOS, ReadDirectoryChangesW on Windows)
 
 
 [badges]
