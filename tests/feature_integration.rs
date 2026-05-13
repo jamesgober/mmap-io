@@ -29,10 +29,6 @@ mod all_features {
     }
 
     #[test]
-    #[cfg_attr(
-        windows,
-        ignore = "Windows mtime granularity makes polling-based change detection flaky; reliable detection requires native ReadDirectoryChangesW"
-    )]
     fn test_all_features_integration() {
         let path = tmp_path("all_features");
         let _ = fs::remove_file(&path);
@@ -78,7 +74,12 @@ mod all_features {
         let _ = mmap.lock(0, 4096);
         let _ = mmap.unlock(0, 4096);
 
-        // Test watch
+        // Test native watch (since 0.9.9: inotify/FSEvents/RDCW).
+        // For reliable cross-platform detection we modify the file
+        // via the std::fs API rather than via the mmap; mmap writes
+        // go through the page cache and only reach the FS watcher
+        // at OS-decided writeback time, which is too unreliable for
+        // a tight test deadline.
         let changed = Arc::new(AtomicBool::new(false));
         let changed_clone = Arc::clone(&changed);
 
@@ -88,37 +89,37 @@ mod all_features {
             })
             .expect("watch");
 
-        // Give watcher time to start (allow 3 polling intervals at 100ms each)
-        thread::sleep(Duration::from_millis(300));
+        // Give the OS watcher a moment to register the subscription.
+        thread::sleep(Duration::from_millis(200));
 
-        // Make a change
-        mmap.update_region(100, b"watched change").expect("update");
-        // Ensure durability and bump timestamps for watch parity across platforms
-        mmap.flush().expect("flush for watch visibility");
-        #[cfg(unix)]
+        // External modification through the std::fs API: this is
+        // what real-world FS watchers are designed to observe and
+        // what every supported backend (inotify / FSEvents / RDCW)
+        // reliably reports.
+        use std::io::Write;
         {
-            use std::ffi::CString;
-            use std::os::unix::ffi::OsStrExt;
-            let cpath = CString::new(path.as_os_str().as_bytes()).unwrap();
-            unsafe { libc::utime(cpath.as_ptr(), std::ptr::null()) };
+            let mut f = std::fs::OpenOptions::new()
+                .write(true)
+                .open(&path)
+                .expect("reopen for external write");
+            f.write_all(b"watched change").expect("external write");
+            f.sync_all().expect("external sync");
         }
-        #[cfg(windows)]
-        {
-            if let Ok(meta) = std::fs::metadata(&path) {
-                let mut perms = meta.permissions();
-                perms.set_readonly(true);
-                let _ = std::fs::set_permissions(&path, perms);
-                let mut perms2 = std::fs::metadata(&path).unwrap().permissions();
-                perms2.set_readonly(false);
-                let _ = std::fs::set_permissions(&path, perms2);
+
+        // Native backends are fast; 3 seconds is a generous deadline
+        // for slow CI.
+        let deadline = std::time::Instant::now() + Duration::from_secs(3);
+        while std::time::Instant::now() < deadline {
+            if changed.load(Ordering::SeqCst) {
+                break;
             }
+            thread::sleep(Duration::from_millis(10));
         }
 
-        // Wait for change detection (allow 12 polling cycles at 100ms each)
-        thread::sleep(Duration::from_millis(1200));
-
-        // The change should be detected
-        assert!(changed.load(Ordering::SeqCst), "Change should be detected");
+        assert!(
+            changed.load(Ordering::SeqCst),
+            "watcher must detect the external change"
+        );
 
         // Clean up
         drop(mmap);

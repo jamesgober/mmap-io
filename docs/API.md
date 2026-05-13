@@ -156,7 +156,7 @@ By default, the following features are enabled:
 > Add the following to your Cargo.toml file:
 ```toml
 [dependencies]
-mmap-io = { version = "0.9.8" }
+mmap-io = { version = "0.9.9" }
 ```
 
 > Or install using Cargo:
@@ -172,7 +172,7 @@ Enable additional features by using the pre-defined [features flags](#features) 
 > ##### Manual Install with Features:
 ```toml
 [dependencies]
-mmap-io = { version = "0.9.8", features = ["cow", "locking"] }
+mmap-io = { version = "0.9.9", features = ["cow", "locking"] }
 ```
 > ##### Cargo Install with Features:
 ```bash
@@ -187,7 +187,7 @@ If you're building for minimal environments or want total control over feature f
 > ##### Manual Install without Default Features:
 ```toml
 [dependencies]
-mmap-io = { version = "0.9.8", default-features = false, features = ["locking"] }
+mmap-io = { version = "0.9.9", default-features = false, features = ["locking"] }
 ```
 
 > ##### Cargo Install without Default Features:
@@ -1375,6 +1375,20 @@ pub fn unlock_all(&self) -> Result<()>
 
 ### File Watching (feature = "watch")
 
+> Since 0.9.9 the watcher uses the OS-native event source on every
+> supported platform: `inotify` on Linux, FSEvents on macOS, and
+> `ReadDirectoryChangesW` on Windows. The polling fallback used
+> through 0.9.8 is gone, along with the Windows mtime granularity
+> issue that previously forced three watch tests to be ignored.
+>
+> Note: mmap-side writes (`mmap.update_region(...)` + `mmap.flush()`)
+> only reach the FS watcher at OS-decided writeback time and are
+> not a reliable trigger for any platform's native event source.
+> Reliable detection comes from `std::fs` API writes by another
+> process / handle. This matches the actual real-world use case
+> for `watch`: detect changes made by something other than the
+> current mapping holder.
+
 #### watch
 
 ```rust
@@ -1384,22 +1398,37 @@ where
     F: Fn(ChangeEvent) + Send + 'static
 ```
 
-**Description**: Watches for changes to the mapped file. The callback is invoked when changes are detected.
+**Description**: Watch the backing file for changes using the OS-native event source. The callback runs on a dedicated dispatcher thread for each detected change. Drop the returned `WatchHandle` to stop watching and release the OS subscription.
 
 **Parameters**:
-- `callback`: Function called when file changes
+- `callback`: `Fn(ChangeEvent) + Send + 'static` invoked once per detected change
 
-**Returns**: `Result<WatchHandle>` - Handle that stops watching when dropped
+**Returns**: `Result<WatchHandle>` - drop to stop watching
+
+**Platform behavior**:
+
+| Platform | Backend                       | Typical latency      |
+|----------|-------------------------------|----------------------|
+| Linux    | `inotify`                     | <1 ms                |
+| macOS    | FSEvents                      | <50 ms (coalesced)   |
+| Windows  | `ReadDirectoryChangesW`       | <10 ms               |
+
+Event coalescing differs by platform: FSEvents on macOS batches at ~50 ms by design; `inotify` and RDCW deliver events as the kernel sees them. Callers that need to debounce should do so on top of the callback (e.g. wait 100 ms after the last event before reacting).
+
+**Errors**:
+- `MmapIoError::WatchFailed` if the OS subscription cannot be established (missing inotify support, exhausted per-process watch limit, path disappeared between the call and the kernel registration, etc.)
 
 **Example**:
 ```rust
 #[cfg(feature = "watch")]
-use mmap_io::ChangeEvent;
+use mmap_io::{MemoryMappedFile, watch::ChangeEvent};
 
+let mmap = MemoryMappedFile::open_ro("data.bin")?;
 let handle = mmap.watch(|event: ChangeEvent| {
     println!("File changed: {:?}", event.kind);
 })?;
-// File is being watched until handle is dropped
+// ...handle dropped at end of scope stops the watch.
+# Ok::<(), mmap_io::MmapIoError>(())
 ```
 
 <br>
@@ -1833,6 +1862,7 @@ for handle in handles {
 <br><br>
 
 ## Version History
+- **0.9.9**: Native watch backends. `inotify` (Linux), FSEvents (macOS), `ReadDirectoryChangesW` (Windows) replace the polling implementation, backed by the `notify 6` crate gated on the `watch` feature. Three previously-ignored Windows watch tests now pass live; five new integration tests cover modify / truncate / extend / rapid-sequence / removed.
 - **0.9.8**: Ergonomic API expansion (closes audit E1, E2, E6, E7, F2, F5, F9). Adds `open_or_create`, builder `open_or_create`, `from_file`, `unmap`, `flush_policy`, `pending_bytes`, `unsafe as_ptr` / `as_mut_ptr`, and `prefetch_range`. Hot-path bounds-check helpers (`ensure_in_bounds`, `slice_range`) and length/mode accessors marked `#[inline]`. Fixed a Duration underflow in the time-based flusher's slice arithmetic.
 - **0.9.7**: Performance milestone (closes audit H1, H2, H4, E4). `as_slice` returns `MappedSlice<'_>` and works uniformly on RO / COW / RW (breaking). Iterators are zero-copy and yield `MappedSlice<'a>` directly (breaking); `chunks_owned` / `pages_owned` provided as migration aids. `touch_pages` rewritten as a tight `ptr::read_volatile` loop holding the lock once (~50-100x speedup on multi-GiB files). `chunks_mut().for_each_mut` flattened to `Result<()>` and holds the write guard once for the whole iteration. New workload-pattern benches and `bench-regression.yml` CI workflow.
 - **0.9.6**: Unsafe audit (closes audit S2, S3); SAFETY comments rewritten with platform-spec citations; `docs/SAFETY.md` added; property-test suite (`tests/proptest_bounds.rs`, `tests/proptest_atomic.rs`, `tests/proptest_flush.rs`) added via `proptest 1.5`; CI matrix-feature gate fix.

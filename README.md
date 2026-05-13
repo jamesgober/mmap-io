@@ -80,7 +80,7 @@ fn main() -> Result<(), mmap_io::MmapIoError> {
 | `cow`       | Copy-on-Write mapping mode using private per-process memory views.                                   |
 | `locking`   | Page-level memory locking via `mlock`/`munlock` (Unix) or `VirtualLock` (Windows).                   |
 | `atomic`    | Atomic views into memory as aligned `u32` / `u64` with strict alignment checks.                      |
-| `watch`     | File change notifications via polling fallback (native inotify/kqueue/FSEvents/RDCW planned).         |
+| `watch`     | Native file-change notifications: `inotify` (Linux), FSEvents (macOS), `ReadDirectoryChangesW` (Windows). |
 
 > ⚠️ Features are opt-in. Enable only those relevant to your use case to reduce compile time and dependency footprint.
 
@@ -307,7 +307,7 @@ fn main() -> Result<(), mmap_io::MmapIoError> {
 
 ## File Watching (`feature = "watch"`)
 
-Monitor file changes (currently polling-based; native backends planned):
+Native OS event sources (`inotify` on Linux, FSEvents on macOS, `ReadDirectoryChangesW` on Windows). Drop the returned handle to stop the watch and release the OS subscription.
 
 ```rust
 #[cfg(feature = "watch")]
@@ -325,6 +325,8 @@ fn main() -> Result<(), mmap_io::MmapIoError> {
     Ok(())
 }
 ```
+
+Note: mmap-side writes (`update_region` + `flush`) are not a reliable trigger for FS watchers; they reach the watcher only at OS-decided writeback time. Reliable detection comes from `std::fs` API writes (another process, another file handle) — which is the real-world use case for `watch`.
 
 ## Copy-on-Write Mode (`feature = "cow"`)
 
