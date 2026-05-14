@@ -7,6 +7,9 @@ on:
     branches: [ main ]
   workflow_dispatch:
 
+env:
+  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
+
 # Cancel an in-flight bench run on a branch when a new commit lands;
 # benches are expensive and we only ever want the latest verdict.
 concurrency:

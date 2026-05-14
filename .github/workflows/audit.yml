@@ -12,6 +12,13 @@ on:
     - cron: '17 4 * * *'
   workflow_dispatch:
 
+# Opt into Node 24 for every action that still ships a Node 20
+# binary (actions/cache@v4, actions/upload-artifact@v4). Avoids
+# the deprecation warnings GitHub will start enforcing on
+# 2026-06-02. Drop this once those actions ship Node-24 majors.
+env:
+  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
+
 # Cancel in-flight audit runs on a branch when a new commit lands; we
 # only ever want the latest audit verdict per branch tip.
 concurrency:
