@@ -1,0 +1,39 @@
+[package]
+name = "mmap-io-fuzz"
+version = "0.0.0"
+publish = false
+edition = "2021"
+rust-version = "1.75"
+[workspace]
+[package.metadata]
+cargo-fuzz = true
+[dependencies]
+libfuzzer-sys = "0.4"
+# The `derive` feature enables `#[derive(Arbitrary)]` on the
+# Input structs in each fuzz target.
+arbitrary = { version = "1", features = ["derive"] }
+mmap-io = { path = "..", features = ["atomic", "advise", "iterator", "watch"] }
+[[bin]]
+name = "read_into"
+path = "fuzz_targets/read_into.rs"
+test = false
+doc = false
+bench = false
+[[bin]]
+name = "update_region"
+path = "fuzz_targets/update_region.rs"
+test = false
+doc = false
+bench = false
+[[bin]]
+name = "atomic_view"
+path = "fuzz_targets/atomic_view.rs"
+test = false
+doc = false
+bench = false
+[[bin]]
+name = "bounds_checks"
+path = "fuzz_targets/bounds_checks.rs"
+test = false
+doc = false
+bench = false

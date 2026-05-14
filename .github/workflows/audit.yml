@@ -1,0 +1,75 @@
+name: audit
+
+on:
+  push:
+    branches: [ main ]
+  pull_request:
+    branches: [ main ]
+  schedule:
+    # Daily run at 04:17 UTC so RUSTSEC advisories surface as
+    # standalone red runs in the maintainer's morning even when no
+    # PR / push is happening.
+    - cron: '17 4 * * *'
+  workflow_dispatch:
+
+# Cancel in-flight audit runs on a branch when a new commit lands; we
+# only ever want the latest audit verdict per branch tip.
+concurrency:
+  group: audit-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  cargo-audit:
+    name: cargo-audit (RUSTSEC advisories + yanks)
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Install Rust (stable)
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache cargo-audit binary
+        id: cache-audit
+        uses: actions/cache@v4
+        with:
+          path: ~/.cargo/bin/cargo-audit
+          key: cargo-audit-${{ runner.os }}-v1
+
+      - name: Install cargo-audit (if not cached)
+        if: steps.cache-audit.outputs.cache-hit != 'true'
+        run: cargo install cargo-audit --locked
+
+      - name: Run cargo-audit
+        # `--deny warnings` makes yanked-crate warnings (the 0.9.9
+        # slab incident) fail CI at PR time instead of at publish
+        # time. RUSTSEC advisories fail by default.
+        run: cargo audit --deny warnings
+
+  cargo-deny-licenses:
+    name: cargo-deny (license + dep policy)
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    # Non-blocking for now: surfaces info but does not gate merges.
+    # Promote to required-check after the maintainer has triaged the
+    # initial run and committed a `deny.toml` policy.
+    continue-on-error: true
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Install Rust (stable)
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache cargo-deny binary
+        id: cache-deny
+        uses: actions/cache@v4
+        with:
+          path: ~/.cargo/bin/cargo-deny
+          key: cargo-deny-${{ runner.os }}-v1
+
+      - name: Install cargo-deny (if not cached)
+        if: steps.cache-deny.outputs.cache-hit != 'true'
+        run: cargo install cargo-deny --locked
+
+      - name: Run cargo-deny check
+        run: cargo deny check

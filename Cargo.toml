@@ -1,6 +1,6 @@
 [package]
 name = "mmap-io"
-version = "0.9.9"
+version = "0.9.10"
 edition = "2021"
 rust-version = "1.75"
 readme = "README.md"
@@ -74,6 +74,47 @@ maintenance = { status = "actively-developed" }
 [[bench]]
 name = "mmap_bench"
 harness = false
+
+# Focused examples (since 0.9.10). Each example demonstrates one
+# concrete use case in <100 lines. Feature-gated examples use
+# `required-features` so `cargo build --examples` skips them
+# cleanly when the feature is off rather than erroring on a missing
+# API.
+[[example]]
+name = "01_read_a_file"
+
+[[example]]
+name = "02_create_and_write"
+
+[[example]]
+name = "03_segment_views"
+
+[[example]]
+name = "04_atomic_counter"
+required-features = ["atomic"]
+
+[[example]]
+name = "05_log_appender"
+
+[[example]]
+name = "06_chunked_processing"
+required-features = ["iterator"]
+
+[[example]]
+name = "07_watch_for_changes"
+required-features = ["watch"]
+
+[[example]]
+name = "08_huge_pages_simulation"
+required-features = ["hugepages"]
+
+[[example]]
+name = "09_async_writes"
+required-features = ["async"]
+
+[[example]]
+name = "10_ipc_shared_state"
+required-features = ["atomic"]
 
 [package.metadata.docs.rs]
 features = ["async"]
