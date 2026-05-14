@@ -5,6 +5,9 @@ on:
     branches: [ main ]
   workflow_dispatch:
 
+env:
+  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
+
 # Run only one semver-check per PR branch at a time.
 concurrency:
   group: semver-${{ github.ref }}
