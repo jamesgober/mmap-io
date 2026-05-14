@@ -94,6 +94,8 @@ impl MemoryMappedFile {
     pub fn unmap(self) -> std::result::Result<File, Self>;
     // Since 0.9.7: as_slice works uniformly on RO, COW, AND RW.
     pub fn as_slice(&self, offset: u64, len: u64) -> Result<MappedSlice<'_>>;
+    // Since 0.9.11: 0.9.6 compat shim, RO/COW only.
+    pub fn as_slice_bytes(&self, offset: u64, len: u64) -> Result<&[u8]>;
     pub fn as_slice_mut(&self, offset: u64, len: u64) -> Result<MappedSliceMut<'_>>;
     pub fn read_into(&self, offset: u64, dst: &mut [u8]) -> Result<()>;
     pub fn update_region(&self, offset: u64, data: &[u8]) -> Result<()>;
@@ -116,6 +118,32 @@ impl MemoryMappedFile {
     // Linux; no-op elsewhere). Complementary to MmapAdvice::WillNeed
     // (which is a VM-side hint via madvise).
     pub fn prefetch_range(&self, offset: u64, len: u64) -> Result<()>;
+    // Since 0.9.11: io::Read + io::Seek cursor over the mapping.
+    pub fn reader(&self) -> MmapReader<'_>;
+    // Since 0.9.11: feature = "bytes". One alloc + memcpy.
+    #[cfg(feature = "bytes")]
+    pub fn read_bytes(&self, offset: u64, len: u64) -> Result<bytes::Bytes>;
+}
+
+// Since 0.9.11: std::io traits on the mapping.
+impl std::io::Read for MmapReader<'_> { /* ... */ }
+impl std::io::Seek for MmapReader<'_> { /* ... */ }
+
+// Since 0.9.11: OS-handle accessors (unix / windows split).
+#[cfg(unix)]
+impl std::os::fd::AsFd for MemoryMappedFile { /* ... */ }
+#[cfg(unix)]
+impl std::os::fd::AsRawFd for MemoryMappedFile { /* ... */ }
+#[cfg(windows)]
+impl std::os::windows::io::AsHandle for MemoryMappedFile { /* ... */ }
+#[cfg(windows)]
+impl std::os::windows::io::AsRawHandle for MemoryMappedFile { /* ... */ }
+
+impl<'a> ChunkIteratorMut<'a> {
+    // ... existing for_each_mut ...
+    // Since 0.9.11: 0.9.6 compat shim with nested-Result signature.
+    pub fn for_each_mut_legacy<F, E>(self, f: F) -> Result<std::result::Result<(), E>>
+        where F: FnMut(u64, &mut [u8]) -> std::result::Result<(), E>;
 }
 
 // Builder additions since 0.9.8:

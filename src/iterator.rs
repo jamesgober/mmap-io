@@ -330,6 +330,61 @@ impl<'a> ChunkIteratorMut<'a> {
             }
         }
     }
+
+    /// Migration shim that mirrors the 0.9.6 `for_each_mut`
+    /// signature: returns `Result<std::result::Result<(), E>>`
+    /// where `E` is the closure's error type.
+    ///
+    /// **Prefer [`for_each_mut`](Self::for_each_mut)** for new
+    /// code; that method was flattened to `Result<()>` (using
+    /// the crate's `MmapIoError`) in 0.9.7. Foreign error types
+    /// should be mapped via `.map_err(|e| MmapIoError::Io(...))`
+    /// before returning.
+    ///
+    /// This shim exists for callers migrating off the 0.9.6
+    /// signature. Internally it still uses the new single-held-
+    /// guard implementation (the H2 perf win is preserved); only
+    /// the return shape is back-compat.
+    ///
+    /// # Errors
+    ///
+    /// Returns the outer `Err(MmapIoError)` for any mmap-side
+    /// failure (e.g. RW lock unavailable, OOB chunk during a
+    /// concurrent resize). Returns `Ok(Err(E))` for closure
+    /// errors. Returns `Ok(Ok(()))` when iteration completes
+    /// cleanly.
+    pub fn for_each_mut_legacy<F, E>(self, mut f: F) -> Result<std::result::Result<(), E>>
+    where
+        F: FnMut(u64, &mut [u8]) -> std::result::Result<(), E>,
+    {
+        if self.chunk_size == 0 || self.total_len == 0 {
+            return Ok(Ok(()));
+        }
+        match &self.mmap.inner.map {
+            MapVariant::Ro(_) => Err(MmapIoError::InvalidMode(
+                "chunks_mut requires ReadWrite mode",
+            )),
+            MapVariant::Cow(_) => Err(MmapIoError::InvalidMode(
+                "chunks_mut on copy-on-write mapping is not supported (phase-1 read-only)",
+            )),
+            MapVariant::Rw(lock) => {
+                let mut guard = lock.write();
+                let total = self.total_len as usize;
+                let chunk_size = self.chunk_size;
+                let mut offset = 0usize;
+                while offset < total {
+                    let remaining = total - offset;
+                    let chunk_len = remaining.min(chunk_size);
+                    let end = offset + chunk_len;
+                    match f(offset as u64, &mut guard[offset..end]) {
+                        Ok(()) => offset = end,
+                        Err(e) => return Ok(Err(e)),
+                    }
+                }
+                Ok(Ok(()))
+            }
+        }
+    }
 }
 
 impl MemoryMappedFile {

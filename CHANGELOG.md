@@ -9,6 +9,47 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 <br>
 
+<!-- VERSION: 0.9.11 -->
+## [0.9.11] - 2026-05-14
+
+Patch release. Two issues from the field (semver violation flagged
+by **bbqsrc** in #6, smol runtime support requested by **ararog**)
+plus opportunistic ecosystem polish: `bytes::Bytes` integration,
+`io::Read` + `io::Seek` cursor, and `AsRawFd` / `AsHandle` trait
+impls. Everything is additive; no API breaks.
+
+### Added
+
+- **`MemoryMappedFile::as_slice_bytes(offset, len) -> Result<&[u8]>`** — migration shim mirroring the 0.9.6 `as_slice` signature. RO and COW mappings return `&[u8]` directly; RW returns `MmapIoError::InvalidMode` matching the 0.9.6 behavior. Callers broken by the 0.9.7 `as_slice` return-type change recover with a one-method-name rename. Prefer `as_slice` for new code.
+- **`ChunkIteratorMut::for_each_mut_legacy<F, E>(F) -> Result<Result<(), E>>`** — migration shim mirroring the 0.9.6 nested-Result signature. Internally uses the same single-held-write-guard loop as the flattened `for_each_mut`, so the H2 perf win is preserved.
+- **`feature = "bytes"`** — `bytes::Bytes` integration. New `MemoryMappedFile::read_bytes(offset, len) -> Result<bytes::Bytes>` plus `From<MappedSlice<'_>>` / `From<&MappedSlice<'_>>` for `bytes::Bytes`. One allocation + memcpy at the conversion boundary; the resulting `Bytes` is mapping-lifetime-independent and travels freely through hyper / tower / tonic / axum / reqwest. Opt-in via `--features bytes`.
+- **`MemoryMappedFile::reader() -> MmapReader<'_>`** — cursor implementing `std::io::Read` + `std::io::Seek`. Plugs the mapping into every parser / decoder that takes a generic `R: Read`: `serde_json::from_reader`, `flate2::read::GzDecoder`, `tar::Archive::new`, `image::ImageReader::new`, etc. `MmapReader::position()` and `set_position()` for direct cursor manipulation.
+- **`AsFd` + `AsRawFd`** (Unix) and **`AsHandle` + `AsRawHandle`** (Windows) trait impls on `MemoryMappedFile`. Standard Rust way to hand the underlying file descriptor / handle to FFI code or other crates (`nix`, `rustix`, `polling`) without going through `unmap`.
+
+### Changed
+
+- **`feature = "async"` is now runtime-agnostic.** Was tokio-only through 0.9.10; now uses the `blocking` crate under the hood. Existing tokio users see no API change — the async methods (`update_region_async`, `flush_async`, `flush_range_async`, `manager::async::*`) still return futures with the same signatures and behavior. The change is that those futures now run on any executor (tokio, smol, async-std, embassy on hosted, etc.), not just tokio. Fixes the ararog issue: smol-based callers can use the async surface without dragging tokio into their dep tree. The transitive dep tree under `--features async` shrinks: tokio + tokio's pile of deps out, the much smaller `blocking` crate in.
+
+### Documentation
+
+- **CHANGELOG explicit acknowledgement of the 0.9.7 semver violation.** The breaking signature changes to `as_slice`, the iterator `Item`, and `for_each_mut` shipped in 0.9.7 should have been a 0.10.0 bump per Rust's pre-1.0 semver convention (Cargo's `^0.9.6` resolver treats 0.9.7 as a compatible upgrade). The crate carried this break for four releases (0.9.7 through 0.9.10) without flagging it; the `cargo-semver-checks` workflow added in 0.9.10 would have caught this exact case at PR time. The compat shims in this release (`as_slice_bytes`, `for_each_mut_legacy`) give downstream callers a one-line recovery path. Apologies to bbqsrc and to anyone else whose 0.9.6 code stopped compiling on 0.9.7.
+- README gains a **"Migrating from 0.9.6"** mini-section pointing at the compat shims.
+- `docs/API.md` documents the new methods, the new `bytes` feature, and the `MmapReader` type.
+- `REPS.md` section 4 lists the new public surface.
+
+### Internals
+
+- `tokio` removed from `[dependencies]`; added to `[dev-dependencies]` purely so the existing `#[tokio::test]` test suite continues to drive the runtime-agnostic async surface. Downstream consumers no longer pull tokio via `--features async`.
+- New `tests/v0_9_11_additions.rs` covers every new method (13 tests), including a `block_on` built from `std::thread::park` to prove the async surface works without a tokio runtime.
+
+### Notes
+
+- MSRV unchanged at Rust 1.75.
+- All 0.9.7-introduced API surface (`MappedSlice`, the new iterator items, the flattened `for_each_mut`) remains the recommended path. The compat shims are explicitly migration aids.
+- Total test count: 140 passing (up from 127 in 0.9.10), 1 ignored (unrelated hugepages-fallback), 0 failed.
+
+<br>
+
 <!-- VERSION: 0.9.10 -->
 ## [0.9.10] - 2026-05-13
 
@@ -759,7 +800,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Basic README.
 
 <!-- LINK REFERENCE -->
-[Unreleased]: https://github.com/jamesgober/mmap-io/compare/v0.9.10...HEAD
+[Unreleased]: https://github.com/jamesgober/mmap-io/compare/v0.9.11...HEAD
+[0.9.11]: https://github.com/jamesgober/mmap-io/compare/v0.9.10...v0.9.11
 [0.9.10]: https://github.com/jamesgober/mmap-io/compare/v0.9.9...v0.9.10
 [0.9.9]: https://github.com/jamesgober/mmap-io/compare/v0.9.8...v0.9.9
 [0.9.8]: https://github.com/jamesgober/mmap-io/compare/v0.9.7...v0.9.8

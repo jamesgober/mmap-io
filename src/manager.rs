@@ -89,51 +89,61 @@ pub fn delete_mmap<P: AsRef<Path>>(path: P) -> Result<()> {
 
 #[cfg(feature = "async")]
 pub mod r#async {
-    //! Async helpers (Tokio) for creating and copying files without blocking the current thread.
-    use std::path::Path;
+    //! Runtime-agnostic async helpers for file lifecycle operations.
+    //!
+    //! Since 0.9.11 these wrap `std::fs` calls inside
+    //! `blocking::unblock`, which dispatches to a dedicated thread
+    //! pool managed by the `blocking` crate. The pool is shared
+    //! with every other crate using `blocking` (smol, async-net,
+    //! async-fs, etc.) and does not require a specific async
+    //! runtime. Works on tokio, smol, async-std, or any future
+    //! executor that drives `Future`s to completion.
+    use std::fs;
+    use std::path::{Path, PathBuf};
 
-    use tokio::fs as tfs;
-
-    use crate::errors::Result;
+    use crate::errors::{MmapIoError, Result};
     use crate::mmap::MemoryMappedFile;
 
     /// Create a new file with the specified size asynchronously, then map it RW.
     ///
     /// # Errors
     ///
-    /// Returns errors from async file operations or mapping.
+    /// Returns errors from the underlying filesystem call or mapping.
     pub async fn create_mmap_async<P: AsRef<Path>>(path: P, size: u64) -> Result<MemoryMappedFile> {
-        let path_ref = path.as_ref();
-        // Create and set size via tokio
-        let file = tfs::OpenOptions::new()
-            .create(true)
-            .write(true)
-            .read(true)
-            .truncate(true)
-            .open(path_ref)
-            .await?;
-        file.set_len(size).await?;
-        drop(file);
-        MemoryMappedFile::open_rw(path_ref)
+        let path: PathBuf = path.as_ref().to_path_buf();
+        blocking::unblock(move || -> Result<MemoryMappedFile> {
+            let file = fs::OpenOptions::new()
+                .create(true)
+                .write(true)
+                .read(true)
+                .truncate(true)
+                .open(&path)
+                .map_err(MmapIoError::Io)?;
+            file.set_len(size).map_err(MmapIoError::Io)?;
+            drop(file);
+            MemoryMappedFile::open_rw(&path)
+        })
+        .await
     }
 
     /// Copy a file asynchronously.
     ///
     /// # Errors
     ///
-    /// Returns `MmapIoError::Io` if the async copy operation fails.
+    /// Returns `MmapIoError::Io` if the underlying copy operation fails.
     pub async fn copy_mmap_async<P: AsRef<Path>>(src: P, dst: P) -> Result<()> {
-        tfs::copy(src, dst).await?;
-        Ok(())
+        let src: PathBuf = src.as_ref().to_path_buf();
+        let dst: PathBuf = dst.as_ref().to_path_buf();
+        blocking::unblock(move || fs::copy(&src, &dst).map(|_| ()).map_err(MmapIoError::Io)).await
     }
 
     /// Delete a file asynchronously.
     ///
     /// # Errors
     ///
-    /// Returns `MmapIoError::Io` if the async delete operation fails.
+    /// Returns `MmapIoError::Io` if the underlying delete operation fails.
     pub async fn delete_mmap_async<P: AsRef<Path>>(path: P) -> Result<()> {
-        tfs::remove_file(path).await?;
-        Ok(())
+        let path: PathBuf = path.as_ref().to_path_buf();
+        blocking::unblock(move || fs::remove_file(&path).map_err(MmapIoError::Io)).await
     }
 }
