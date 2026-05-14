@@ -9,6 +9,99 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 <br>
 
+<!-- VERSION: 0.9.10 -->
+## [0.9.10] - 2026-05-13
+
+### Added
+
+- **Focused example suite** (audit D1). Ten one-purpose examples
+  under `examples/`, each runnable via `cargo run --example
+  NN_name [--features feat]`. Files: `01_read_a_file`,
+  `02_create_and_write`, `03_segment_views`, `04_atomic_counter`
+  (`atomic`), `05_log_appender`, `06_chunked_processing`
+  (`iterator`), `07_watch_for_changes` (`watch`),
+  `08_huge_pages_simulation` (`hugepages`), `09_async_writes`
+  (`async`), `10_ipc_shared_state` (`atomic`). Each demonstrates
+  one concrete use case in under 100 lines.
+- **`cargo-fuzz` scaffold** (audit D7-related). Four fuzz targets
+  under `fuzz/fuzz_targets/`: `read_into`, `update_region`,
+  `atomic_view`, `bounds_checks`. The fuzz crate is workspace-
+  isolated (`fuzz/Cargo.toml` with `[workspace]`) so it does not
+  affect `cargo build` from the repo root. Linux/WSL + nightly
+  required to run; the maintainer drives one-hour runs per target
+  on a Linux box before tagging. See `fuzz/README.md`.
+- **`docs/PERFORMANCE.md`** (audit D8) with **measured** numbers
+  from the workload-pattern benches added in 0.9.7. Concrete
+  speedup tables for the H1 (iterator zero-copy: 13-475x), H4
+  (`as_slice` on RW: 15-49x), and H2 (`touch_pages` 1 GiB in 2 ms)
+  audit wins. Reference machine noted; reproduction instructions
+  inline.
+- **CI: `cargo-audit` workflow** (`.github/workflows/audit.yml`).
+  Runs on every push, PR, and a daily 04:17 UTC cron. `--deny
+  warnings` catches yanked crates at PR time instead of at
+  `cargo publish` time. Companion `cargo-deny` job runs as
+  `continue-on-error: true` until the maintainer commits a
+  `deny.toml` policy.
+- **CI: `cargo-semver-checks` workflow**
+  (`.github/workflows/semver-checks.yml`). Runs on PRs against
+  `main`. Detects accidental breaking changes to the public API
+  by walking it against the version on crates.io. Pre-1.0 this
+  surfaces information; post-1.0 it gates merges.
+- **CI: bench-regression hard gate**
+  (`.github/workflows/bench-regression.yml`). Was previously
+  upload-artifact only. Now runs the bench against the PR's
+  merge-base on the same runner (same CPU, same noise floor) and
+  fails the PR if any bench group regresses more than 15%. Uses
+  `critcmp` for the comparison.
+
+### Documentation
+
+- **MSRV decision: hold at Rust 1.75 for the foreseeable future.**
+  No stable Rust feature in 1.76-1.85 is on the critical path for
+  the crate; the C3 atomic wrappers, the `notify`-backed watch
+  feature, and the `OnceLock` / `parking_lot` patterns all work
+  on 1.75. Holding gives downstream users continuity. Documented
+  in `clippy.toml` (already pinned) and `Cargo.toml`
+  (`rust-version = "1.75"`).
+- **REPS R1-R7 verification.** The REPS-correction items from
+  the original audit (`docs/AUDIT.md` section 4) have landed
+  across prior milestones. R1 (lock signature), R2
+  (`atomic_u32_slice`), R3 (Segment/SegmentMut public-or-hidden:
+  PUBLIC), R4 (SAFETY comments complete: 0.9.6), R5 (doctests
+  per public method: covered through 0.9.9), R6 (`ChangeKind`
+  enum listing matches code: `Modified`/`Metadata`/`Removed`),
+  R7 (`MappedSliceMut` public-or-hidden: PUBLIC, re-exported in
+  0.9.7).
+- **D5 verification.** `# Safety` rustdoc headings appear only
+  on `unsafe fn` declarations (`as_ptr`, `as_mut_ptr`); no safe
+  function carries one. Conforms to the Rust API guidelines'
+  reservation of `# Safety` for unsafe contracts.
+
+### Fixed
+
+- **Lockfile bump: `slab 0.4.10` → `0.4.12`.** `slab 0.4.10`
+  (transitive via `tokio` under the `async` feature) was yanked
+  from crates.io after we shipped 0.9.9. Lockfile already bumped
+  in commit `b5167be` ahead of this release; the fix is folded
+  into the 0.9.10 changelog so the warning timeline is clear in
+  the public record.
+
+### Notes
+
+- **0.9.10 is the technical lockdown release.** All audit items
+  through D8 + R7 are closed. The crate is structurally ready for
+  1.0.0; 1.0.0 remains on indefinite hold pending the
+  maintainer's cross-repo presentation pass (consistent
+  headers/branding/SECURITY.md across the project family).
+- No new runtime dependencies. The fuzz scaffold uses
+  `libfuzzer-sys` + `arbitrary` but only inside the isolated
+  `fuzz/` crate, never reachable from a downstream `cargo add
+  mmap-io` build.
+- MSRV unchanged at Rust 1.75. Verified via `cargo +1.75 build
+  --all-features`.
+
+<br>
+
 <!-- VERSION: 0.9.9 -->
 ## [0.9.9] - 2026-05-12
 
@@ -666,7 +759,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Basic README.
 
 <!-- LINK REFERENCE -->
-[Unreleased]: https://github.com/jamesgober/mmap-io/compare/v0.9.9...HEAD
+[Unreleased]: https://github.com/jamesgober/mmap-io/compare/v0.9.10...HEAD
+[0.9.10]: https://github.com/jamesgober/mmap-io/compare/v0.9.9...v0.9.10
 [0.9.9]: https://github.com/jamesgober/mmap-io/compare/v0.9.8...v0.9.9
 [0.9.8]: https://github.com/jamesgober/mmap-io/compare/v0.9.7...v0.9.8
 [0.9.7]: https://github.com/jamesgober/mmap-io/compare/v0.9.6...v0.9.7
