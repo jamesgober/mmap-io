@@ -351,6 +351,78 @@ impl MemoryMappedFile {
         }
     }
 
+    /// Migration shim that mirrors the 0.9.6 `as_slice` signature:
+    /// returns `Result<&[u8]>` directly for `ReadOnly` and
+    /// `CopyOnWrite` mappings, and `MmapIoError::InvalidMode` for
+    /// `ReadWrite` mappings.
+    ///
+    /// **Prefer [`as_slice`](Self::as_slice)** for new code; that
+    /// method returns a [`MappedSlice<'_>`] which works uniformly
+    /// across all three mapping modes (RO, COW, AND RW).
+    ///
+    /// This shim exists because 0.9.7 changed `as_slice`'s return
+    /// type from `Result<&[u8]>` to `Result<MappedSlice<'_>>`. That
+    /// was a breaking change Cargo's resolver did not flag (the
+    /// 0.9.6 → 0.9.7 bump is treated as a minor version per
+    /// pre-1.0 semver rules), so downstream code that bound the
+    /// return type as `let s: &[u8] = ...` failed to compile.
+    /// Callers in that position can switch one method name:
+    /// `as_slice(off, len)` → `as_slice_bytes(off, len)` and their
+    /// 0.9.6-shaped code compiles unchanged.
+    ///
+    /// # Errors
+    ///
+    /// Returns `MmapIoError::OutOfBounds` if `offset + len` exceeds
+    /// the file's current length.
+    /// Returns `MmapIoError::InvalidMode` on `ReadWrite` mappings
+    /// (matching the 0.9.6 behavior; use `as_slice` or `read_into`
+    /// for RW).
+    pub fn as_slice_bytes(&self, offset: u64, len: u64) -> Result<&[u8]> {
+        let total = self.current_len()?;
+        let (start, end) = slice_range(offset, len, total)?;
+        match &self.inner.map {
+            MapVariant::Ro(m) => Ok(&m[start..end]),
+            MapVariant::Cow(m) => Ok(&m[start..end]),
+            MapVariant::Rw(_) => Err(MmapIoError::InvalidMode(
+                "use as_slice() for RW mappings; as_slice_bytes is the 0.9.6 compat shim and supports RO/COW only",
+            )),
+        }
+    }
+
+    /// Construct a `bytes::Bytes` containing the requested
+    /// `[offset, offset + len)` slice of the mapping. Works on every
+    /// mapping mode. The returned `Bytes` is independent of the
+    /// mapping lifetime: one heap allocation + memcpy at the
+    /// boundary, then the buffer can travel freely through the
+    /// hyper / tower / tonic / axum / reqwest ecosystem.
+    ///
+    /// Available with `feature = "bytes"`.
+    ///
+    /// # Errors
+    ///
+    /// Returns `MmapIoError::OutOfBounds` if the range exceeds the
+    /// file's current length.
+    #[cfg(feature = "bytes")]
+    pub fn read_bytes(&self, offset: u64, len: u64) -> Result<bytes::Bytes> {
+        let slice = self.as_slice(offset, len)?;
+        Ok(bytes::Bytes::copy_from_slice(slice.as_slice()))
+    }
+
+    /// Construct an `io::Read` + `io::Seek` cursor over the
+    /// mapping. Useful for plugging the mapping into any parser /
+    /// decoder that takes a generic `R: Read`: `serde_json::from_reader`,
+    /// `flate2::read::GzDecoder`, `tar::Archive::new`,
+    /// `image::ImageReader::new`, etc. The cursor borrows the
+    /// mapping; multiple cursors can coexist and read concurrently.
+    ///
+    /// The cursor delegates each `read` call to `read_into`, which
+    /// is bounds-checked. EOF is signalled the standard way (a
+    /// zero-length `read` return).
+    #[must_use]
+    pub fn reader(&self) -> MmapReader<'_> {
+        MmapReader { mmap: self, pos: 0 }
+    }
+
     /// Get a zero-copy mutable slice for the given [offset, offset+len).
     /// Only available in `ReadWrite` mode.
     ///
@@ -425,20 +497,24 @@ impl MemoryMappedFile {
     }
 
     /// Async write that enforces Async-Only Flushing semantics: always flush after write.
-    /// Uses spawn_blocking to avoid blocking the async scheduler.
+    ///
+    /// Runs the underlying sync write + flush on the `blocking`
+    /// crate's thread pool so the async scheduler is not stuck on
+    /// disk I/O. `blocking` works on every async executor (tokio,
+    /// smol, async-std), so callers are no longer locked into
+    /// tokio (since 0.9.11).
     #[cfg(feature = "async")]
     pub async fn update_region_async(&self, offset: u64, data: &[u8]) -> Result<()> {
-        // Perform the write in a blocking task
         let this = self.clone();
         let data_vec = data.to_vec();
-        tokio::task::spawn_blocking(move || {
-            // Synchronous write
+        blocking::unblock(move || {
             this.update_region(offset, &data_vec)?;
-            // Async-only flushing: unconditionally flush after write when using async path
+            // Async-only flushing: unconditionally flush after write
+            // when using the async path so post-await visibility is
+            // consistent across platforms.
             this.flush()
         })
         .await
-        .map_err(|e| MmapIoError::FlushFailed(format!("join error: {e}")))?
     }
 
     /// Flush changes to disk. For read-only mappings, this is a no-op.
@@ -491,22 +567,19 @@ impl MemoryMappedFile {
 
     /// Async flush changes to disk. For read-only or COW mappings, this is a no-op.
     /// This method enforces "async-only flushing" semantics for async paths.
+    /// Runtime-agnostic since 0.9.11 (uses `blocking::unblock`).
     #[cfg(feature = "async")]
     pub async fn flush_async(&self) -> Result<()> {
-        // Use spawn_blocking to avoid blocking the async scheduler
         let this = self.clone();
-        tokio::task::spawn_blocking(move || this.flush())
-            .await
-            .map_err(|e| MmapIoError::FlushFailed(format!("join error: {e}")))?
+        blocking::unblock(move || this.flush()).await
     }
 
-    /// Async flush a specific byte range to disk.
+    /// Async flush a specific byte range to disk. Runtime-agnostic
+    /// since 0.9.11.
     #[cfg(feature = "async")]
     pub async fn flush_range_async(&self, offset: u64, len: u64) -> Result<()> {
         let this = self.clone();
-        tokio::task::spawn_blocking(move || this.flush_range(offset, len))
-            .await
-            .map_err(|e| MmapIoError::FlushFailed(format!("join error: {e}")))?
+        blocking::unblock(move || this.flush_range(offset, len)).await
     }
 
     /// Flush a specific byte range to disk.
@@ -2024,6 +2097,135 @@ impl std::ops::Deref for MappedSlice<'_> {
 impl AsRef<[u8]> for MappedSlice<'_> {
     fn as_ref(&self) -> &[u8] {
         self.as_slice()
+    }
+}
+
+/// Conversion into `bytes::Bytes`. Copies the slice into a fresh
+/// `Bytes` (one allocation + memcpy). The resulting `Bytes` outlives
+/// the mapping borrow because it owns its data; this is the point
+/// of the conversion for handing data into async networking code.
+///
+/// Available with `feature = "bytes"`.
+#[cfg(feature = "bytes")]
+impl From<MappedSlice<'_>> for bytes::Bytes {
+    fn from(slice: MappedSlice<'_>) -> Self {
+        Self::copy_from_slice(slice.as_slice())
+    }
+}
+
+/// Borrowing version of the `Bytes` conversion. Identical cost
+/// (one allocation + memcpy) but takes a reference so the caller
+/// can keep using the `MappedSlice` after the conversion.
+#[cfg(feature = "bytes")]
+impl From<&MappedSlice<'_>> for bytes::Bytes {
+    fn from(slice: &MappedSlice<'_>) -> Self {
+        Self::copy_from_slice(slice.as_slice())
+    }
+}
+
+/// `io::Read` + `io::Seek` cursor over a memory-mapped file.
+///
+/// Constructed via [`MemoryMappedFile::reader`]. Each `read` call
+/// delegates to `read_into`, which is bounds-checked. EOF is
+/// signalled by a zero-length read.
+///
+/// The cursor borrows the mapping; multiple cursors can coexist
+/// and read concurrently on the same mapping.
+pub struct MmapReader<'a> {
+    mmap: &'a MemoryMappedFile,
+    pos: u64,
+}
+
+impl<'a> std::io::Read for MmapReader<'a> {
+    fn read(&mut self, buf: &mut [u8]) -> std::io::Result<usize> {
+        let total = self.mmap.len();
+        if self.pos >= total {
+            return Ok(0); // EOF
+        }
+        let remaining = total - self.pos;
+        let want = u64::min(buf.len() as u64, remaining) as usize;
+        if want == 0 {
+            return Ok(0);
+        }
+        self.mmap
+            .read_into(self.pos, &mut buf[..want])
+            .map_err(std::io::Error::other)?;
+        self.pos += want as u64;
+        Ok(want)
+    }
+}
+
+impl<'a> std::io::Seek for MmapReader<'a> {
+    fn seek(&mut self, pos: std::io::SeekFrom) -> std::io::Result<u64> {
+        use std::io::SeekFrom;
+        let total = self.mmap.len();
+        let new_pos = match pos {
+            SeekFrom::Start(n) => n,
+            SeekFrom::End(delta) => {
+                if delta >= 0 {
+                    total.saturating_add(delta as u64)
+                } else {
+                    total.saturating_sub((-delta) as u64)
+                }
+            }
+            SeekFrom::Current(delta) => {
+                if delta >= 0 {
+                    self.pos.saturating_add(delta as u64)
+                } else {
+                    self.pos.saturating_sub((-delta) as u64)
+                }
+            }
+        };
+        self.pos = new_pos;
+        Ok(self.pos)
+    }
+}
+
+impl<'a> MmapReader<'a> {
+    /// Current cursor position in bytes from the start of the file.
+    #[must_use]
+    pub fn position(&self) -> u64 {
+        self.pos
+    }
+
+    /// Set the cursor position directly (no validation; out-of-range
+    /// positions are clamped at the next `read` call which returns
+    /// EOF).
+    pub fn set_position(&mut self, pos: u64) {
+        self.pos = pos;
+    }
+}
+
+// `AsFd` / `AsRawFd` (Unix) and `AsHandle` / `AsRawHandle` (Windows)
+// expose the underlying OS handle to callers that need to hand it
+// to a C library, the `nix` crate, `rustix`, `polling`, etc., without
+// going through `unmap`.
+
+#[cfg(unix)]
+impl std::os::fd::AsFd for MemoryMappedFile {
+    fn as_fd(&self) -> std::os::fd::BorrowedFd<'_> {
+        self.inner.file.as_fd()
+    }
+}
+
+#[cfg(unix)]
+impl std::os::fd::AsRawFd for MemoryMappedFile {
+    fn as_raw_fd(&self) -> std::os::fd::RawFd {
+        std::os::fd::AsRawFd::as_raw_fd(&self.inner.file)
+    }
+}
+
+#[cfg(windows)]
+impl std::os::windows::io::AsHandle for MemoryMappedFile {
+    fn as_handle(&self) -> std::os::windows::io::BorrowedHandle<'_> {
+        self.inner.file.as_handle()
+    }
+}
+
+#[cfg(windows)]
+impl std::os::windows::io::AsRawHandle for MemoryMappedFile {
+    fn as_raw_handle(&self) -> std::os::windows::io::RawHandle {
+        std::os::windows::io::AsRawHandle::as_raw_handle(&self.inner.file)
     }
 }
 

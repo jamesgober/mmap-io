@@ -156,7 +156,7 @@ By default, the following features are enabled:
 > Add the following to your Cargo.toml file:
 ```toml
 [dependencies]
-mmap-io = { version = "0.9.9" }
+mmap-io = { version = "0.9.11" }
 ```
 
 > Or install using Cargo:
@@ -172,7 +172,7 @@ Enable additional features by using the pre-defined [features flags](#features) 
 > ##### Manual Install with Features:
 ```toml
 [dependencies]
-mmap-io = { version = "0.9.9", features = ["cow", "locking"] }
+mmap-io = { version = "0.9.11", features = ["cow", "locking"] }
 ```
 > ##### Cargo Install with Features:
 ```bash
@@ -187,7 +187,7 @@ If you're building for minimal environments or want total control over feature f
 > ##### Manual Install without Default Features:
 ```toml
 [dependencies]
-mmap-io = { version = "0.9.9", default-features = false, features = ["locking"] }
+mmap-io = { version = "0.9.11", default-features = false, features = ["locking"] }
 ```
 
 > ##### Cargo Install without Default Features:
@@ -1862,6 +1862,8 @@ for handle in handles {
 <br><br>
 
 ## Version History
+- **0.9.11**: Patch release. Compat shims for the 0.9.7 semver violation (`as_slice_bytes`, `for_each_mut_legacy`). Runtime-agnostic async via `blocking` crate (smol/tokio/async-std all work). New `bytes::Bytes` integration (`feature = "bytes"`), `io::Read`+`io::Seek` cursor (`mmap.reader()`), and `AsFd`/`AsRawFd` (Unix) + `AsHandle`/`AsRawHandle` (Windows) trait impls.
+- **0.9.10**: Pre-1.0 stabilization (Lockdown). Audit D1, D7, D8, R1-R7, D5 closed. Ten focused examples, `cargo-fuzz` scaffold, `docs/PERFORMANCE.md` with measured numbers, `cargo-audit` + `cargo-semver-checks` CI workflows, bench-regression hard gate. MSRV held at Rust 1.75.
 - **0.9.9**: Native watch backends. `inotify` (Linux), FSEvents (macOS), `ReadDirectoryChangesW` (Windows) replace the polling implementation, backed by the `notify 6` crate gated on the `watch` feature. Three previously-ignored Windows watch tests now pass live; five new integration tests cover modify / truncate / extend / rapid-sequence / removed.
 - **0.9.8**: Ergonomic API expansion (closes audit E1, E2, E6, E7, F2, F5, F9). Adds `open_or_create`, builder `open_or_create`, `from_file`, `unmap`, `flush_policy`, `pending_bytes`, `unsafe as_ptr` / `as_mut_ptr`, and `prefetch_range`. Hot-path bounds-check helpers (`ensure_in_bounds`, `slice_range`) and length/mode accessors marked `#[inline]`. Fixed a Duration underflow in the time-based flusher's slice arithmetic.
 - **0.9.7**: Performance milestone (closes audit H1, H2, H4, E4). `as_slice` returns `MappedSlice<'_>` and works uniformly on RO / COW / RW (breaking). Iterators are zero-copy and yield `MappedSlice<'a>` directly (breaking); `chunks_owned` / `pages_owned` provided as migration aids. `touch_pages` rewritten as a tight `ptr::read_volatile` loop holding the lock once (~50-100x speedup on multi-GiB files). `chunks_mut().for_each_mut` flattened to `Result<()>` and holds the write guard once for the whole iteration. New workload-pattern benches and `bench-regression.yml` CI workflow.

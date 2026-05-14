@@ -1,6 +1,6 @@
 [package]
 name = "mmap-io"
-version = "0.9.10"
+version = "0.9.11"
 edition = "2021"
 rust-version = "1.75"
 readme = "README.md"
@@ -30,7 +30,11 @@ authors = [
 
 [dependencies]
 memmap2 = "0.7"
-tokio = { version = "1.38", features = ["fs", "io-util", "sync", "macros", "rt-multi-thread"], optional = true }
+# Runtime-agnostic spawn-blocking for the `async` feature. Was
+# `tokio` through 0.9.10; switched to `blocking` in 0.9.11 so the
+# async surface works on every executor (tokio, smol, async-std)
+# instead of locking callers into tokio.
+blocking = { version = "1", optional = true }
 anyhow = "1.0"
 parking_lot = "0.12"
 log = "0.4"
@@ -41,11 +45,22 @@ libc = { version = "0.2", optional = false }
 # ReadDirectoryChangesW on Windows). Optional; activated by the
 # `watch` feature. Default features off to keep the dep tree tight.
 notify = { version = "6", default-features = false, features = ["macos_fsevent"], optional = true }
+# Optional `bytes::Bytes` integration. Enables `From<MappedSlice<'_>>`
+# / `MemoryMappedFile::read_bytes` so the crate plugs into the
+# hyper / tower / tonic / axum / reqwest ecosystem. Gated under the
+# `bytes` feature so callers who don't need it pay zero compile cost.
+bytes = { version = "1", optional = true }
 
 [dev-dependencies]
 # Benchmarking framework
 criterion = { version = "0.5", default-features = false }
 tempfile = "3"
+# Tokio is a dev-only dep so the existing async tests (which use
+# #[tokio::test]) continue to drive the runtime-agnostic async
+# surface. Downstream users with `--features async` no longer get
+# tokio in their tree; they get the `blocking` crate, which runs
+# on any executor. This dev-dep does NOT affect downstream builds.
+tokio = { version = "1", features = ["macros", "rt-multi-thread"] }
 # Property-based testing (0.9.6+). Pinned to a 1.x line that holds
 # MSRV 1.75. Default features disabled to avoid pulling in `regex`
 # extras we do not exercise; we opt back into the bits we need.
@@ -56,7 +71,8 @@ proptest = { version = "1.5", default-features = false, features = ["std", "bit-
 default = ["advise", "iterator"]
 
 # Optional features
-async     = ["tokio"]     # Tokio-based async helpers
+async     = ["dep:blocking"] # Runtime-agnostic async helpers (works on tokio, smol, async-std)
+bytes     = ["dep:bytes"] # Conversions to/from `bytes::Bytes` for the async-networking ecosystem
 advise    = []            # Memory advise hints (madvise/posix_madvise, Prefetch on Windows)
 iterator  = []            # Iterator-based access (chunks/pages)
 hugepages = []            # Use MAP_HUGETLB / FILE_ATTRIBUTE_LARGE_PAGES

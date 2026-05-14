@@ -69,11 +69,24 @@ fn main() -> Result<(), mmap_io::MmapIoError> {
 }
 ```
 
+## Migrating from 0.9.6
+
+Versions **0.9.7-0.9.10** changed three method signatures without a major version bump (a semver violation we should have caught; see `CHANGELOG.md` for the full apology). Since **0.9.11** we ship compat shims so 0.9.6 code recovers with a one-line rename per call site:
+
+| 0.9.6 signature                                          | Use this in 0.9.11+ for a drop-in fix |
+|----------------------------------------------------------|----------------------------------------|
+| `mmap.as_slice(off, len)?` → `&[u8]`                     | `mmap.as_slice_bytes(off, len)?`       |
+| `mmap.chunks(N)` yields `Result<Vec<u8>>`                | `mmap.chunks_owned(N)`                 |
+| `for_each_mut(..)` with `Result<Result<(), E>>`          | `for_each_mut_legacy(..)`              |
+
+The new (unflagged) replacements (`as_slice` → `MappedSlice<'_>`, `chunks` → `MappedSlice<'a>`, flattened `for_each_mut` → `Result<()>`) are the recommended path for new code: they're zero-copy and faster. The compat shims preserve the 0.9.6 ergonomics for code that doesn't want to migrate yet.
+
 ## Optional features
 
 | Feature     | Description                                                                                         |
 |-------------|-----------------------------------------------------------------------------------------------------|
-| `async`     | Tokio-based async helpers for asynchronous file and memory operations.                              |
+| `async`     | Runtime-agnostic async helpers via the `blocking` crate. Works on tokio, smol, async-std, or any executor. Since 0.9.11. |
+| `bytes`     | `bytes::Bytes` conversion for plugging into the hyper/tower/tonic/axum/reqwest ecosystem. Since 0.9.11. |
 | `advise`    | Memory hinting via `madvise`/`posix_madvise` (Unix) or `PrefetchVirtualMemory` (Windows).            |
 | `iterator`  | Iterator-based access to memory chunks or pages with zero-copy reads.                                |
 | `hugepages` | Huge Pages via MAP_HUGETLB (Linux) or FILE_ATTRIBUTE_LARGE_PAGES (Windows); falls back to regular pages. |
