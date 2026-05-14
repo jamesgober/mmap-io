@@ -1,0 +1,71 @@
+# cargo-deny configuration for mmap-io.
+#
+# This policy is intentionally permissive for licensing (the standard
+# Rust-ecosystem allowlist) and strict for advisories and yanks. The
+# audit workflow (`.github/workflows/audit.yml`) runs `cargo deny
+# check` on every push and PR. Drift in any axis becomes a CI
+# annotation.
+#
+# Schema reference: https://embarkstudios.github.io/cargo-deny/checks/cfg.html
+
+# ---------------------------------------------------------------------
+# Advisories: hard-fail on RUSTSEC advisories. `cargo-audit` covers
+# this on its own, but enabling it here gives the same gate via a
+# different code path (defence in depth).
+# ---------------------------------------------------------------------
+[advisories]
+version = 2
+ignore = []
+# Yanks are treated as warnings; the audit workflow's
+# `--deny warnings` step promotes them to errors at the cargo-audit
+# layer.
+
+# ---------------------------------------------------------------------
+# Licenses: standard permissive open-source licenses. The four common
+# Rust-ecosystem licenses (MIT, Apache-2.0, BSD-3-Clause, ISC) plus
+# Unicode and CC0 to cover unicode-segmentation / encoding crates and
+# documentation-style deps. Copyleft licenses (GPL, AGPL, LGPL) are
+# intentionally NOT listed; if a copyleft dep slips into the tree we
+# want it flagged immediately.
+# ---------------------------------------------------------------------
+[licenses]
+version = 2
+allow = [
+    "Apache-2.0",
+    "Apache-2.0 WITH LLVM-exception",
+    "BSD-2-Clause",
+    "BSD-3-Clause",
+    "BSL-1.0",
+    "CC0-1.0",
+    "ISC",
+    "MIT",
+    "MIT-0",
+    "MPL-2.0",
+    "Unicode-3.0",
+    "Unicode-DFS-2016",
+    "Zlib",
+]
+# Confidence threshold for license-text detection. 0.8 is the
+# recommended default; raise to 0.93 if too many crates trip on
+# fuzzy-match false positives.
+confidence-threshold = 0.8
+
+# ---------------------------------------------------------------------
+# Bans: forbid specific crates, multiple-version conflicts, etc.
+# Today the policy is open (no bans). Add entries here when we
+# discover a duplicate that's bloating the dep tree or a crate we
+# explicitly do not want.
+# ---------------------------------------------------------------------
+[bans]
+multiple-versions = "warn"
+wildcards = "deny"
+highlight = "all"
+
+# ---------------------------------------------------------------------
+# Sources: where crates may come from. Only crates.io for now; we do
+# not pull from git repos or alternative registries.
+# ---------------------------------------------------------------------
+[sources]
+unknown-registry = "deny"
+unknown-git = "deny"
+allow-registry = ["https://github.com/rust-lang/crates.io-index"]
