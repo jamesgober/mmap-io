@@ -167,6 +167,16 @@ impl MemoryMappedFile {
     /// - **Memory Usage**: Virtual address space of `size` bytes (physical memory allocated on demand)
     /// - **I/O Operations**: One file creation, one truncate, one mmap syscall
     ///
+    /// # Sparse file behavior
+    ///
+    /// The underlying `set_len(size)` call produces a sparse file on
+    /// every supported platform (Linux ext4/xfs/btrfs, macOS APFS,
+    /// Windows NTFS). Pages do not consume disk blocks until first
+    /// write, so allocating a 1 TB region for an mmap-backed data
+    /// structure does not require 1 TB of free disk; only the bytes
+    /// you touch do. The filesystem's `du`/`stat` "allocated blocks"
+    /// reflects actual usage; the apparent size matches `size`.
+    ///
     /// # Errors
     ///
     /// Returns `MmapIoError::ResizeFailed` if size is zero or exceeds the maximum safe limit.
@@ -503,6 +513,11 @@ impl MemoryMappedFile {
     /// disk I/O. `blocking` works on every async executor (tokio,
     /// smol, async-std), so callers are no longer locked into
     /// tokio (since 0.9.11).
+    ///
+    /// # Errors
+    ///
+    /// Propagates any error from the synchronous [`update_region`](Self::update_region)
+    /// call (out-of-bounds, mode mismatch, I/O failure).
     #[cfg(feature = "async")]
     pub async fn update_region_async(&self, offset: u64, data: &[u8]) -> Result<()> {
         let this = self.clone();
@@ -568,6 +583,10 @@ impl MemoryMappedFile {
     /// Async flush changes to disk. For read-only or COW mappings, this is a no-op.
     /// This method enforces "async-only flushing" semantics for async paths.
     /// Runtime-agnostic since 0.9.11 (uses `blocking::unblock`).
+    ///
+    /// # Errors
+    ///
+    /// Propagates any error from the synchronous [`flush`](Self::flush) call.
     #[cfg(feature = "async")]
     pub async fn flush_async(&self) -> Result<()> {
         let this = self.clone();
@@ -576,6 +595,11 @@ impl MemoryMappedFile {
 
     /// Async flush a specific byte range to disk. Runtime-agnostic
     /// since 0.9.11.
+    ///
+    /// # Errors
+    ///
+    /// Propagates any error from the synchronous [`flush_range`](Self::flush_range)
+    /// call (out-of-bounds or I/O failure).
     #[cfg(feature = "async")]
     pub async fn flush_range_async(&self, offset: u64, len: u64) -> Result<()> {
         let this = self.clone();
@@ -902,6 +926,14 @@ impl MemoryMappedFile {
     /// the file is opened at its current length. Use [`resize`](Self::resize)
     /// afterward if you need to change the size.
     ///
+    /// # Sparse file behavior
+    ///
+    /// On the create path, the file is allocated via `set_len` which
+    /// produces a sparse file on every supported platform. Disk blocks
+    /// are consumed lazily as pages are written; allocating a large
+    /// `default_size` for a structure that will fill incrementally is
+    /// safe and cheap. See [`create_rw`](Self::create_rw) for details.
+    ///
     /// # Errors
     ///
     /// Returns [`MmapIoError::Io`] if the filesystem rejects the
@@ -1227,6 +1259,11 @@ impl MemoryMappedFile {
 
     /// No-op fallback on non-Linux platforms. See the Linux variant
     /// for the contract.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`MmapIoError::OutOfBounds`] if `[offset, offset + len)`
+    /// exceeds the current mapping length. Otherwise always `Ok(())`.
     #[cfg(not(any(target_os = "linux", target_os = "android")))]
     pub fn prefetch_range(&self, offset: u64, len: u64) -> Result<()> {
         if len == 0 {
@@ -1475,6 +1512,11 @@ fn try_create_optimized_mapping(_file: &File, _len: u64) -> Result<MmapMut> {
 impl MemoryMappedFile {
     /// Open an existing file and memory-map it copy-on-write (private).
     /// Changes through this mapping are visible only within this process; the underlying file remains unchanged.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`MmapIoError::Io`] if the file cannot be opened or mapped.
+    /// Returns [`MmapIoError::ResizeFailed`] if the file is zero-length.
     pub fn open_cow<P: AsRef<Path>>(path: P) -> Result<Self> {
         let path_ref = path.as_ref();
         let file = OpenOptions::new().read(true).open(path_ref)?;
@@ -1627,6 +1669,133 @@ impl MemoryMappedFile {
     }
 }
 
+// Hugepage runtime introspection (1.0.0).
+//
+// The hugepages builder flag is a request; the kernel decides what to
+// actually back the mapping with. `is_hugepage_backed` answers the
+// question after the fact, by inspecting `/proc/self/smaps` on Linux.
+impl MemoryMappedFile {
+    /// Report whether the kernel currently backs this mapping with
+    /// huge pages.
+    ///
+    /// Returns:
+    /// - `Some(true)` if any portion of the mapping is backed by huge
+    ///   pages (transparent or explicit HugeTLB).
+    /// - `Some(false)` if the mapping is backed by regular pages only.
+    /// - `None` on platforms without a queryable hugepage status
+    ///   (everything except Linux at present), or if the status could
+    ///   not be determined (e.g. `/proc/self/smaps` unreadable, no
+    ///   matching entry found).
+    ///
+    /// On Linux, this parses `/proc/self/smaps`, locating the entry
+    /// whose address range contains the mapping's base, and inspects
+    /// `AnonHugePages`, `Private_Hugetlb`, and `Shared_Hugetlb`. Any
+    /// non-zero value yields `Some(true)`.
+    ///
+    /// # Notes
+    ///
+    /// Treat `None` as "unknown", not as "definitely regular pages".
+    /// The result reflects state at the moment of the call; the kernel
+    /// may promote or demote pages over time (Transparent Huge Pages).
+    #[must_use]
+    pub fn is_hugepage_backed(&self) -> Option<bool> {
+        #[cfg(target_os = "linux")]
+        {
+            let base = self.base_addr()?;
+            smaps_hugepage_lookup(base)
+        }
+        #[cfg(not(target_os = "linux"))]
+        {
+            None
+        }
+    }
+
+    /// Return the base address of the mapping as a `usize`. The lock
+    /// (for RW) is released before the address is returned; the address
+    /// remains the kernel-reported base for the mapping's current
+    /// generation. If a concurrent `resize` runs between this call and
+    /// any subsequent address-keyed lookup, the lookup may not find the
+    /// mapping. Callers must treat that as "unknown".
+    #[cfg(target_os = "linux")]
+    fn base_addr(&self) -> Option<usize> {
+        match &self.inner.map {
+            MapVariant::Ro(m) => Some(m.as_ptr() as usize),
+            MapVariant::Cow(m) => Some(m.as_ptr() as usize),
+            MapVariant::Rw(lock) => {
+                let guard = lock.read();
+                let p = guard.as_ptr() as usize;
+                drop(guard);
+                Some(p)
+            }
+        }
+    }
+}
+
+#[cfg(target_os = "linux")]
+fn smaps_hugepage_lookup(base: usize) -> Option<bool> {
+    use std::io::BufRead;
+    let file = std::fs::File::open("/proc/self/smaps").ok()?;
+    let reader = std::io::BufReader::new(file);
+
+    let mut in_range = false;
+    let mut found_any_hugepage = false;
+    let mut matched_at_least_once = false;
+
+    for line in reader.lines() {
+        let line = line.ok()?;
+        if let Some((lo, hi)) = parse_smaps_range(&line) {
+            if in_range {
+                // Just finished the matched entry. Decide.
+                return Some(found_any_hugepage);
+            }
+            if base >= lo && base < hi {
+                in_range = true;
+                matched_at_least_once = true;
+                found_any_hugepage = false;
+            }
+        } else if in_range {
+            if let Some(kb) = parse_smaps_kb_field(
+                &line,
+                &["AnonHugePages:", "Private_Hugetlb:", "Shared_Hugetlb:"],
+            ) {
+                if kb > 0 {
+                    found_any_hugepage = true;
+                }
+            }
+        }
+    }
+
+    if matched_at_least_once {
+        Some(found_any_hugepage)
+    } else {
+        None
+    }
+}
+
+#[cfg(target_os = "linux")]
+fn parse_smaps_range(line: &str) -> Option<(usize, usize)> {
+    // Range header lines look like:
+    //   7f1234567000-7f1234578000 rw-s 00000000 00:00 0
+    // and are distinguished from stat lines by the leading hex range.
+    let first = line.split_whitespace().next()?;
+    let (lo_s, hi_s) = first.split_once('-')?;
+    let lo = usize::from_str_radix(lo_s, 16).ok()?;
+    let hi = usize::from_str_radix(hi_s, 16).ok()?;
+    Some((lo, hi))
+}
+
+#[cfg(target_os = "linux")]
+fn parse_smaps_kb_field(line: &str, prefixes: &[&str]) -> Option<u64> {
+    for p in prefixes {
+        if let Some(rest) = line.strip_prefix(p) {
+            // rest looks like "       128 kB"
+            let num = rest.split_whitespace().next()?;
+            return num.parse::<u64>().ok();
+        }
+    }
+    None
+}
+
 /// Builder for MemoryMappedFile construction with options.
 pub struct MemoryMappedFileBuilder {
     path: PathBuf,
@@ -1671,6 +1840,14 @@ impl MemoryMappedFileBuilder {
     }
 
     /// Create a new mapping; for ReadWrite requires size for creation.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`MmapIoError::ResizeFailed`] if size is missing or zero
+    /// for a `ReadWrite` create.
+    /// Returns [`MmapIoError::InvalidMode`] if the requested mode is
+    /// `CopyOnWrite` without the `cow` feature enabled.
+    /// Returns [`MmapIoError::Io`] if file creation or mapping fails.
     pub fn create(self) -> Result<MemoryMappedFile> {
         let mode = self.mode.unwrap_or(MmapMode::ReadWrite);
         match mode {
@@ -1835,6 +2012,14 @@ impl MemoryMappedFileBuilder {
     }
 
     /// Open an existing file with provided mode (size ignored).
+    ///
+    /// # Errors
+    ///
+    /// Returns [`MmapIoError::InvalidMode`] if `CopyOnWrite` was
+    /// requested without the `cow` feature.
+    /// Returns [`MmapIoError::Io`] if the file cannot be opened or
+    /// mapped, or [`MmapIoError::ResizeFailed`] if the file is
+    /// zero-length.
     pub fn open(self) -> Result<MemoryMappedFile> {
         let mode = self.mode.unwrap_or(MmapMode::ReadOnly);
         match mode {
@@ -1973,6 +2158,15 @@ pub struct MappedSliceMut<'a> {
 }
 
 impl<'a> MappedSliceMut<'a> {
+    /// Construct a `MappedSliceMut` that holds a write guard for its
+    /// lifetime. Used by RW file-backed paths and by `AnonymousMmap`.
+    pub(crate) fn guarded(
+        guard: RwLockWriteGuard<'a, MmapMut>,
+        range: std::ops::Range<usize>,
+    ) -> Self {
+        Self { guard, range }
+    }
+
     /// Get the mutable slice.
     ///
     /// Note: This method is intentionally named `as_mut` for consistency,

@@ -26,8 +26,9 @@
 - **Zero-copy reads on every mode.** `as_slice` returns a `MappedSlice<'_>` borrowed directly from the mapping. No allocation. No memcpy. Works on read-only, read-write, and copy-on-write mappings uniformly.
 - **Zero-allocation iteration.** `mmap.chunks(N)` and `mmap.pages()` walk the file in fixed strides without ever heap-allocating. A 1 GiB scan at 4 KiB chunks skips 262,144 allocations and half the memory bandwidth of the naive approach.
 - **Aligned atomic views.** `atomic_u32` / `atomic_u64` return a wrapper that derefs to `&AtomicU64`. Multi-thread `fetch_add` over a memory-mapped counter is one cache-line ping; no cross-process locking required.
-- **Configurable durability.** `FlushPolicy::EveryBytes(N)`, `EveryWrites(N)`, `EveryMillis(N)`, `Always`, or `Manual`. The accumulator is correctly debited on partial flushes (audit C1) and the millis policy actually runs a background flusher (audit C2).
-- **Thread-safe.** Interior mutability via `parking_lot::RwLock`. Multiple concurrent readers, one writer at a time. Live atomic views block `resize()` until released so memory under your reference cannot move (audit C3).
+- **Configurable durability.** `FlushPolicy::EveryBytes(N)`, `EveryWrites(N)`, `EveryMillis(N)`, `Always`, or `Manual`. Partial flushes debit the accumulator correctly; the millis policy runs a background flusher with cooperative shutdown bound to mapping lifetime.
+- **Thread-safe.** Interior mutability via `parking_lot::RwLock`. Multiple concurrent readers, one writer at a time. Live atomic views block `resize()` until released so memory under your reference cannot move.
+- **Anonymous mappings.** Process-local memory without a backing file via `AnonymousMmap::new(size)` for shared scratch buffers between threads, large temporary allocations, or as the kernel substrate for IPC patterns.
 - **Cross-platform.** Linux, macOS, Windows. Per-platform fast paths (`MS_ASYNC` flush on Linux, `MADV_HUGEPAGE` on huge-page hints, `posix_fadvise` for OS-level prefetch).
 - **Opt-in surface.** Default features are `advise` + `iterator`. Everything else (`async`, `atomic`, `cow`, `locking`, `watch`, `hugepages`) is off by default to keep compile time tight.
 - **MSRV: 1.75.** Pinned and verified in CI.
@@ -36,7 +37,7 @@
 
 ```toml
 [dependencies]
-mmap-io = "0.9"
+mmap-io = "1.0"
 ```
 
 ```rust
@@ -69,24 +70,12 @@ fn main() -> Result<(), mmap_io::MmapIoError> {
 }
 ```
 
-## Migrating from 0.9.6
-
-Versions **0.9.7-0.9.10** changed three method signatures without a major version bump (a semver violation we should have caught; see `CHANGELOG.md` for the full apology). Since **0.9.11** we ship compat shims so 0.9.6 code recovers with a one-line rename per call site:
-
-| 0.9.6 signature                                          | Use this in 0.9.11+ for a drop-in fix |
-|----------------------------------------------------------|----------------------------------------|
-| `mmap.as_slice(off, len)?` → `&[u8]`                     | `mmap.as_slice_bytes(off, len)?`       |
-| `mmap.chunks(N)` yields `Result<Vec<u8>>`                | `mmap.chunks_owned(N)`                 |
-| `for_each_mut(..)` with `Result<Result<(), E>>`          | `for_each_mut_legacy(..)`              |
-
-The new (unflagged) replacements (`as_slice` → `MappedSlice<'_>`, `chunks` → `MappedSlice<'a>`, flattened `for_each_mut` → `Result<()>`) are the recommended path for new code: they're zero-copy and faster. The compat shims preserve the 0.9.6 ergonomics for code that doesn't want to migrate yet.
-
 ## Optional features
 
 | Feature     | Description                                                                                         |
 |-------------|-----------------------------------------------------------------------------------------------------|
-| `async`     | Runtime-agnostic async helpers via the `blocking` crate. Works on tokio, smol, async-std, or any executor. Since 0.9.11. |
-| `bytes`     | `bytes::Bytes` conversion for plugging into the hyper/tower/tonic/axum/reqwest ecosystem. Since 0.9.11. |
+| `async`     | Runtime-agnostic async helpers via the `blocking` crate. Works on tokio, smol, async-std, or any executor. |
+| `bytes`     | `bytes::Bytes` conversion for plugging into the hyper/tower/tonic/axum/reqwest ecosystem. |
 | `advise`    | Memory hinting via `madvise`/`posix_madvise` (Unix) or `PrefetchVirtualMemory` (Windows).            |
 | `iterator`  | Iterator-based access to memory chunks or pages with zero-copy reads.                                |
 | `hugepages` | Huge Pages via MAP_HUGETLB (Linux) or FILE_ATTRIBUTE_LARGE_PAGES (Windows); falls back to regular pages. |
@@ -101,8 +90,8 @@ The new (unflagged) replacements (`as_slice` → `MappedSlice<'_>`, `chunks` →
 
 By default, the following features are enabled:
 
-- `advise` — memory access hinting for performance.
-- `iterator` — iterator-based chunk/page access.
+- `advise`: memory access hinting for performance.
+- `iterator`: iterator-based chunk/page access.
 
 ## Installation patterns
 
@@ -110,7 +99,7 @@ Default features:
 
 ```toml
 [dependencies]
-mmap-io = "0.9"
+mmap-io = "1.0"
 ```
 
 Enable async helpers:
@@ -127,7 +116,7 @@ Multiple features:
 mmap-io = { version = "0.9", features = ["cow", "locking"] }
 ```
 
-Minimal — disable defaults, opt into only what you need:
+Minimal: disable defaults, opt into only what you need:
 
 ```toml
 [dependencies]
@@ -140,11 +129,11 @@ mmap-io supports configurable flush behavior for ReadWrite mappings via `FlushPo
 
 Policy variants:
 
-- **`FlushPolicy::Never`** / **`FlushPolicy::Manual`** — no automatic flushes. Call `mmap.flush()` when you want durability.
-- **`FlushPolicy::Always`** — flush after every write; slowest but most durable.
-- **`FlushPolicy::EveryBytes(n)`** — accumulate bytes written across `update_region()` calls; flush when at least `n` bytes have been written.
-- **`FlushPolicy::EveryWrites(n)`** — flush after every `n` writes.
-- **`FlushPolicy::EveryMillis(ms)`** — automatically flushes pending writes at the specified interval using a background thread.
+- **`FlushPolicy::Never`** / **`FlushPolicy::Manual`**: no automatic flushes. Call `mmap.flush()` when you want durability.
+- **`FlushPolicy::Always`**: flush after every write; slowest but most durable.
+- **`FlushPolicy::EveryBytes(n)`**: accumulate bytes written across `update_region()` calls; flush when at least `n` bytes have been written.
+- **`FlushPolicy::EveryWrites(n)`**: flush after every `n` writes.
+- **`FlushPolicy::EveryMillis(ms)`**: automatically flushes pending writes at the specified interval using a background thread.
 
 Builder usage:
 
@@ -339,7 +328,7 @@ fn main() -> Result<(), mmap_io::MmapIoError> {
 }
 ```
 
-Note: mmap-side writes (`update_region` + `flush`) are not a reliable trigger for FS watchers; they reach the watcher only at OS-decided writeback time. Reliable detection comes from `std::fs` API writes (another process, another file handle) — which is the real-world use case for `watch`.
+Note: mmap-side writes (`update_region` + `flush`) are not a reliable trigger for FS watchers; they reach the watcher only at OS-decided writeback time. Reliable detection comes from `std::fs` API writes (another process, another file handle), which is the real-world use case for `watch`.
 
 ## Copy-on-Write Mode (`feature = "cow"`)
 
@@ -414,15 +403,15 @@ See parity tests in the repository that validate this contract on each platform.
 
 Best-effort huge page support to reduce TLB misses and improve performance for large mappings.
 
-**Linux** — multi-tier approach for huge page allocation:
+**Linux**: multi-tier approach for huge page allocation:
 
 1. **Tier 1**: Optimized mapping with immediate `MADV_HUGEPAGE` to encourage kernel huge page allocation.
 2. **Tier 2**: Standard mapping with `MADV_HUGEPAGE` hint for Transparent Huge Pages (THP).
 3. **Tier 3**: Silent fallback to regular pages if huge pages are unavailable.
 
-**Windows** — attempts `FILE_ATTRIBUTE_LARGE_PAGES`. Requires the "Lock Pages in Memory" privilege and system configuration. Falls back to normal pages if unavailable.
+**Windows**: attempts `FILE_ATTRIBUTE_LARGE_PAGES`. Requires the "Lock Pages in Memory" privilege and system configuration. Falls back to normal pages if unavailable.
 
-**Other platforms** — no-op.
+**Other platforms**: no-op.
 
 > ⚠️ `.huge_pages(true)` does **NOT guarantee** huge pages will be used. Actual allocation depends on system configuration, available memory, kernel heuristics, and process privileges. The mapping functions correctly regardless of whether huge pages are actually used.
 
@@ -444,7 +433,7 @@ let mmap = MemoryMappedFile::builder("hp.bin")
 - All operations perform bounds checks.
 - Unsafe blocks are limited to mapping calls and documented with SAFETY comments.
 - Interior mutability uses `parking_lot::RwLock` for high performance.
-- Avoid flushing while holding a write guard to prevent deadlocks — drop the guard first.
+- Avoid flushing while holding a write guard to prevent deadlocks; drop the guard first.
 
 ## ⚠️ Unsafe Code Disclaimer
 
@@ -458,12 +447,12 @@ All unsafe logic is documented in the source and footguns are marked with cautio
 
 ## Minimum supported Rust version
 
-`1.75` — pinned in `Cargo.toml` and verified by CI.
+`1.75`, pinned in `Cargo.toml` and verified by CI.
 
 ## Further reading
 
-- **[API Reference](./docs/API.md)** — full collection of code examples and usage details.
-- **[Changelog](./CHANGELOG.md)** — history of project versions and updates.
+- **[API Reference](./docs/API.md)**: full collection of code examples and usage details.
+- **[Changelog](./CHANGELOG.md)**: history of project versions and updates.
 
 ## License
 

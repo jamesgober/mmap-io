@@ -30,7 +30,7 @@ Measured against a 16 MiB RO file:
 |------------|---------------------|------------------------|---------|
 | 4 KiB      | **25.8 µs**         | 341.2 µs               | **13.2x** |
 | 64 KiB     | **2.0 µs**          | 962.3 µs               | **475x** |
-| page (4 KiB) | **23.9 µs**       | (see 4 KiB row)        | —       |
+| page (4 KiB) | **23.9 µs**       | (see 4 KiB row)        | n/a     |
 
 The 64 KiB result is more extreme because the owned-chunk path's allocator overhead grows with the size of each `Vec<u8>` allocation. Zero-copy stays in the low microseconds because it's pure pointer arithmetic; the allocator overhead disappears.
 

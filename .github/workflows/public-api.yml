@@ -1,0 +1,61 @@
+name: public-api
+
+on:
+  pull_request:
+    branches: [ main ]
+  workflow_dispatch:
+
+env:
+  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
+
+# Run only one public-api check per PR branch at a time.
+concurrency:
+  group: public-api-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  public-api:
+    name: cargo-public-api diff
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Install Rust (nightly, for rustdoc-json)
+        # cargo-public-api requires a nightly toolchain to build the
+        # rustdoc JSON output it parses. The crate itself is stable;
+        # only this CI step needs nightly.
+        uses: dtolnay/rust-toolchain@nightly
+
+      - name: Cache cargo-public-api binary
+        id: cache-public-api
+        uses: actions/cache@v4
+        with:
+          path: ~/.cargo/bin/cargo-public-api
+          key: cargo-public-api-${{ runner.os }}-v1
+
+      - name: Install cargo-public-api (if not cached)
+        if: steps.cache-public-api.outputs.cache-hit != 'true'
+        run: cargo install cargo-public-api --locked
+
+      - name: Regenerate public-api.txt from current branch
+        run: cargo +nightly public-api --simplified --all-features > public-api.current.txt
+
+      - name: Diff against committed snapshot
+        # If the diff is non-empty, the public API changed. Either the
+        # change is intentional (commit the new public-api.txt) or
+        # accidental (back out the change). Either way, the PR author
+        # must acknowledge the diff explicitly.
+        run: |
+          if ! diff -u public-api.txt public-api.current.txt; then
+            echo ""
+            echo "::error::Public API changed without updating public-api.txt"
+            echo ""
+            echo "If the change is intentional:"
+            echo "  cargo public-api --simplified --all-features > public-api.txt"
+            echo "  git add public-api.txt && git commit"
+            echo ""
+            echo "If it's accidental, revert the offending public-item change."
+            exit 1
+          fi
+          echo "Public API matches committed snapshot."
