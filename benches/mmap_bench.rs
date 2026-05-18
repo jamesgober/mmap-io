@@ -18,6 +18,7 @@ use mmap_io::flush::FlushPolicy;
 use mmap_io::{MemoryMappedFile, MmapMode};
 use std::fs;
 use std::path::PathBuf;
+#[cfg(feature = "atomic")]
 use std::sync::Arc;
 use std::time::Duration;
 
