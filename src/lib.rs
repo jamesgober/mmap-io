@@ -1,48 +1,53 @@
-//! # mmap-io: High-performance memory-mapped file I/O for Rust
+//! # mmap-io: memory-mapped file I/O for Rust
 //!
-//! This crate provides a safe, efficient interface for memory-mapped file operations
-//! with support for concurrent access, segmented views, and optional async operations.
+//! Safe, zero-copy memory-mapped file operations with concurrent access,
+//! segmented views, runtime-agnostic async, and atomic memory views.
 //!
-//! ## Features
+//! ## What you get
 //!
-//! - **Zero-copy I/O**: Direct memory access without buffer copying
-//! - **Thread-safe**: Concurrent read/write access with proper synchronization
-//! - **Segmented access**: Work with file regions without loading entire files
-//! - **Cross-platform**: Works on Windows, Linux, macOS via memmap2
-//! - **Async support**: Optional Tokio integration for async file operations
+//! - **Zero-copy reads** on read-only, read-write, and copy-on-write mappings.
+//! - **Thread-safe** interior mutability via `parking_lot::RwLock`.
+//! - **Segmented and chunked access** without loading whole files.
+//! - **Cross-platform**: Linux, macOS, Windows, with per-platform fast paths.
+//! - **Anonymous mappings** via [`AnonymousMmap`] for shared scratch memory.
+//! - **Atomic views** (`feature = "atomic"`) for lock-free counters in mapped memory.
+//! - **Runtime-agnostic async** (`feature = "async"`) on tokio, smol, async-std, or any executor.
+//! - **`bytes::Bytes` integration** (`feature = "bytes"`) for the hyper/tower/tonic/axum/reqwest ecosystem.
+//! - **Native file watching** (`feature = "watch"`) via inotify / FSEvents / `ReadDirectoryChangesW`.
 //!
-//! ## Quick Start
+//! ## Quick start
 //!
 //! ```no_run
-//! use mmap_io::{create_mmap, update_region, flush};
+//! use mmap_io::MemoryMappedFile;
 //!
-//! // Create a 1MB memory-mapped file
-//! let mmap = create_mmap("data.bin", 1024 * 1024)?;
-//!
-//! // Write data at offset 100
-//! update_region(&mmap, 100, b"Hello, mmap!")?;
-//!
-//! // Ensure data is persisted
-//! flush(&mmap)?;
+//! // Opens "data.bin" if it exists; creates it at 1 MiB otherwise.
+//! let mmap = MemoryMappedFile::open_or_create("data.bin", 1024 * 1024)?;
+//! mmap.update_region(0, b"Hello, mmap!")?;
+//! mmap.flush()?;
 //! # Ok::<(), mmap_io::MmapIoError>(())
 //! ```
 //!
 //! ## Modules
 //!
-//! - [`errors`]: Error types for all mmap operations
-//! - [`utils`]: Utility functions for alignment and bounds checking
-//! - [`mmap`]: Core `MemoryMappedFile` implementation
-//! - [`segment`]: Segmented views for working with file regions
-//! - [`manager`]: High-level convenience functions
+//! - [`mmap`]: Core [`MemoryMappedFile`] implementation.
+//! - [`anonymous`]: Process-local file-less [`AnonymousMmap`].
+//! - [`segment`]: Segmented views for working with file regions.
+//! - [`manager`]: High-level convenience functions ([`create_mmap`], [`load_mmap`], etc.).
+//! - [`errors`]: Error types ([`MmapIoError`]).
+//! - [`utils`]: Alignment and bounds-checking helpers.
+//! - [`mod@flush`]: [`flush::FlushPolicy`] and time-based flushing.
 //!
-//! ## Feature Flags
+//! ## Feature flags
 //!
-//! - `async`: Enables Tokio-based async file operations
+//! All optional features are off by default except `advise` and `iterator`.
+//! See the [README](https://github.com/jamesgober/mmap-io) for the full feature table.
 
 #![cfg_attr(not(test), deny(clippy::unwrap_used))]
 #![deny(missing_docs)]
 #![doc(html_root_url = "https://docs.rs/mmap-io")]
 
+/// Anonymous (file-less) memory mappings.
+pub mod anonymous;
 pub mod errors;
 pub mod manager;
 /// Memory-mapped file support.
@@ -68,6 +73,7 @@ pub mod atomic;
 #[cfg(feature = "watch")]
 pub mod watch;
 
+pub use anonymous::AnonymousMmap;
 pub use errors::MmapIoError;
 pub use manager::{
     copy_mmap, create_mmap, delete_mmap, flush, load_mmap, update_region, write_mmap,

@@ -9,6 +9,53 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 <br>
 
+<!-- VERSION: 1.0.0 -->
+## [1.0.0] - 2026-05-18
+
+The stable release. API surface is now locked under SemVer: breaking
+changes require a major-version bump (`2.0.0`), additive features ship
+as minor bumps (`1.1.0`+), bug fixes ship as patch bumps (`1.0.1`+).
+CI enforces this via `cargo-semver-checks` and a new `cargo public-api`
+diff workflow.
+
+API-compatible with `0.9.11`. Callers on `0.9.11` upgrade by bumping
+the version string. See [`docs/MIGRATION_0.9_TO_1.0.md`](docs/MIGRATION_0.9_TO_1.0.md)
+for the full upgrade story, including the recovery path for callers
+still on `0.9.6` or earlier.
+
+### Added
+
+- **`AnonymousMmap`** (new module `mmap_io::anonymous`). Process-local memory mapping with no backing file. Useful for shared scratch memory between threads, large temporary allocations that should bypass the heap, or as the kernel-side substrate for fd-passing IPC patterns. Pages are zero-initialized on first touch; memory is released when the value drops. Methods: `new(size)`, `len`, `is_empty`, `read_into`, `update_region`, `as_slice`, `as_mut_slice`, `as_ptr` / `as_mut_ptr` (unsafe). 17 tests in `tests/v1_0_0_additions.rs`. Closes audit F1.
+- **`MemoryMappedFile::is_hugepage_backed() -> Option<bool>`**. Runtime introspection for whether the kernel currently backs a mapping with huge pages. On Linux, parses `/proc/self/smaps` and inspects `AnonHugePages`, `Private_Hugetlb`, `Shared_Hugetlb` for the entry containing the mapping's base address. Returns `Some(true)` if any portion is huge-page backed, `Some(false)` for regular pages, `None` on non-Linux platforms or when the lookup fails. Closes audit F4.
+- **Multi-process IPC integration test** (`tests/ipc_cross_process.rs`). Verifies bidirectional byte visibility: parent writes, spawns child via `std::process::Command::new(std::env::current_exe())`, child reads parent's writes and writes its own bytes, parent verifies child's writes. The test invokes itself with libtest's `--exact` filter so only the target test function runs in the child. Closes audit T6.
+- **`public-api.txt`** committed to the repository. A `cargo public-api --simplified --all-features` snapshot of the locked 1.0.0 surface. A new CI workflow (`.github/workflows/public-api.yml`) regenerates the snapshot on every PR and fails the build if the diff is non-empty without an accompanying snapshot update. Catches accidental API changes at PR review time rather than at release.
+
+### Changed
+
+- **`# Errors` and `# Panics` rustdoc completeness pass.** Every `Result`-returning public method now documents the error conditions it can return; every public method that calls `.expect()` documents the panic conditions. Previously the crate root denied `missing_docs` (every item has a doc comment); now `clippy::missing_errors_doc` and `clippy::missing_panics_doc` also pass clean.
+- **Sparse-file behavior documented** on `create_rw` and `open_or_create`. The `set_len(size)` call produces a sparse file on every supported platform; a 1 TB `default_size` does not consume 1 TB of free disk until pages are written. Closes audit F6.
+
+### Documentation
+
+- **README rewritten as a fresh 1.0.0 launch.** Migration-from-0.9.6 content moved out of the README and into `docs/MIGRATION_0.9_TO_1.0.md`. README now focuses on the current product and stability commitment, not on a transition story.
+- **`docs/MIGRATION_0.9_TO_1.0.md`** new file. Covers the upgrade path from any 0.9.x version: direct version bump from 0.9.11, compat-shim recovery from 0.9.6 (or earlier), and the optional zero-copy migration to the modern API.
+- **`docs/API.md`** updated with the new `AnonymousMmap`, `is_hugepage_backed`, and `MmapReader` types, plus the 0.9.11 `read_bytes` / `reader` / `as_slice_bytes` entries that were not yet documented there. Feature table updated; the `async` description no longer says "Tokio-based" (runtime-agnostic since 0.9.11).
+- **`REPS.md`** version refs bumped to 1.0.0.
+
+### Internals
+
+- New bench warning fix: `Arc` import in `benches/mmap_bench.rs` gated behind `#[cfg(feature = "atomic")]` to match its sole usage site.
+- `tempfile` remains a dev-dependency; not pulled into the production tree.
+
+### Notes
+
+- MSRV unchanged at Rust 1.75.
+- No public API breaks vs 0.9.11; existing 0.9.11 code compiles unchanged.
+- Total test count: 158 passing (up from 140 in 0.9.11): 17 new in `v1_0_0_additions.rs`, 1 new in `ipc_cross_process.rs`. 1 ignored (unrelated hugepages-fallback). 0 failed.
+- `cargo build / test --all-features / clippy / doc / audit / semver-checks / fmt / public-api` all clean.
+
+<br>
+
 <!-- VERSION: 0.9.11 -->
 ## [0.9.11] - 2026-05-14
 

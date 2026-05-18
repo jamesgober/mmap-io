@@ -300,6 +300,12 @@ impl<'a> ChunkIteratorMut<'a> {
     /// Callers carrying a foreign error type should map into
     /// `MmapIoError` before returning (e.g. via `.map_err(|e|
     /// MmapIoError::Io(...))`).
+    ///
+    /// # Errors
+    ///
+    /// Returns [`MmapIoError::InvalidMode`] on read-only or COW
+    /// mappings (mutable iteration requires `ReadWrite`). Returns any
+    /// error propagated from the user closure.
     pub fn for_each_mut<F>(self, mut f: F) -> Result<()>
     where
         F: FnMut(u64, &mut [u8]) -> Result<()>,
@@ -405,6 +411,14 @@ impl MemoryMappedFile {
     /// }
     /// # Ok::<(), mmap_io::MmapIoError>(())
     /// ```
+    ///
+    /// # Panics
+    ///
+    /// Panics if iterator construction fails. This is unreachable for
+    /// supported inputs: the constructor's only failure mode is
+    /// `chunk_size == 0`, which the type-level contract documents as
+    /// invalid usage. Empty mappings produce an already-exhausted
+    /// iterator rather than an error.
     #[cfg(feature = "iterator")]
     #[must_use]
     pub fn chunks(&self, chunk_size: usize) -> ChunkIterator<'_> {
@@ -412,6 +426,10 @@ impl MemoryMappedFile {
     }
 
     /// Zero-copy page-aligned iterator.
+    ///
+    /// # Panics
+    ///
+    /// Unreachable in practice; see [`chunks`](Self::chunks).
     #[cfg(feature = "iterator")]
     #[must_use]
     pub fn pages(&self) -> PageIterator<'_> {
@@ -421,6 +439,10 @@ impl MemoryMappedFile {
     /// Migration-aid: chunk iterator yielding owned `Vec<u8>` items.
     /// Allocates one `Vec<u8>` per chunk and copies the data into it.
     /// Prefer `chunks()` for zero-copy.
+    ///
+    /// # Panics
+    ///
+    /// Unreachable in practice; see [`chunks`](Self::chunks).
     #[cfg(feature = "iterator")]
     #[must_use]
     pub fn chunks_owned(&self, chunk_size: usize) -> ChunkIteratorOwned<'_> {
@@ -430,6 +452,10 @@ impl MemoryMappedFile {
 
     /// Migration-aid: page iterator yielding owned `Vec<u8>` items.
     /// Prefer `pages()` for zero-copy.
+    ///
+    /// # Panics
+    ///
+    /// Unreachable in practice; see [`chunks`](Self::chunks).
     #[cfg(feature = "iterator")]
     #[must_use]
     pub fn pages_owned(&self) -> PageIteratorOwned<'_> {
@@ -452,6 +478,10 @@ impl MemoryMappedFile {
     /// })?;
     /// # Ok::<(), mmap_io::MmapIoError>(())
     /// ```
+    ///
+    /// # Panics
+    ///
+    /// Unreachable in practice; see [`chunks`](Self::chunks).
     #[cfg(feature = "iterator")]
     #[must_use]
     pub fn chunks_mut(&self, chunk_size: usize) -> ChunkIteratorMut<'_> {

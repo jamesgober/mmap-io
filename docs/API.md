@@ -18,7 +18,12 @@ Complete reference for public-facing APIs. Each item lists its signature, parame
 - **[Installation](#installation)**
 - **[Core Types](#core-types)**
   - [MemoryMappedFile](#memorymappedfile)
+  - [AnonymousMmap](#anonymousmmap) (1.0.0)
   - [MmapMode](#mmapmode)
+  - [MappedSlice](#mappedslice)
+  - [MappedSliceMut](#mappedslicemut)
+  - [TouchHint](#touchhint)
+  - [MmapReader](#mmapreader) (0.9.11)
   - [MmapIoError](#mmapioerror)
 - **[Manager Functions](#manager-functions)**
   - [create_mmap](#create_mmap)
@@ -51,6 +56,10 @@ Complete reference for public-facing APIs. Each item lists its signature, parame
   - [as_ptr](#as_ptr) (0.9.8, unsafe)
   - [as_mut_ptr](#as_mut_ptr) (0.9.8, unsafe)
   - [prefetch_range](#prefetch_range) (0.9.8)
+  - [as_slice_bytes](#as_slice_bytes) (0.9.11, 0.9.6-compat)
+  - [read_bytes](#read_bytes) (0.9.11, feature = "bytes")
+  - [reader](#reader) (0.9.11)
+  - [is_hugepage_backed](#is_hugepage_backed) (1.0.0)
 - **[Feature-Gated APIs](#feature-gated-apis)**
   - [Memory Advise](#memory-advise-feature--advise)
     - [advise](#advise)
@@ -118,14 +127,15 @@ The following optional Cargo features enable extended functionality:
 
 | Feature    | Description                                                                                         |
 |------------|-----------------------------------------------------------------------------------------------------|
-| `async`    | Enables **Tokio-based async helpers** for asynchronous file and memory operations.                 |
-| `advise`   | Enables memory hinting using **`madvise`/`posix_madvise` (Unix)** or **Prefetch (Windows)**.       |
-| `iterator` | Provides **iterator-based access** to memory chunks or pages with zero-copy read access.           |
-| `hugepages` | **Best-effort Huge Pages Support**: Reduces TLB misses for large memory regions through a multi-tier approach:<br/>**Tier 1**: Optimized mapping with immediate MADV_HUGEPAGE + MADV_POPULATE_WRITE<br/>**Tier 2**: Standard mapping with MADV_HUGEPAGE hint<br/>**Tier 3**: Silent fallback to regular pages<br/>⚠️ **Not Guaranteed**: Requires system configuration and adequate privileges. The mapping will function correctly regardless of huge page availability. |
-| `cow`      | Enables **Copy-on-Write (COW)** mapping mode using private memory views (per-process isolation).   |
-| `locking`  | Enables page-level memory locking via **`mlock`/`munlock` (Unix)** or **`VirtualLock` (Windows)**. |
-| `atomic`   | Exposes **atomic views** into memory as aligned `u32` / `u64`, with strict safety guarantees.      |
-| `watch`    | Enables **file change notifications** via platform-specific APIs with polling fallback.            |
+| `async`    | Runtime-agnostic async helpers (drives on tokio, smol, async-std, custom executors).                |
+| `bytes`    | `bytes::Bytes` conversions for the hyper/tower/tonic/axum/reqwest ecosystem.                        |
+| `advise`   | Memory hinting via **`madvise`/`posix_madvise` (Unix)** or **Prefetch (Windows)**.                  |
+| `iterator` | Iterator-based access to memory chunks or pages with zero-copy read access.                         |
+| `hugepages` | Best-effort huge-page mappings on Linux (HugeTLB / Transparent Huge Pages with multi-tier fallback). Use `is_hugepage_backed()` to confirm at runtime.|
+| `cow`      | Copy-on-Write mapping mode using private memory views (per-process isolation).                       |
+| `locking`  | Page-level memory locking via **`mlock`/`munlock` (Unix)** or **`VirtualLock` (Windows)**.           |
+| `atomic`   | Atomic views into memory as aligned `u32` / `u64`, with strict alignment checking.                  |
+| `watch`    | Native file-change notifications (inotify on Linux, FSEvents on macOS, ReadDirectoryChangesW on Windows). |
 
 <br>
 
@@ -156,7 +166,7 @@ By default, the following features are enabled:
 > Add the following to your Cargo.toml file:
 ```toml
 [dependencies]
-mmap-io = { version = "0.9.11" }
+mmap-io = { version = "1.0.0" }
 ```
 
 > Or install using Cargo:
@@ -172,7 +182,7 @@ Enable additional features by using the pre-defined [features flags](#features) 
 > ##### Manual Install with Features:
 ```toml
 [dependencies]
-mmap-io = { version = "0.9.11", features = ["cow", "locking"] }
+mmap-io = { version = "1.0.0", features = ["cow", "locking"] }
 ```
 > ##### Cargo Install with Features:
 ```bash
@@ -187,7 +197,7 @@ If you're building for minimal environments or want total control over feature f
 > ##### Manual Install without Default Features:
 ```toml
 [dependencies]
-mmap-io = { version = "0.9.11", default-features = false, features = ["locking"] }
+mmap-io = { version = "1.0.0", default-features = false, features = ["locking"] }
 ```
 
 > ##### Cargo Install without Default Features:
@@ -220,6 +230,115 @@ use mmap_io::MemoryMappedFile;
 
 let mmap = MemoryMappedFile::create_rw("data.bin", 1024)?;
 ```
+
+<br>
+
+### AnonymousMmap
+
+*(Since 1.0.0)*
+
+Process-local memory mapping with no backing file. Useful for shared scratch memory between threads and as a kernel-side substrate for IPC patterns. Pages are zero-initialized on first touch; memory is released when the value is dropped.
+
+```rust
+pub struct AnonymousMmap { /* private fields */ }
+```
+
+**Differences from `MemoryMappedFile`**:
+- No file descriptor / handle; no `AsFd`/`AsRawFd`/`AsHandle` impls.
+- No `resize` (the underlying mapping does not support it).
+- No `flush` (volatile memory; nothing to persist).
+- No `path` (there is no path).
+
+Everything else (read, write, slice access) works identically.
+
+**Example**:
+```rust
+use mmap_io::AnonymousMmap;
+
+let mmap = AnonymousMmap::new(4096)?;
+mmap.update_region(0, b"hello")?;
+let mut buf = [0u8; 5];
+mmap.read_into(0, &mut buf)?;
+assert_eq!(&buf, b"hello");
+# Ok::<(), mmap_io::MmapIoError>(())
+```
+
+#### Methods
+
+| Method | Signature | Notes |
+|--------|-----------|-------|
+| `new` | `fn new(size: u64) -> Result<Self>` | Allocate `size` bytes. Errors on zero/oversized. |
+| `len` | `fn len(&self) -> u64` | Length in bytes. |
+| `is_empty` | `fn is_empty(&self) -> bool` | Always `false` for a constructed mapping. |
+| `read_into` | `fn read_into(&self, offset: u64, buf: &mut [u8]) -> Result<()>` | Copy bytes out of the mapping. |
+| `update_region` | `fn update_region(&self, offset: u64, data: &[u8]) -> Result<()>` | Copy bytes into the mapping. |
+| `as_slice` | `fn as_slice(&self, offset: u64, len: u64) -> Result<MappedSlice<'_>>` | Borrow a read-only slice (holds a read lock). |
+| `as_mut_slice` | `fn as_mut_slice(&self, offset: u64, len: u64) -> Result<MappedSliceMut<'_>>` | Borrow a mutable slice (holds a write lock). |
+| `as_ptr` | `unsafe fn as_ptr(&self) -> *const u8` | Raw byte pointer for FFI. |
+| `as_mut_ptr` | `unsafe fn as_mut_ptr(&self) -> *mut u8` | Raw mutable byte pointer for FFI. |
+
+<br>
+
+### MappedSlice
+
+Read-only slice into a memory-mapped region. For RW mappings it holds the read lock for its lifetime, so concurrent `resize` blocks until the slice is dropped.
+
+```rust
+pub struct MappedSlice<'a> { /* private fields */ }
+
+impl<'a> MappedSlice<'a> {
+    pub fn len(&self) -> usize;
+    pub fn is_empty(&self) -> bool;
+    pub fn as_slice(&self) -> &[u8];
+}
+
+impl std::ops::Deref for MappedSlice<'_> { type Target = [u8]; }
+impl AsRef<[u8]> for MappedSlice<'_> { /* ... */ }
+impl PartialEq for MappedSlice<'_> { /* ... */ }
+impl PartialEq<[u8]> for MappedSlice<'_> { /* ... */ }
+impl<const N: usize> PartialEq<[u8; N]> for MappedSlice<'_> { /* ... */ }
+```
+
+<br>
+
+### MappedSliceMut
+
+Mutable slice into a memory-mapped region. Holds the write lock for its lifetime; any concurrent reader or writer blocks until dropped.
+
+```rust
+pub struct MappedSliceMut<'a> { /* private fields */ }
+
+impl<'a> MappedSliceMut<'a> {
+    pub fn len(&self) -> usize;
+    pub fn is_empty(&self) -> bool;
+    pub fn as_mut(&mut self) -> &mut [u8];
+}
+
+impl std::ops::Deref for MappedSliceMut<'_> { type Target = [u8]; }
+impl std::ops::DerefMut for MappedSliceMut<'_> { /* ... */ }
+```
+
+<br>
+
+### MmapReader
+
+*(Since 0.9.11)*
+
+Cursor wrapper that implements `std::io::Read` and `std::io::Seek`. Plugs an `mmap-io` mapping into any parser or decoder that takes a generic `R: Read`: `serde_json::from_reader`, `flate2::read::GzDecoder`, `tar::Archive::new`, `BufReader`, etc.
+
+```rust
+pub struct MmapReader<'a> { /* private fields */ }
+
+impl<'a> MmapReader<'a> {
+    pub fn position(&self) -> u64;
+    pub fn set_position(&mut self, pos: u64);
+}
+
+impl std::io::Read for MmapReader<'_> { /* ... */ }
+impl std::io::Seek for MmapReader<'_> { /* ... */ }
+```
+
+Construct via [`MemoryMappedFile::reader`](#reader).
 
 <br>
 
@@ -999,6 +1118,104 @@ let mmap = MemoryMappedFile::create_rw("data.bin", 1024 * 1024)?;
 // Prewarm only the first 64KB for immediate use
 mmap.touch_pages_range(0, 64 * 1024)?;
 ```
+
+<br>
+
+### as_slice_bytes
+
+*(Since 0.9.11, compat shim for the 0.9.6 signature)*
+
+```rust
+pub fn as_slice_bytes(&self, offset: u64, len: u64) -> Result<&[u8]>
+```
+
+**Description**: Returns a direct `&[u8]` borrow into the mapping. Mirrors the 0.9.6 `as_slice` signature for codebases that were broken by the 0.9.7 return-type change. Supported on `ReadOnly` and `CopyOnWrite` mappings; returns `MmapIoError::InvalidMode` on `ReadWrite` (use [`as_slice`](#as_slice) which returns `MappedSlice<'_>` for that path).
+
+**Errors**:
+- `MmapIoError::InvalidMode` on `ReadWrite` mappings.
+- `MmapIoError::OutOfBounds` if range exceeds file bounds.
+
+<br>
+
+### read_bytes
+
+*(Since 0.9.11; requires `feature = "bytes"`)*
+
+```rust
+pub fn read_bytes(&self, offset: u64, len: u64) -> Result<bytes::Bytes>
+```
+
+**Description**: Read `len` bytes from `offset` into a newly-allocated `bytes::Bytes`. One allocation + memcpy at the boundary; the resulting `Bytes` is mapping-lifetime-independent and can be sent through `hyper` / `tower` / `tonic` / `axum` / `reqwest`.
+
+For true zero-copy networking, prefer `as_slice` and pass the borrowed `&[u8]` directly; `Bytes` is the right tool when ownership has to cross a thread or process boundary.
+
+**Errors**:
+- `MmapIoError::OutOfBounds` if range exceeds file bounds.
+
+<br>
+
+### reader
+
+*(Since 0.9.11)*
+
+```rust
+pub fn reader(&self) -> MmapReader<'_>
+```
+
+**Description**: Returns an [`MmapReader`](#mmapreader) cursor over the mapping. Implements `std::io::Read` + `std::io::Seek`, so the mapping plugs directly into any parser or decoder expecting a generic `R: Read`.
+
+**Example**:
+```rust
+use mmap_io::MemoryMappedFile;
+use std::io::Read;
+
+let mmap = MemoryMappedFile::open_ro("data.bin")?;
+let mut reader = mmap.reader();
+let mut buf = Vec::new();
+reader.read_to_end(&mut buf)?;
+# Ok::<(), Box<dyn std::error::Error>>(())
+```
+
+<br>
+
+### is_hugepage_backed
+
+*(Since 1.0.0)*
+
+```rust
+pub fn is_hugepage_backed(&self) -> Option<bool>
+```
+
+**Description**: Report whether the kernel currently backs this mapping with huge pages (transparent or explicit HugeTLB).
+
+**Returns**:
+- `Some(true)` if any portion of the mapping is backed by huge pages.
+- `Some(false)` if the mapping is backed by regular pages only.
+- `None` on non-Linux platforms, or when the status cannot be determined (e.g. `/proc/self/smaps` unreadable, no matching entry).
+
+On Linux, parses `/proc/self/smaps` and inspects the `AnonHugePages`, `Private_Hugetlb`, and `Shared_Hugetlb` fields of the entry containing the mapping's base address.
+
+**Notes**: Treat `None` as "unknown", not as "definitely regular pages". The result reflects state at the moment of the call; the kernel may promote or demote pages over time (Transparent Huge Pages).
+
+<br>
+
+## OS Handle Traits
+
+*(Since 0.9.11)*
+
+`MemoryMappedFile` implements the standard-library OS handle traits for file-backed mappings, letting you hand the underlying handle to FFI / `nix` / `rustix` / `polling` etc. without going through `unmap`.
+
+```rust
+// Unix (Linux, macOS, BSD):
+impl AsFd for MemoryMappedFile { /* ... */ }
+impl AsRawFd for MemoryMappedFile { /* ... */ }
+
+// Windows:
+impl AsHandle for MemoryMappedFile { /* ... */ }
+impl AsRawHandle for MemoryMappedFile { /* ... */ }
+```
+
+The trait impls borrow the file handle for as long as the mapping is alive; the handle remains owned by the `MemoryMappedFile`. Use `unmap()` to retake ownership of the `File` explicitly.
 
 <hr>
 <div align="right"><a href="#doc-top">&uarr; TOP</a></div>
@@ -1862,6 +2079,7 @@ for handle in handles {
 <br><br>
 
 ## Version History
+- **1.0.0**: Stable release. New surface: `AnonymousMmap` (process-local file-less mappings), `is_hugepage_backed()` runtime introspection, multi-process IPC integration test, sparse-file documentation. Doc-completeness pass: every `Result`-returning public method documents `# Errors`; every panicking method documents `# Panics`. `cargo public-api` snapshot committed and enforced via CI; `cargo-semver-checks` becomes a hard gate against unintended breaks. No API breaks vs 0.9.11.
 - **0.9.11**: Patch release. Compat shims for the 0.9.7 semver violation (`as_slice_bytes`, `for_each_mut_legacy`). Runtime-agnostic async via `blocking` crate (smol/tokio/async-std all work). New `bytes::Bytes` integration (`feature = "bytes"`), `io::Read`+`io::Seek` cursor (`mmap.reader()`), and `AsFd`/`AsRawFd` (Unix) + `AsHandle`/`AsRawHandle` (Windows) trait impls.
 - **0.9.10**: Pre-1.0 stabilization (Lockdown). Audit D1, D7, D8, R1-R7, D5 closed. Ten focused examples, `cargo-fuzz` scaffold, `docs/PERFORMANCE.md` with measured numbers, `cargo-audit` + `cargo-semver-checks` CI workflows, bench-regression hard gate. MSRV held at Rust 1.75.
 - **0.9.9**: Native watch backends. `inotify` (Linux), FSEvents (macOS), `ReadDirectoryChangesW` (Windows) replace the polling implementation, backed by the `notify 6` crate gated on the `watch` feature. Three previously-ignored Windows watch tests now pass live; five new integration tests cover modify / truncate / extend / rapid-sequence / removed.

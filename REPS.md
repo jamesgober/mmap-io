@@ -1,4 +1,4 @@
-# mmap-io — Project Specification (REPS)
+# mmap-io: Project Specification (REPS)
 
 > Rust Engineering Project Specification.
 > Normative language follows RFC 2119.
@@ -43,26 +43,28 @@ order. When two principles conflict, the higher-priority one wins.
 
 ```
 mmap_io
-├── errors      — error types for all operations
-├── utils       — alignment and bounds helpers
-├── mmap        — core MemoryMappedFile, MmapMode, TouchHint
-├── segment     — segmented (offset + length) views
-├── manager     — high-level create_mmap / load_mmap / update_region /
+├── errors      : error types for all operations
+├── utils       : alignment and bounds helpers
+├── mmap        : core MemoryMappedFile, MmapMode, TouchHint
+├── segment     : segmented (offset + length) views
+├── manager     : high-level create_mmap / load_mmap / update_region /
 │                 flush / copy_mmap / delete_mmap / write_mmap
-├── flush       — FlushPolicy, time-based flushing
-├── advise      — madvise hints                     [feature: advise]
-├── iterator    — ChunkIterator, PageIterator       [feature: iterator]
-├── lock        — page-level mlock / VirtualLock    [feature: locking]
-├── atomic      — atomic u32/u64 memory views       [feature: atomic]
-└── watch       — file change notifications         [feature: watch]
+├── flush       : FlushPolicy, time-based flushing
+├── advise      : madvise hints                     [feature: advise]
+├── iterator    : ChunkIterator, PageIterator       [feature: iterator]
+├── lock        : page-level mlock / VirtualLock    [feature: locking]
+├── atomic      : atomic u32/u64 memory views       [feature: atomic]
+└── watch       : file change notifications         [feature: watch]
 ```
 
 ## 4. Public API surface
 
-The following items are part of the public, stable-through-0.9.x
-surface. Breaking changes to these items MUST be batched into a
-0.10.0 or 1.0.0 release with a CHANGELOG entry under `### Changed`
-and a migration note.
+The following items are part of the public, stable surface as of
+`1.0.0`. Under SemVer, breaking changes to these items require a
+major-version bump (`2.0.0`). Additive changes ship as minor bumps
+(`1.1.0`+); bug fixes ship as patch bumps (`1.0.1`+). CI enforces
+this via `cargo-semver-checks` and the committed `public-api.txt`
+snapshot diff workflow.
 
 ### 4.1 Always available
 
@@ -123,6 +125,22 @@ impl MemoryMappedFile {
     // Since 0.9.11: feature = "bytes". One alloc + memcpy.
     #[cfg(feature = "bytes")]
     pub fn read_bytes(&self, offset: u64, len: u64) -> Result<bytes::Bytes>;
+    // Since 1.0.0: runtime hugepage introspection (Linux real, others None).
+    pub fn is_hugepage_backed(&self) -> Option<bool>;
+}
+
+// Since 1.0.0: process-local anonymous memory mapping (no backing file).
+pub struct AnonymousMmap { /* private */ }
+impl AnonymousMmap {
+    pub fn new(size: u64) -> Result<Self>;
+    pub fn len(&self) -> u64;
+    pub fn is_empty(&self) -> bool;
+    pub fn read_into(&self, offset: u64, buf: &mut [u8]) -> Result<()>;
+    pub fn update_region(&self, offset: u64, data: &[u8]) -> Result<()>;
+    pub fn as_slice(&self, offset: u64, len: u64) -> Result<MappedSlice<'_>>;
+    pub fn as_mut_slice(&self, offset: u64, len: u64) -> Result<MappedSliceMut<'_>>;
+    pub unsafe fn as_ptr(&self) -> *const u8;
+    pub unsafe fn as_mut_ptr(&self) -> *mut u8;
 }
 
 // Since 0.9.11: std::io traits on the mapping.
@@ -363,7 +381,7 @@ The crate intentionally does NOT provide:
 - **Database semantics** (transactions, schemas, query languages).
   This crate is a building block; database semantics belong above it.
 - **Async I/O for reads.** Memory-mapped reads ARE the async-friendly
-  primitive — they bypass the kernel I/O path entirely once mapped.
+  primitive (they bypass the kernel I/O path entirely once mapped).
   `async` feature covers flush operations only.
 - **GC integration.** No tracking of slice lifetimes beyond what
   Rust's borrow checker already enforces.

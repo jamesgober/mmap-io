@@ -4,7 +4,7 @@
 //!
 //! The callback runs on a dedicated dispatcher thread once per
 //! detected change. We modify the file externally (via std::fs) to
-//! simulate "another process touched it" — that's what every native
+//! simulate "another process touched it", which is what every native
 //! FS watcher is actually designed to observe. mmap-side writes
 //! reach the watcher only at OS-decided writeback time, which is
 //! not reliable enough to demo.

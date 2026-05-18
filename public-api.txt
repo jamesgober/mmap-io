@@ -1,0 +1,823 @@
+ Documenting mmap-io v1.0.0 (C:\Dev\libraries\Rust\mmap-io)
+    Finished `dev` profile [unoptimized + debuginfo] target(s) in 0.50s
+pub mod mmap_io
+pub mod mmap_io::advise
+pub enum mmap_io::advise::MmapAdvice
+pub mmap_io::advise::MmapAdvice::DontNeed
+pub mmap_io::advise::MmapAdvice::Normal
+pub mmap_io::advise::MmapAdvice::Random
+pub mmap_io::advise::MmapAdvice::Sequential
+pub mmap_io::advise::MmapAdvice::WillNeed
+impl core::clone::Clone for mmap_io::advise::MmapAdvice
+pub fn mmap_io::advise::MmapAdvice::clone(&self) -> mmap_io::advise::MmapAdvice
+impl core::cmp::Eq for mmap_io::advise::MmapAdvice
+impl core::cmp::PartialEq for mmap_io::advise::MmapAdvice
+pub fn mmap_io::advise::MmapAdvice::eq(&self, other: &mmap_io::advise::MmapAdvice) -> bool
+impl core::fmt::Debug for mmap_io::advise::MmapAdvice
+pub fn mmap_io::advise::MmapAdvice::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::Copy for mmap_io::advise::MmapAdvice
+impl core::marker::StructuralPartialEq for mmap_io::advise::MmapAdvice
+impl core::marker::Freeze for mmap_io::advise::MmapAdvice
+impl core::marker::Send for mmap_io::advise::MmapAdvice
+impl core::marker::Sync for mmap_io::advise::MmapAdvice
+impl core::marker::Unpin for mmap_io::advise::MmapAdvice
+impl core::marker::UnsafeUnpin for mmap_io::advise::MmapAdvice
+impl core::panic::unwind_safe::RefUnwindSafe for mmap_io::advise::MmapAdvice
+impl core::panic::unwind_safe::UnwindSafe for mmap_io::advise::MmapAdvice
+pub mod mmap_io::anonymous
+pub struct mmap_io::anonymous::AnonymousMmap
+impl mmap_io::anonymous::AnonymousMmap
+pub unsafe fn mmap_io::anonymous::AnonymousMmap::as_mut_ptr(&self) -> *mut u8
+pub fn mmap_io::anonymous::AnonymousMmap::as_mut_slice(&self, offset: u64, len: u64) -> mmap_io::errors::Result<mmap_io::mmap::MappedSliceMut<'_>>
+pub unsafe fn mmap_io::anonymous::AnonymousMmap::as_ptr(&self) -> *const u8
+pub fn mmap_io::anonymous::AnonymousMmap::as_slice(&self, offset: u64, len: u64) -> mmap_io::errors::Result<mmap_io::mmap::MappedSlice<'_>>
+pub fn mmap_io::anonymous::AnonymousMmap::is_empty(&self) -> bool
+pub fn mmap_io::anonymous::AnonymousMmap::len(&self) -> u64
+pub fn mmap_io::anonymous::AnonymousMmap::new(size: u64) -> mmap_io::errors::Result<Self>
+pub fn mmap_io::anonymous::AnonymousMmap::read_into(&self, offset: u64, buf: &mut [u8]) -> mmap_io::errors::Result<()>
+pub fn mmap_io::anonymous::AnonymousMmap::update_region(&self, offset: u64, data: &[u8]) -> mmap_io::errors::Result<()>
+impl core::fmt::Debug for mmap_io::anonymous::AnonymousMmap
+pub fn mmap_io::anonymous::AnonymousMmap::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl !core::marker::Freeze for mmap_io::anonymous::AnonymousMmap
+impl core::marker::Send for mmap_io::anonymous::AnonymousMmap
+impl core::marker::Sync for mmap_io::anonymous::AnonymousMmap
+impl core::marker::Unpin for mmap_io::anonymous::AnonymousMmap
+impl core::marker::UnsafeUnpin for mmap_io::anonymous::AnonymousMmap
+impl !core::panic::unwind_safe::RefUnwindSafe for mmap_io::anonymous::AnonymousMmap
+impl core::panic::unwind_safe::UnwindSafe for mmap_io::anonymous::AnonymousMmap
+pub mod mmap_io::atomic
+pub struct mmap_io::atomic::AtomicSliceView<'a, T>
+impl<T: core::marker::Sync> core::marker::Send for mmap_io::atomic::AtomicSliceView<'_, T>
+impl<T: core::marker::Sync> core::marker::Sync for mmap_io::atomic::AtomicSliceView<'_, T>
+impl<T> core::ops::deref::Deref for mmap_io::atomic::AtomicSliceView<'_, T>
+pub type mmap_io::atomic::AtomicSliceView<'_, T>::Target = [T]
+pub fn mmap_io::atomic::AtomicSliceView<'_, T>::deref(&self) -> &[T]
+impl<'a, T> core::marker::Freeze for mmap_io::atomic::AtomicSliceView<'a, T>
+impl<'a, T> core::marker::Unpin for mmap_io::atomic::AtomicSliceView<'a, T>
+impl<'a, T> core::marker::UnsafeUnpin for mmap_io::atomic::AtomicSliceView<'a, T>
+impl<'a, T> !core::panic::unwind_safe::RefUnwindSafe for mmap_io::atomic::AtomicSliceView<'a, T>
+impl<'a, T> !core::panic::unwind_safe::UnwindSafe for mmap_io::atomic::AtomicSliceView<'a, T>
+pub struct mmap_io::atomic::AtomicView<'a, T>
+impl<T: core::marker::Sync> core::marker::Send for mmap_io::atomic::AtomicView<'_, T>
+impl<T: core::marker::Sync> core::marker::Sync for mmap_io::atomic::AtomicView<'_, T>
+impl<T> core::ops::deref::Deref for mmap_io::atomic::AtomicView<'_, T>
+pub type mmap_io::atomic::AtomicView<'_, T>::Target = T
+pub fn mmap_io::atomic::AtomicView<'_, T>::deref(&self) -> &T
+impl<'a, T> core::marker::Freeze for mmap_io::atomic::AtomicView<'a, T>
+impl<'a, T> core::marker::Unpin for mmap_io::atomic::AtomicView<'a, T>
+impl<'a, T> core::marker::UnsafeUnpin for mmap_io::atomic::AtomicView<'a, T>
+impl<'a, T> !core::panic::unwind_safe::RefUnwindSafe for mmap_io::atomic::AtomicView<'a, T>
+impl<'a, T> !core::panic::unwind_safe::UnwindSafe for mmap_io::atomic::AtomicView<'a, T>
+pub mod mmap_io::errors
+pub enum mmap_io::errors::MmapIoError
+pub mmap_io::errors::MmapIoError::AdviceFailed(alloc::string::String)
+pub mmap_io::errors::MmapIoError::FlushFailed(alloc::string::String)
+pub mmap_io::errors::MmapIoError::InvalidMode(&'static str)
+pub mmap_io::errors::MmapIoError::Io(std::io::error::Error)
+pub mmap_io::errors::MmapIoError::LockFailed(alloc::string::String)
+pub mmap_io::errors::MmapIoError::Misaligned
+pub mmap_io::errors::MmapIoError::Misaligned::offset: u64
+pub mmap_io::errors::MmapIoError::Misaligned::required: u64
+pub mmap_io::errors::MmapIoError::OutOfBounds
+pub mmap_io::errors::MmapIoError::OutOfBounds::len: u64
+pub mmap_io::errors::MmapIoError::OutOfBounds::offset: u64
+pub mmap_io::errors::MmapIoError::OutOfBounds::total: u64
+pub mmap_io::errors::MmapIoError::ResizeFailed(alloc::string::String)
+pub mmap_io::errors::MmapIoError::UnlockFailed(alloc::string::String)
+pub mmap_io::errors::MmapIoError::WatchFailed(alloc::string::String)
+impl core::convert::From<std::io::error::Error> for mmap_io::errors::MmapIoError
+pub fn mmap_io::errors::MmapIoError::from(source: std::io::error::Error) -> Self
+impl core::error::Error for mmap_io::errors::MmapIoError
+pub fn mmap_io::errors::MmapIoError::source(&self) -> core::option::Option<&(dyn core::error::Error + 'static)>
+impl core::fmt::Debug for mmap_io::errors::MmapIoError
+pub fn mmap_io::errors::MmapIoError::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::fmt::Display for mmap_io::errors::MmapIoError
+pub fn mmap_io::errors::MmapIoError::fmt(&self, __formatter: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::Freeze for mmap_io::errors::MmapIoError
+impl core::marker::Send for mmap_io::errors::MmapIoError
+impl core::marker::Sync for mmap_io::errors::MmapIoError
+impl core::marker::Unpin for mmap_io::errors::MmapIoError
+impl core::marker::UnsafeUnpin for mmap_io::errors::MmapIoError
+impl !core::panic::unwind_safe::RefUnwindSafe for mmap_io::errors::MmapIoError
+impl !core::panic::unwind_safe::UnwindSafe for mmap_io::errors::MmapIoError
+pub type mmap_io::errors::Result<T> = core::result::Result<T, mmap_io::errors::MmapIoError>
+pub mod mmap_io::flush
+pub enum mmap_io::flush::FlushPolicy
+pub mmap_io::flush::FlushPolicy::Always
+pub mmap_io::flush::FlushPolicy::EveryBytes(usize)
+pub mmap_io::flush::FlushPolicy::EveryMillis(u64)
+pub mmap_io::flush::FlushPolicy::EveryWrites(usize)
+pub mmap_io::flush::FlushPolicy::Manual
+pub mmap_io::flush::FlushPolicy::Never
+impl core::clone::Clone for mmap_io::flush::FlushPolicy
+pub fn mmap_io::flush::FlushPolicy::clone(&self) -> mmap_io::flush::FlushPolicy
+impl core::cmp::Eq for mmap_io::flush::FlushPolicy
+impl core::cmp::PartialEq for mmap_io::flush::FlushPolicy
+pub fn mmap_io::flush::FlushPolicy::eq(&self, other: &mmap_io::flush::FlushPolicy) -> bool
+impl core::default::Default for mmap_io::flush::FlushPolicy
+pub fn mmap_io::flush::FlushPolicy::default() -> mmap_io::flush::FlushPolicy
+impl core::fmt::Debug for mmap_io::flush::FlushPolicy
+pub fn mmap_io::flush::FlushPolicy::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::Copy for mmap_io::flush::FlushPolicy
+impl core::marker::StructuralPartialEq for mmap_io::flush::FlushPolicy
+impl core::marker::Freeze for mmap_io::flush::FlushPolicy
+impl core::marker::Send for mmap_io::flush::FlushPolicy
+impl core::marker::Sync for mmap_io::flush::FlushPolicy
+impl core::marker::Unpin for mmap_io::flush::FlushPolicy
+impl core::marker::UnsafeUnpin for mmap_io::flush::FlushPolicy
+impl core::panic::unwind_safe::RefUnwindSafe for mmap_io::flush::FlushPolicy
+impl core::panic::unwind_safe::UnwindSafe for mmap_io::flush::FlushPolicy
+pub mod mmap_io::iterator
+pub struct mmap_io::iterator::ChunkIterator<'a>
+impl<'a> core::iter::traits::exact_size::ExactSizeIterator for mmap_io::iterator::ChunkIterator<'a>
+impl<'a> core::iter::traits::iterator::Iterator for mmap_io::iterator::ChunkIterator<'a>
+pub type mmap_io::iterator::ChunkIterator<'a>::Item = mmap_io::mmap::MappedSlice<'a>
+pub fn mmap_io::iterator::ChunkIterator<'a>::next(&mut self) -> core::option::Option<Self::Item>
+pub fn mmap_io::iterator::ChunkIterator<'a>::size_hint(&self) -> (usize, core::option::Option<usize>)
+impl<'a> core::marker::Send for mmap_io::iterator::ChunkIterator<'a>
+impl<'a> core::marker::Sync for mmap_io::iterator::ChunkIterator<'a>
+impl<'a> core::marker::Freeze for mmap_io::iterator::ChunkIterator<'a>
+impl<'a> core::marker::Unpin for mmap_io::iterator::ChunkIterator<'a>
+impl<'a> core::marker::UnsafeUnpin for mmap_io::iterator::ChunkIterator<'a>
+impl<'a> !core::panic::unwind_safe::RefUnwindSafe for mmap_io::iterator::ChunkIterator<'a>
+impl<'a> !core::panic::unwind_safe::UnwindSafe for mmap_io::iterator::ChunkIterator<'a>
+pub struct mmap_io::iterator::ChunkIteratorMut<'a>
+impl<'a> mmap_io::iterator::ChunkIteratorMut<'a>
+pub fn mmap_io::iterator::ChunkIteratorMut<'a>::for_each_mut<F>(self, f: F) -> mmap_io::errors::Result<()> where F: core::ops::function::FnMut(u64, &mut [u8]) -> mmap_io::errors::Result<()>
+pub fn mmap_io::iterator::ChunkIteratorMut<'a>::for_each_mut_legacy<F, E>(self, f: F) -> mmap_io::errors::Result<core::result::Result<(), E>> where F: core::ops::function::FnMut(u64, &mut [u8]) -> core::result::Result<(), E>
+impl<'a> core::marker::Freeze for mmap_io::iterator::ChunkIteratorMut<'a>
+impl<'a> core::marker::Send for mmap_io::iterator::ChunkIteratorMut<'a>
+impl<'a> core::marker::Sync for mmap_io::iterator::ChunkIteratorMut<'a>
+impl<'a> core::marker::Unpin for mmap_io::iterator::ChunkIteratorMut<'a>
+impl<'a> core::marker::UnsafeUnpin for mmap_io::iterator::ChunkIteratorMut<'a>
+impl<'a> !core::panic::unwind_safe::RefUnwindSafe for mmap_io::iterator::ChunkIteratorMut<'a>
+impl<'a> !core::panic::unwind_safe::UnwindSafe for mmap_io::iterator::ChunkIteratorMut<'a>
+pub struct mmap_io::iterator::ChunkIteratorOwned<'a>
+impl<'a> core::iter::traits::exact_size::ExactSizeIterator for mmap_io::iterator::ChunkIteratorOwned<'a>
+impl<'a> core::iter::traits::iterator::Iterator for mmap_io::iterator::ChunkIteratorOwned<'a>
+pub type mmap_io::iterator::ChunkIteratorOwned<'a>::Item = core::result::Result<alloc::vec::Vec<u8>, mmap_io::errors::MmapIoError>
+pub fn mmap_io::iterator::ChunkIteratorOwned<'a>::next(&mut self) -> core::option::Option<Self::Item>
+pub fn mmap_io::iterator::ChunkIteratorOwned<'a>::size_hint(&self) -> (usize, core::option::Option<usize>)
+impl<'a> core::marker::Freeze for mmap_io::iterator::ChunkIteratorOwned<'a>
+impl<'a> core::marker::Send for mmap_io::iterator::ChunkIteratorOwned<'a>
+impl<'a> core::marker::Sync for mmap_io::iterator::ChunkIteratorOwned<'a>
+impl<'a> core::marker::Unpin for mmap_io::iterator::ChunkIteratorOwned<'a>
+impl<'a> core::marker::UnsafeUnpin for mmap_io::iterator::ChunkIteratorOwned<'a>
+impl<'a> !core::panic::unwind_safe::RefUnwindSafe for mmap_io::iterator::ChunkIteratorOwned<'a>
+impl<'a> !core::panic::unwind_safe::UnwindSafe for mmap_io::iterator::ChunkIteratorOwned<'a>
+pub struct mmap_io::iterator::PageIterator<'a>
+impl<'a> core::iter::traits::exact_size::ExactSizeIterator for mmap_io::iterator::PageIterator<'a>
+impl<'a> core::iter::traits::iterator::Iterator for mmap_io::iterator::PageIterator<'a>
+pub type mmap_io::iterator::PageIterator<'a>::Item = mmap_io::mmap::MappedSlice<'a>
+pub fn mmap_io::iterator::PageIterator<'a>::next(&mut self) -> core::option::Option<Self::Item>
+pub fn mmap_io::iterator::PageIterator<'a>::size_hint(&self) -> (usize, core::option::Option<usize>)
+impl<'a> core::marker::Freeze for mmap_io::iterator::PageIterator<'a>
+impl<'a> core::marker::Send for mmap_io::iterator::PageIterator<'a>
+impl<'a> core::marker::Sync for mmap_io::iterator::PageIterator<'a>
+impl<'a> core::marker::Unpin for mmap_io::iterator::PageIterator<'a>
+impl<'a> core::marker::UnsafeUnpin for mmap_io::iterator::PageIterator<'a>
+impl<'a> !core::panic::unwind_safe::RefUnwindSafe for mmap_io::iterator::PageIterator<'a>
+impl<'a> !core::panic::unwind_safe::UnwindSafe for mmap_io::iterator::PageIterator<'a>
+pub struct mmap_io::iterator::PageIteratorOwned<'a>
+impl<'a> core::iter::traits::exact_size::ExactSizeIterator for mmap_io::iterator::PageIteratorOwned<'a>
+impl<'a> core::iter::traits::iterator::Iterator for mmap_io::iterator::PageIteratorOwned<'a>
+pub type mmap_io::iterator::PageIteratorOwned<'a>::Item = core::result::Result<alloc::vec::Vec<u8>, mmap_io::errors::MmapIoError>
+pub fn mmap_io::iterator::PageIteratorOwned<'a>::next(&mut self) -> core::option::Option<Self::Item>
+pub fn mmap_io::iterator::PageIteratorOwned<'a>::size_hint(&self) -> (usize, core::option::Option<usize>)
+impl<'a> core::marker::Freeze for mmap_io::iterator::PageIteratorOwned<'a>
+impl<'a> core::marker::Send for mmap_io::iterator::PageIteratorOwned<'a>
+impl<'a> core::marker::Sync for mmap_io::iterator::PageIteratorOwned<'a>
+impl<'a> core::marker::Unpin for mmap_io::iterator::PageIteratorOwned<'a>
+impl<'a> core::marker::UnsafeUnpin for mmap_io::iterator::PageIteratorOwned<'a>
+impl<'a> !core::panic::unwind_safe::RefUnwindSafe for mmap_io::iterator::PageIteratorOwned<'a>
+impl<'a> !core::panic::unwind_safe::UnwindSafe for mmap_io::iterator::PageIteratorOwned<'a>
+pub mod mmap_io::lock
+pub mod mmap_io::manager
+pub mod mmap_io::manager::async
+pub async fn mmap_io::manager::async::copy_mmap_async<P: core::convert::AsRef<std::path::Path>>(src: P, dst: P) -> mmap_io::errors::Result<()>
+pub async fn mmap_io::manager::async::create_mmap_async<P: core::convert::AsRef<std::path::Path>>(path: P, size: u64) -> mmap_io::errors::Result<mmap_io::mmap::MemoryMappedFile>
+pub async fn mmap_io::manager::async::delete_mmap_async<P: core::convert::AsRef<std::path::Path>>(path: P) -> mmap_io::errors::Result<()>
+pub fn mmap_io::manager::copy_mmap<P: core::convert::AsRef<std::path::Path>>(src: P, dst: P) -> mmap_io::errors::Result<()>
+pub fn mmap_io::manager::create_mmap<P: core::convert::AsRef<std::path::Path>>(path: P, size: u64) -> mmap_io::errors::Result<mmap_io::mmap::MemoryMappedFile>
+pub fn mmap_io::manager::delete_mmap<P: core::convert::AsRef<std::path::Path>>(path: P) -> mmap_io::errors::Result<()>
+pub fn mmap_io::manager::flush(mmap: &mmap_io::mmap::MemoryMappedFile) -> mmap_io::errors::Result<()>
+pub fn mmap_io::manager::load_mmap<P: core::convert::AsRef<std::path::Path>>(path: P, mode: mmap_io::mmap::MmapMode) -> mmap_io::errors::Result<mmap_io::mmap::MemoryMappedFile>
+pub fn mmap_io::manager::update_region(mmap: &mmap_io::mmap::MemoryMappedFile, offset: u64, data: &[u8]) -> mmap_io::errors::Result<()>
+pub fn mmap_io::manager::write_mmap<P: core::convert::AsRef<std::path::Path>>(path: P, offset: u64, data: &[u8]) -> mmap_io::errors::Result<()>
+pub mod mmap_io::mmap
+pub enum mmap_io::mmap::MmapMode
+pub mmap_io::mmap::MmapMode::CopyOnWrite
+pub mmap_io::mmap::MmapMode::ReadOnly
+pub mmap_io::mmap::MmapMode::ReadWrite
+impl core::clone::Clone for mmap_io::mmap::MmapMode
+pub fn mmap_io::mmap::MmapMode::clone(&self) -> mmap_io::mmap::MmapMode
+impl core::cmp::Eq for mmap_io::mmap::MmapMode
+impl core::cmp::PartialEq for mmap_io::mmap::MmapMode
+pub fn mmap_io::mmap::MmapMode::eq(&self, other: &mmap_io::mmap::MmapMode) -> bool
+impl core::fmt::Debug for mmap_io::mmap::MmapMode
+pub fn mmap_io::mmap::MmapMode::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::Copy for mmap_io::mmap::MmapMode
+impl core::marker::StructuralPartialEq for mmap_io::mmap::MmapMode
+impl core::marker::Freeze for mmap_io::mmap::MmapMode
+impl core::marker::Send for mmap_io::mmap::MmapMode
+impl core::marker::Sync for mmap_io::mmap::MmapMode
+impl core::marker::Unpin for mmap_io::mmap::MmapMode
+impl core::marker::UnsafeUnpin for mmap_io::mmap::MmapMode
+impl core::panic::unwind_safe::RefUnwindSafe for mmap_io::mmap::MmapMode
+impl core::panic::unwind_safe::UnwindSafe for mmap_io::mmap::MmapMode
+pub enum mmap_io::mmap::TouchHint
+pub mmap_io::mmap::TouchHint::Eager
+pub mmap_io::mmap::TouchHint::Lazy
+pub mmap_io::mmap::TouchHint::Never
+impl core::clone::Clone for mmap_io::mmap::TouchHint
+pub fn mmap_io::mmap::TouchHint::clone(&self) -> mmap_io::mmap::TouchHint
+impl core::cmp::Eq for mmap_io::mmap::TouchHint
+impl core::cmp::PartialEq for mmap_io::mmap::TouchHint
+pub fn mmap_io::mmap::TouchHint::eq(&self, other: &mmap_io::mmap::TouchHint) -> bool
+impl core::default::Default for mmap_io::mmap::TouchHint
+pub fn mmap_io::mmap::TouchHint::default() -> mmap_io::mmap::TouchHint
+impl core::fmt::Debug for mmap_io::mmap::TouchHint
+pub fn mmap_io::mmap::TouchHint::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::Copy for mmap_io::mmap::TouchHint
+impl core::marker::StructuralPartialEq for mmap_io::mmap::TouchHint
+impl core::marker::Freeze for mmap_io::mmap::TouchHint
+impl core::marker::Send for mmap_io::mmap::TouchHint
+impl core::marker::Sync for mmap_io::mmap::TouchHint
+impl core::marker::Unpin for mmap_io::mmap::TouchHint
+impl core::marker::UnsafeUnpin for mmap_io::mmap::TouchHint
+impl core::panic::unwind_safe::RefUnwindSafe for mmap_io::mmap::TouchHint
+impl core::panic::unwind_safe::UnwindSafe for mmap_io::mmap::TouchHint
+pub struct mmap_io::mmap::MappedSlice<'a>
+impl<'a> mmap_io::mmap::MappedSlice<'a>
+pub fn mmap_io::mmap::MappedSlice<'a>::as_slice(&self) -> &[u8]
+pub fn mmap_io::mmap::MappedSlice<'a>::is_empty(&self) -> bool
+pub fn mmap_io::mmap::MappedSlice<'a>::len(&self) -> usize
+impl core::cmp::Eq for mmap_io::mmap::MappedSlice<'_>
+impl core::cmp::PartialEq for mmap_io::mmap::MappedSlice<'_>
+pub fn mmap_io::mmap::MappedSlice<'_>::eq(&self, other: &Self) -> bool
+impl core::cmp::PartialEq<&[u8]> for mmap_io::mmap::MappedSlice<'_>
+pub fn mmap_io::mmap::MappedSlice<'_>::eq(&self, other: &&[u8]) -> bool
+impl core::cmp::PartialEq<[u8]> for mmap_io::mmap::MappedSlice<'_>
+pub fn mmap_io::mmap::MappedSlice<'_>::eq(&self, other: &[u8]) -> bool
+impl core::convert::AsRef<[u8]> for mmap_io::mmap::MappedSlice<'_>
+pub fn mmap_io::mmap::MappedSlice<'_>::as_ref(&self) -> &[u8]
+impl core::convert::From<&mmap_io::mmap::MappedSlice<'_>> for bytes::bytes::Bytes
+pub fn bytes::bytes::Bytes::from(slice: &mmap_io::mmap::MappedSlice<'_>) -> Self
+impl core::convert::From<mmap_io::mmap::MappedSlice<'_>> for bytes::bytes::Bytes
+pub fn bytes::bytes::Bytes::from(slice: mmap_io::mmap::MappedSlice<'_>) -> Self
+impl core::fmt::Debug for mmap_io::mmap::MappedSlice<'_>
+pub fn mmap_io::mmap::MappedSlice<'_>::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::ops::deref::Deref for mmap_io::mmap::MappedSlice<'_>
+pub type mmap_io::mmap::MappedSlice<'_>::Target = [u8]
+pub fn mmap_io::mmap::MappedSlice<'_>::deref(&self) -> &[u8]
+impl<const N: usize> core::cmp::PartialEq<&[u8; N]> for mmap_io::mmap::MappedSlice<'_>
+pub fn mmap_io::mmap::MappedSlice<'_>::eq(&self, other: &&[u8; N]) -> bool
+impl<const N: usize> core::cmp::PartialEq<[u8; N]> for mmap_io::mmap::MappedSlice<'_>
+pub fn mmap_io::mmap::MappedSlice<'_>::eq(&self, other: &[u8; N]) -> bool
+impl<'a> core::marker::Freeze for mmap_io::mmap::MappedSlice<'a>
+impl<'a> !core::marker::Send for mmap_io::mmap::MappedSlice<'a>
+impl<'a> core::marker::Sync for mmap_io::mmap::MappedSlice<'a>
+impl<'a> core::marker::Unpin for mmap_io::mmap::MappedSlice<'a>
+impl<'a> core::marker::UnsafeUnpin for mmap_io::mmap::MappedSlice<'a>
+impl<'a> !core::panic::unwind_safe::RefUnwindSafe for mmap_io::mmap::MappedSlice<'a>
+impl<'a> !core::panic::unwind_safe::UnwindSafe for mmap_io::mmap::MappedSlice<'a>
+pub struct mmap_io::mmap::MappedSliceMut<'a>
+impl<'a> mmap_io::mmap::MappedSliceMut<'a>
+pub fn mmap_io::mmap::MappedSliceMut<'a>::as_mut(&mut self) -> &mut [u8]
+pub fn mmap_io::mmap::MappedSliceMut<'a>::is_empty(&self) -> bool
+pub fn mmap_io::mmap::MappedSliceMut<'a>::len(&self) -> usize
+impl core::ops::deref::Deref for mmap_io::mmap::MappedSliceMut<'_>
+pub type mmap_io::mmap::MappedSliceMut<'_>::Target = [u8]
+pub fn mmap_io::mmap::MappedSliceMut<'_>::deref(&self) -> &[u8]
+impl core::ops::deref::DerefMut for mmap_io::mmap::MappedSliceMut<'_>
+pub fn mmap_io::mmap::MappedSliceMut<'_>::deref_mut(&mut self) -> &mut [u8]
+impl<'a> core::marker::Freeze for mmap_io::mmap::MappedSliceMut<'a>
+impl<'a> !core::marker::Send for mmap_io::mmap::MappedSliceMut<'a>
+impl<'a> core::marker::Sync for mmap_io::mmap::MappedSliceMut<'a>
+impl<'a> core::marker::Unpin for mmap_io::mmap::MappedSliceMut<'a>
+impl<'a> core::marker::UnsafeUnpin for mmap_io::mmap::MappedSliceMut<'a>
+impl<'a> !core::panic::unwind_safe::RefUnwindSafe for mmap_io::mmap::MappedSliceMut<'a>
+impl<'a> !core::panic::unwind_safe::UnwindSafe for mmap_io::mmap::MappedSliceMut<'a>
+pub struct mmap_io::mmap::MemoryMappedFile
+impl mmap_io::mmap::MemoryMappedFile
+pub fn mmap_io::mmap::MemoryMappedFile::advise(&self, offset: u64, len: u64, advice: mmap_io::advise::MmapAdvice) -> mmap_io::errors::Result<()>
+impl mmap_io::mmap::MemoryMappedFile
+pub unsafe fn mmap_io::mmap::MemoryMappedFile::as_mut_ptr(&self) -> mmap_io::errors::Result<*mut u8>
+pub unsafe fn mmap_io::mmap::MemoryMappedFile::as_ptr(&self) -> *const u8
+pub fn mmap_io::mmap::MemoryMappedFile::flush_policy(&self) -> mmap_io::flush::FlushPolicy
+pub fn mmap_io::mmap::MemoryMappedFile::from_file<P: core::convert::AsRef<std::path::Path>>(file: std::fs::File, mode: mmap_io::mmap::MmapMode, path: P) -> mmap_io::errors::Result<Self>
+pub fn mmap_io::mmap::MemoryMappedFile::open_or_create<P: core::convert::AsRef<std::path::Path>>(path: P, default_size: u64) -> mmap_io::errors::Result<Self>
+pub fn mmap_io::mmap::MemoryMappedFile::pending_bytes(&self) -> u64
+pub fn mmap_io::mmap::MemoryMappedFile::prefetch_range(&self, offset: u64, len: u64) -> mmap_io::errors::Result<()>
+pub fn mmap_io::mmap::MemoryMappedFile::unmap(self) -> core::result::Result<std::fs::File, Self>
+impl mmap_io::mmap::MemoryMappedFile
+pub fn mmap_io::mmap::MemoryMappedFile::as_slice(&self, offset: u64, len: u64) -> mmap_io::errors::Result<mmap_io::mmap::MappedSlice<'_>>
+pub fn mmap_io::mmap::MemoryMappedFile::as_slice_bytes(&self, offset: u64, len: u64) -> mmap_io::errors::Result<&[u8]>
+pub fn mmap_io::mmap::MemoryMappedFile::as_slice_mut(&self, offset: u64, len: u64) -> mmap_io::errors::Result<mmap_io::mmap::MappedSliceMut<'_>>
+pub fn mmap_io::mmap::MemoryMappedFile::builder<P: core::convert::AsRef<std::path::Path>>(path: P) -> mmap_io::mmap::MemoryMappedFileBuilder
+pub fn mmap_io::mmap::MemoryMappedFile::create_rw<P: core::convert::AsRef<std::path::Path>>(path: P, size: u64) -> mmap_io::errors::Result<Self>
+pub fn mmap_io::mmap::MemoryMappedFile::flush(&self) -> mmap_io::errors::Result<()>
+pub async fn mmap_io::mmap::MemoryMappedFile::flush_async(&self) -> mmap_io::errors::Result<()>
+pub fn mmap_io::mmap::MemoryMappedFile::flush_range(&self, offset: u64, len: u64) -> mmap_io::errors::Result<()>
+pub async fn mmap_io::mmap::MemoryMappedFile::flush_range_async(&self, offset: u64, len: u64) -> mmap_io::errors::Result<()>
+pub fn mmap_io::mmap::MemoryMappedFile::is_empty(&self) -> bool
+pub fn mmap_io::mmap::MemoryMappedFile::len(&self) -> u64
+pub fn mmap_io::mmap::MemoryMappedFile::mode(&self) -> mmap_io::mmap::MmapMode
+pub fn mmap_io::mmap::MemoryMappedFile::open_ro<P: core::convert::AsRef<std::path::Path>>(path: P) -> mmap_io::errors::Result<Self>
+pub fn mmap_io::mmap::MemoryMappedFile::open_rw<P: core::convert::AsRef<std::path::Path>>(path: P) -> mmap_io::errors::Result<Self>
+pub fn mmap_io::mmap::MemoryMappedFile::path(&self) -> &std::path::Path
+pub fn mmap_io::mmap::MemoryMappedFile::read_bytes(&self, offset: u64, len: u64) -> mmap_io::errors::Result<bytes::bytes::Bytes>
+pub fn mmap_io::mmap::MemoryMappedFile::reader(&self) -> mmap_io::mmap::MmapReader<'_>
+pub fn mmap_io::mmap::MemoryMappedFile::resize(&self, new_size: u64) -> mmap_io::errors::Result<()>
+pub fn mmap_io::mmap::MemoryMappedFile::touch_pages(&self) -> mmap_io::errors::Result<()>
+pub fn mmap_io::mmap::MemoryMappedFile::touch_pages_range(&self, offset: u64, len: u64) -> mmap_io::errors::Result<()>
+pub fn mmap_io::mmap::MemoryMappedFile::update_region(&self, offset: u64, data: &[u8]) -> mmap_io::errors::Result<()>
+pub async fn mmap_io::mmap::MemoryMappedFile::update_region_async(&self, offset: u64, data: &[u8]) -> mmap_io::errors::Result<()>
+impl mmap_io::mmap::MemoryMappedFile
+pub fn mmap_io::mmap::MemoryMappedFile::atomic_u32(&self, offset: u64) -> mmap_io::errors::Result<mmap_io::atomic::AtomicView<'_, core::sync::atomic::AtomicU32>>
+pub fn mmap_io::mmap::MemoryMappedFile::atomic_u32_slice(&self, offset: u64, count: usize) -> mmap_io::errors::Result<mmap_io::atomic::AtomicSliceView<'_, core::sync::atomic::AtomicU32>>
+pub fn mmap_io::mmap::MemoryMappedFile::atomic_u64(&self, offset: u64) -> mmap_io::errors::Result<mmap_io::atomic::AtomicView<'_, core::sync::atomic::AtomicU64>>
+pub fn mmap_io::mmap::MemoryMappedFile::atomic_u64_slice(&self, offset: u64, count: usize) -> mmap_io::errors::Result<mmap_io::atomic::AtomicSliceView<'_, core::sync::atomic::AtomicU64>>
+impl mmap_io::mmap::MemoryMappedFile
+pub fn mmap_io::mmap::MemoryMappedFile::chunks(&self, chunk_size: usize) -> mmap_io::iterator::ChunkIterator<'_>
+pub fn mmap_io::mmap::MemoryMappedFile::chunks_mut(&self, chunk_size: usize) -> mmap_io::iterator::ChunkIteratorMut<'_>
+pub fn mmap_io::mmap::MemoryMappedFile::chunks_owned(&self, chunk_size: usize) -> mmap_io::iterator::ChunkIteratorOwned<'_>
+pub fn mmap_io::mmap::MemoryMappedFile::pages(&self) -> mmap_io::iterator::PageIterator<'_>
+pub fn mmap_io::mmap::MemoryMappedFile::pages_owned(&self) -> mmap_io::iterator::PageIteratorOwned<'_>
+impl mmap_io::mmap::MemoryMappedFile
+pub fn mmap_io::mmap::MemoryMappedFile::current_len(&self) -> mmap_io::errors::Result<u64>
+pub fn mmap_io::mmap::MemoryMappedFile::read_into(&self, offset: u64, buf: &mut [u8]) -> mmap_io::errors::Result<()>
+impl mmap_io::mmap::MemoryMappedFile
+pub fn mmap_io::mmap::MemoryMappedFile::is_hugepage_backed(&self) -> core::option::Option<bool>
+impl mmap_io::mmap::MemoryMappedFile
+pub fn mmap_io::mmap::MemoryMappedFile::lock(&self, offset: u64, len: u64) -> mmap_io::errors::Result<()>
+pub fn mmap_io::mmap::MemoryMappedFile::lock_all(&self) -> mmap_io::errors::Result<()>
+pub fn mmap_io::mmap::MemoryMappedFile::unlock(&self, offset: u64, len: u64) -> mmap_io::errors::Result<()>
+pub fn mmap_io::mmap::MemoryMappedFile::unlock_all(&self) -> mmap_io::errors::Result<()>
+impl mmap_io::mmap::MemoryMappedFile
+pub fn mmap_io::mmap::MemoryMappedFile::open_cow<P: core::convert::AsRef<std::path::Path>>(path: P) -> mmap_io::errors::Result<Self>
+impl mmap_io::mmap::MemoryMappedFile
+pub fn mmap_io::mmap::MemoryMappedFile::watch<F>(&self, callback: F) -> mmap_io::errors::Result<mmap_io::watch::WatchHandle> where F: core::ops::function::Fn(mmap_io::watch::ChangeEvent) + core::marker::Send + 'static
+impl core::clone::Clone for mmap_io::mmap::MemoryMappedFile
+pub fn mmap_io::mmap::MemoryMappedFile::clone(&self) -> mmap_io::mmap::MemoryMappedFile
+impl core::fmt::Debug for mmap_io::mmap::MemoryMappedFile
+pub fn mmap_io::mmap::MemoryMappedFile::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl std::os::windows::io::handle::AsHandle for mmap_io::mmap::MemoryMappedFile
+pub fn mmap_io::mmap::MemoryMappedFile::as_handle(&self) -> std::os::windows::io::handle::BorrowedHandle<'_>
+impl std::os::windows::io::raw::AsRawHandle for mmap_io::mmap::MemoryMappedFile
+pub fn mmap_io::mmap::MemoryMappedFile::as_raw_handle(&self) -> std::os::windows::io::raw::RawHandle
+impl core::marker::Freeze for mmap_io::mmap::MemoryMappedFile
+impl core::marker::Send for mmap_io::mmap::MemoryMappedFile
+impl core::marker::Sync for mmap_io::mmap::MemoryMappedFile
+impl core::marker::Unpin for mmap_io::mmap::MemoryMappedFile
+impl core::marker::UnsafeUnpin for mmap_io::mmap::MemoryMappedFile
+impl !core::panic::unwind_safe::RefUnwindSafe for mmap_io::mmap::MemoryMappedFile
+impl !core::panic::unwind_safe::UnwindSafe for mmap_io::mmap::MemoryMappedFile
+pub struct mmap_io::mmap::MemoryMappedFileBuilder
+impl mmap_io::mmap::MemoryMappedFileBuilder
+pub fn mmap_io::mmap::MemoryMappedFileBuilder::create(self) -> mmap_io::errors::Result<mmap_io::mmap::MemoryMappedFile>
+pub fn mmap_io::mmap::MemoryMappedFileBuilder::flush_policy(self, policy: mmap_io::flush::FlushPolicy) -> Self
+pub fn mmap_io::mmap::MemoryMappedFileBuilder::huge_pages(self, enable: bool) -> Self
+pub fn mmap_io::mmap::MemoryMappedFileBuilder::mode(self, mode: mmap_io::mmap::MmapMode) -> Self
+pub fn mmap_io::mmap::MemoryMappedFileBuilder::open(self) -> mmap_io::errors::Result<mmap_io::mmap::MemoryMappedFile>
+pub fn mmap_io::mmap::MemoryMappedFileBuilder::open_or_create(self) -> mmap_io::errors::Result<mmap_io::mmap::MemoryMappedFile>
+pub fn mmap_io::mmap::MemoryMappedFileBuilder::size(self, size: u64) -> Self
+pub fn mmap_io::mmap::MemoryMappedFileBuilder::touch_hint(self, hint: mmap_io::mmap::TouchHint) -> Self
+impl core::marker::Freeze for mmap_io::mmap::MemoryMappedFileBuilder
+impl core::marker::Send for mmap_io::mmap::MemoryMappedFileBuilder
+impl core::marker::Sync for mmap_io::mmap::MemoryMappedFileBuilder
+impl core::marker::Unpin for mmap_io::mmap::MemoryMappedFileBuilder
+impl core::marker::UnsafeUnpin for mmap_io::mmap::MemoryMappedFileBuilder
+impl core::panic::unwind_safe::RefUnwindSafe for mmap_io::mmap::MemoryMappedFileBuilder
+impl core::panic::unwind_safe::UnwindSafe for mmap_io::mmap::MemoryMappedFileBuilder
+pub struct mmap_io::mmap::MmapReader<'a>
+impl<'a> mmap_io::mmap::MmapReader<'a>
+pub fn mmap_io::mmap::MmapReader<'a>::position(&self) -> u64
+pub fn mmap_io::mmap::MmapReader<'a>::set_position(&mut self, pos: u64)
+impl<'a> std::io::Read for mmap_io::mmap::MmapReader<'a>
+pub fn mmap_io::mmap::MmapReader<'a>::read(&mut self, buf: &mut [u8]) -> std::io::error::Result<usize>
+impl<'a> std::io::Seek for mmap_io::mmap::MmapReader<'a>
+pub fn mmap_io::mmap::MmapReader<'a>::seek(&mut self, pos: std::io::SeekFrom) -> std::io::error::Result<u64>
+impl<'a> core::marker::Freeze for mmap_io::mmap::MmapReader<'a>
+impl<'a> core::marker::Send for mmap_io::mmap::MmapReader<'a>
+impl<'a> core::marker::Sync for mmap_io::mmap::MmapReader<'a>
+impl<'a> core::marker::Unpin for mmap_io::mmap::MmapReader<'a>
+impl<'a> core::marker::UnsafeUnpin for mmap_io::mmap::MmapReader<'a>
+impl<'a> !core::panic::unwind_safe::RefUnwindSafe for mmap_io::mmap::MmapReader<'a>
+impl<'a> !core::panic::unwind_safe::UnwindSafe for mmap_io::mmap::MmapReader<'a>
+pub mod mmap_io::segment
+pub struct mmap_io::segment::Segment
+impl mmap_io::segment::Segment
+pub fn mmap_io::segment::Segment::as_slice(&self) -> mmap_io::errors::Result<mmap_io::mmap::MappedSlice<'_>>
+pub fn mmap_io::segment::Segment::is_empty(&self) -> bool
+pub fn mmap_io::segment::Segment::is_valid(&self) -> bool
+pub fn mmap_io::segment::Segment::len(&self) -> u64
+pub fn mmap_io::segment::Segment::new(parent: alloc::sync::Arc<mmap_io::mmap::MemoryMappedFile>, offset: u64, len: u64) -> mmap_io::errors::Result<Self>
+pub fn mmap_io::segment::Segment::offset(&self) -> u64
+pub fn mmap_io::segment::Segment::parent(&self) -> &mmap_io::mmap::MemoryMappedFile
+impl core::clone::Clone for mmap_io::segment::Segment
+pub fn mmap_io::segment::Segment::clone(&self) -> mmap_io::segment::Segment
+impl core::fmt::Debug for mmap_io::segment::Segment
+pub fn mmap_io::segment::Segment::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::Freeze for mmap_io::segment::Segment
+impl core::marker::Send for mmap_io::segment::Segment
+impl core::marker::Sync for mmap_io::segment::Segment
+impl core::marker::Unpin for mmap_io::segment::Segment
+impl core::marker::UnsafeUnpin for mmap_io::segment::Segment
+impl !core::panic::unwind_safe::RefUnwindSafe for mmap_io::segment::Segment
+impl !core::panic::unwind_safe::UnwindSafe for mmap_io::segment::Segment
+pub struct mmap_io::segment::SegmentMut
+impl mmap_io::segment::SegmentMut
+pub fn mmap_io::segment::SegmentMut::as_slice_mut(&self) -> mmap_io::errors::Result<mmap_io::mmap::MappedSliceMut<'_>>
+pub fn mmap_io::segment::SegmentMut::is_empty(&self) -> bool
+pub fn mmap_io::segment::SegmentMut::is_valid(&self) -> bool
+pub fn mmap_io::segment::SegmentMut::len(&self) -> u64
+pub fn mmap_io::segment::SegmentMut::new(parent: alloc::sync::Arc<mmap_io::mmap::MemoryMappedFile>, offset: u64, len: u64) -> mmap_io::errors::Result<Self>
+pub fn mmap_io::segment::SegmentMut::offset(&self) -> u64
+pub fn mmap_io::segment::SegmentMut::parent(&self) -> &mmap_io::mmap::MemoryMappedFile
+pub fn mmap_io::segment::SegmentMut::write(&self, data: &[u8]) -> mmap_io::errors::Result<()>
+impl core::clone::Clone for mmap_io::segment::SegmentMut
+pub fn mmap_io::segment::SegmentMut::clone(&self) -> mmap_io::segment::SegmentMut
+impl core::fmt::Debug for mmap_io::segment::SegmentMut
+pub fn mmap_io::segment::SegmentMut::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::Freeze for mmap_io::segment::SegmentMut
+impl core::marker::Send for mmap_io::segment::SegmentMut
+impl core::marker::Sync for mmap_io::segment::SegmentMut
+impl core::marker::Unpin for mmap_io::segment::SegmentMut
+impl core::marker::UnsafeUnpin for mmap_io::segment::SegmentMut
+impl !core::panic::unwind_safe::RefUnwindSafe for mmap_io::segment::SegmentMut
+impl !core::panic::unwind_safe::UnwindSafe for mmap_io::segment::SegmentMut
+pub mod mmap_io::utils
+pub fn mmap_io::utils::align_up(value: u64, alignment: u64) -> u64
+pub fn mmap_io::utils::ensure_in_bounds(offset: u64, len: u64, total: u64) -> mmap_io::errors::Result<()>
+pub fn mmap_io::utils::page_size() -> usize
+pub fn mmap_io::utils::slice_range(offset: u64, len: u64, total: u64) -> mmap_io::errors::Result<(usize, usize)>
+pub mod mmap_io::watch
+pub enum mmap_io::watch::ChangeKind
+pub mmap_io::watch::ChangeKind::Metadata
+pub mmap_io::watch::ChangeKind::Modified
+pub mmap_io::watch::ChangeKind::Removed
+impl core::clone::Clone for mmap_io::watch::ChangeKind
+pub fn mmap_io::watch::ChangeKind::clone(&self) -> mmap_io::watch::ChangeKind
+impl core::cmp::Eq for mmap_io::watch::ChangeKind
+impl core::cmp::PartialEq for mmap_io::watch::ChangeKind
+pub fn mmap_io::watch::ChangeKind::eq(&self, other: &mmap_io::watch::ChangeKind) -> bool
+impl core::fmt::Debug for mmap_io::watch::ChangeKind
+pub fn mmap_io::watch::ChangeKind::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::Copy for mmap_io::watch::ChangeKind
+impl core::marker::StructuralPartialEq for mmap_io::watch::ChangeKind
+impl core::marker::Freeze for mmap_io::watch::ChangeKind
+impl core::marker::Send for mmap_io::watch::ChangeKind
+impl core::marker::Sync for mmap_io::watch::ChangeKind
+impl core::marker::Unpin for mmap_io::watch::ChangeKind
+impl core::marker::UnsafeUnpin for mmap_io::watch::ChangeKind
+impl core::panic::unwind_safe::RefUnwindSafe for mmap_io::watch::ChangeKind
+impl core::panic::unwind_safe::UnwindSafe for mmap_io::watch::ChangeKind
+pub struct mmap_io::watch::ChangeEvent
+pub mmap_io::watch::ChangeEvent::kind: mmap_io::watch::ChangeKind
+pub mmap_io::watch::ChangeEvent::len: core::option::Option<u64>
+pub mmap_io::watch::ChangeEvent::offset: core::option::Option<u64>
+impl core::clone::Clone for mmap_io::watch::ChangeEvent
+pub fn mmap_io::watch::ChangeEvent::clone(&self) -> mmap_io::watch::ChangeEvent
+impl core::fmt::Debug for mmap_io::watch::ChangeEvent
+pub fn mmap_io::watch::ChangeEvent::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::Freeze for mmap_io::watch::ChangeEvent
+impl core::marker::Send for mmap_io::watch::ChangeEvent
+impl core::marker::Sync for mmap_io::watch::ChangeEvent
+impl core::marker::Unpin for mmap_io::watch::ChangeEvent
+impl core::marker::UnsafeUnpin for mmap_io::watch::ChangeEvent
+impl core::panic::unwind_safe::RefUnwindSafe for mmap_io::watch::ChangeEvent
+impl core::panic::unwind_safe::UnwindSafe for mmap_io::watch::ChangeEvent
+pub struct mmap_io::watch::WatchHandle
+impl mmap_io::watch::WatchHandle
+pub fn mmap_io::watch::WatchHandle::is_active(&self) -> bool
+impl core::ops::drop::Drop for mmap_io::watch::WatchHandle
+pub fn mmap_io::watch::WatchHandle::drop(&mut self)
+impl core::marker::Freeze for mmap_io::watch::WatchHandle
+impl core::marker::Send for mmap_io::watch::WatchHandle
+impl core::marker::Sync for mmap_io::watch::WatchHandle
+impl core::marker::Unpin for mmap_io::watch::WatchHandle
+impl core::marker::UnsafeUnpin for mmap_io::watch::WatchHandle
+impl !core::panic::unwind_safe::RefUnwindSafe for mmap_io::watch::WatchHandle
+impl !core::panic::unwind_safe::UnwindSafe for mmap_io::watch::WatchHandle
+pub enum mmap_io::ChangeKind
+pub mmap_io::ChangeKind::Metadata
+pub mmap_io::ChangeKind::Modified
+pub mmap_io::ChangeKind::Removed
+impl core::clone::Clone for mmap_io::watch::ChangeKind
+pub fn mmap_io::watch::ChangeKind::clone(&self) -> mmap_io::watch::ChangeKind
+impl core::cmp::Eq for mmap_io::watch::ChangeKind
+impl core::cmp::PartialEq for mmap_io::watch::ChangeKind
+pub fn mmap_io::watch::ChangeKind::eq(&self, other: &mmap_io::watch::ChangeKind) -> bool
+impl core::fmt::Debug for mmap_io::watch::ChangeKind
+pub fn mmap_io::watch::ChangeKind::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::Copy for mmap_io::watch::ChangeKind
+impl core::marker::StructuralPartialEq for mmap_io::watch::ChangeKind
+impl core::marker::Freeze for mmap_io::watch::ChangeKind
+impl core::marker::Send for mmap_io::watch::ChangeKind
+impl core::marker::Sync for mmap_io::watch::ChangeKind
+impl core::marker::Unpin for mmap_io::watch::ChangeKind
+impl core::marker::UnsafeUnpin for mmap_io::watch::ChangeKind
+impl core::panic::unwind_safe::RefUnwindSafe for mmap_io::watch::ChangeKind
+impl core::panic::unwind_safe::UnwindSafe for mmap_io::watch::ChangeKind
+pub enum mmap_io::MmapAdvice
+pub mmap_io::MmapAdvice::DontNeed
+pub mmap_io::MmapAdvice::Normal
+pub mmap_io::MmapAdvice::Random
+pub mmap_io::MmapAdvice::Sequential
+pub mmap_io::MmapAdvice::WillNeed
+impl core::clone::Clone for mmap_io::advise::MmapAdvice
+pub fn mmap_io::advise::MmapAdvice::clone(&self) -> mmap_io::advise::MmapAdvice
+impl core::cmp::Eq for mmap_io::advise::MmapAdvice
+impl core::cmp::PartialEq for mmap_io::advise::MmapAdvice
+pub fn mmap_io::advise::MmapAdvice::eq(&self, other: &mmap_io::advise::MmapAdvice) -> bool
+impl core::fmt::Debug for mmap_io::advise::MmapAdvice
+pub fn mmap_io::advise::MmapAdvice::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::Copy for mmap_io::advise::MmapAdvice
+impl core::marker::StructuralPartialEq for mmap_io::advise::MmapAdvice
+impl core::marker::Freeze for mmap_io::advise::MmapAdvice
+impl core::marker::Send for mmap_io::advise::MmapAdvice
+impl core::marker::Sync for mmap_io::advise::MmapAdvice
+impl core::marker::Unpin for mmap_io::advise::MmapAdvice
+impl core::marker::UnsafeUnpin for mmap_io::advise::MmapAdvice
+impl core::panic::unwind_safe::RefUnwindSafe for mmap_io::advise::MmapAdvice
+impl core::panic::unwind_safe::UnwindSafe for mmap_io::advise::MmapAdvice
+pub enum mmap_io::MmapIoError
+pub mmap_io::MmapIoError::AdviceFailed(alloc::string::String)
+pub mmap_io::MmapIoError::FlushFailed(alloc::string::String)
+pub mmap_io::MmapIoError::InvalidMode(&'static str)
+pub mmap_io::MmapIoError::Io(std::io::error::Error)
+pub mmap_io::MmapIoError::LockFailed(alloc::string::String)
+pub mmap_io::MmapIoError::Misaligned
+pub mmap_io::MmapIoError::Misaligned::offset: u64
+pub mmap_io::MmapIoError::Misaligned::required: u64
+pub mmap_io::MmapIoError::OutOfBounds
+pub mmap_io::MmapIoError::OutOfBounds::len: u64
+pub mmap_io::MmapIoError::OutOfBounds::offset: u64
+pub mmap_io::MmapIoError::OutOfBounds::total: u64
+pub mmap_io::MmapIoError::ResizeFailed(alloc::string::String)
+pub mmap_io::MmapIoError::UnlockFailed(alloc::string::String)
+pub mmap_io::MmapIoError::WatchFailed(alloc::string::String)
+impl core::convert::From<std::io::error::Error> for mmap_io::errors::MmapIoError
+pub fn mmap_io::errors::MmapIoError::from(source: std::io::error::Error) -> Self
+impl core::error::Error for mmap_io::errors::MmapIoError
+pub fn mmap_io::errors::MmapIoError::source(&self) -> core::option::Option<&(dyn core::error::Error + 'static)>
+impl core::fmt::Debug for mmap_io::errors::MmapIoError
+pub fn mmap_io::errors::MmapIoError::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::fmt::Display for mmap_io::errors::MmapIoError
+pub fn mmap_io::errors::MmapIoError::fmt(&self, __formatter: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::Freeze for mmap_io::errors::MmapIoError
+impl core::marker::Send for mmap_io::errors::MmapIoError
+impl core::marker::Sync for mmap_io::errors::MmapIoError
+impl core::marker::Unpin for mmap_io::errors::MmapIoError
+impl core::marker::UnsafeUnpin for mmap_io::errors::MmapIoError
+impl !core::panic::unwind_safe::RefUnwindSafe for mmap_io::errors::MmapIoError
+impl !core::panic::unwind_safe::UnwindSafe for mmap_io::errors::MmapIoError
+pub enum mmap_io::MmapMode
+pub mmap_io::MmapMode::CopyOnWrite
+pub mmap_io::MmapMode::ReadOnly
+pub mmap_io::MmapMode::ReadWrite
+impl core::clone::Clone for mmap_io::mmap::MmapMode
+pub fn mmap_io::mmap::MmapMode::clone(&self) -> mmap_io::mmap::MmapMode
+impl core::cmp::Eq for mmap_io::mmap::MmapMode
+impl core::cmp::PartialEq for mmap_io::mmap::MmapMode
+pub fn mmap_io::mmap::MmapMode::eq(&self, other: &mmap_io::mmap::MmapMode) -> bool
+impl core::fmt::Debug for mmap_io::mmap::MmapMode
+pub fn mmap_io::mmap::MmapMode::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::Copy for mmap_io::mmap::MmapMode
+impl core::marker::StructuralPartialEq for mmap_io::mmap::MmapMode
+impl core::marker::Freeze for mmap_io::mmap::MmapMode
+impl core::marker::Send for mmap_io::mmap::MmapMode
+impl core::marker::Sync for mmap_io::mmap::MmapMode
+impl core::marker::Unpin for mmap_io::mmap::MmapMode
+impl core::marker::UnsafeUnpin for mmap_io::mmap::MmapMode
+impl core::panic::unwind_safe::RefUnwindSafe for mmap_io::mmap::MmapMode
+impl core::panic::unwind_safe::UnwindSafe for mmap_io::mmap::MmapMode
+pub enum mmap_io::TouchHint
+pub mmap_io::TouchHint::Eager
+pub mmap_io::TouchHint::Lazy
+pub mmap_io::TouchHint::Never
+impl core::clone::Clone for mmap_io::mmap::TouchHint
+pub fn mmap_io::mmap::TouchHint::clone(&self) -> mmap_io::mmap::TouchHint
+impl core::cmp::Eq for mmap_io::mmap::TouchHint
+impl core::cmp::PartialEq for mmap_io::mmap::TouchHint
+pub fn mmap_io::mmap::TouchHint::eq(&self, other: &mmap_io::mmap::TouchHint) -> bool
+impl core::default::Default for mmap_io::mmap::TouchHint
+pub fn mmap_io::mmap::TouchHint::default() -> mmap_io::mmap::TouchHint
+impl core::fmt::Debug for mmap_io::mmap::TouchHint
+pub fn mmap_io::mmap::TouchHint::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::Copy for mmap_io::mmap::TouchHint
+impl core::marker::StructuralPartialEq for mmap_io::mmap::TouchHint
+impl core::marker::Freeze for mmap_io::mmap::TouchHint
+impl core::marker::Send for mmap_io::mmap::TouchHint
+impl core::marker::Sync for mmap_io::mmap::TouchHint
+impl core::marker::Unpin for mmap_io::mmap::TouchHint
+impl core::marker::UnsafeUnpin for mmap_io::mmap::TouchHint
+impl core::panic::unwind_safe::RefUnwindSafe for mmap_io::mmap::TouchHint
+impl core::panic::unwind_safe::UnwindSafe for mmap_io::mmap::TouchHint
+pub struct mmap_io::AnonymousMmap
+impl mmap_io::anonymous::AnonymousMmap
+pub unsafe fn mmap_io::anonymous::AnonymousMmap::as_mut_ptr(&self) -> *mut u8
+pub fn mmap_io::anonymous::AnonymousMmap::as_mut_slice(&self, offset: u64, len: u64) -> mmap_io::errors::Result<mmap_io::mmap::MappedSliceMut<'_>>
+pub unsafe fn mmap_io::anonymous::AnonymousMmap::as_ptr(&self) -> *const u8
+pub fn mmap_io::anonymous::AnonymousMmap::as_slice(&self, offset: u64, len: u64) -> mmap_io::errors::Result<mmap_io::mmap::MappedSlice<'_>>
+pub fn mmap_io::anonymous::AnonymousMmap::is_empty(&self) -> bool
+pub fn mmap_io::anonymous::AnonymousMmap::len(&self) -> u64
+pub fn mmap_io::anonymous::AnonymousMmap::new(size: u64) -> mmap_io::errors::Result<Self>
+pub fn mmap_io::anonymous::AnonymousMmap::read_into(&self, offset: u64, buf: &mut [u8]) -> mmap_io::errors::Result<()>
+pub fn mmap_io::anonymous::AnonymousMmap::update_region(&self, offset: u64, data: &[u8]) -> mmap_io::errors::Result<()>
+impl core::fmt::Debug for mmap_io::anonymous::AnonymousMmap
+pub fn mmap_io::anonymous::AnonymousMmap::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl !core::marker::Freeze for mmap_io::anonymous::AnonymousMmap
+impl core::marker::Send for mmap_io::anonymous::AnonymousMmap
+impl core::marker::Sync for mmap_io::anonymous::AnonymousMmap
+impl core::marker::Unpin for mmap_io::anonymous::AnonymousMmap
+impl core::marker::UnsafeUnpin for mmap_io::anonymous::AnonymousMmap
+impl !core::panic::unwind_safe::RefUnwindSafe for mmap_io::anonymous::AnonymousMmap
+impl core::panic::unwind_safe::UnwindSafe for mmap_io::anonymous::AnonymousMmap
+pub struct mmap_io::ChangeEvent
+pub mmap_io::ChangeEvent::kind: mmap_io::watch::ChangeKind
+pub mmap_io::ChangeEvent::len: core::option::Option<u64>
+pub mmap_io::ChangeEvent::offset: core::option::Option<u64>
+impl core::clone::Clone for mmap_io::watch::ChangeEvent
+pub fn mmap_io::watch::ChangeEvent::clone(&self) -> mmap_io::watch::ChangeEvent
+impl core::fmt::Debug for mmap_io::watch::ChangeEvent
+pub fn mmap_io::watch::ChangeEvent::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::Freeze for mmap_io::watch::ChangeEvent
+impl core::marker::Send for mmap_io::watch::ChangeEvent
+impl core::marker::Sync for mmap_io::watch::ChangeEvent
+impl core::marker::Unpin for mmap_io::watch::ChangeEvent
+impl core::marker::UnsafeUnpin for mmap_io::watch::ChangeEvent
+impl core::panic::unwind_safe::RefUnwindSafe for mmap_io::watch::ChangeEvent
+impl core::panic::unwind_safe::UnwindSafe for mmap_io::watch::ChangeEvent
+pub struct mmap_io::ChunkIterator<'a>
+impl<'a> core::iter::traits::exact_size::ExactSizeIterator for mmap_io::iterator::ChunkIterator<'a>
+impl<'a> core::iter::traits::iterator::Iterator for mmap_io::iterator::ChunkIterator<'a>
+pub type mmap_io::iterator::ChunkIterator<'a>::Item = mmap_io::mmap::MappedSlice<'a>
+pub fn mmap_io::iterator::ChunkIterator<'a>::next(&mut self) -> core::option::Option<Self::Item>
+pub fn mmap_io::iterator::ChunkIterator<'a>::size_hint(&self) -> (usize, core::option::Option<usize>)
+impl<'a> core::marker::Send for mmap_io::iterator::ChunkIterator<'a>
+impl<'a> core::marker::Sync for mmap_io::iterator::ChunkIterator<'a>
+impl<'a> core::marker::Freeze for mmap_io::iterator::ChunkIterator<'a>
+impl<'a> core::marker::Unpin for mmap_io::iterator::ChunkIterator<'a>
+impl<'a> core::marker::UnsafeUnpin for mmap_io::iterator::ChunkIterator<'a>
+impl<'a> !core::panic::unwind_safe::RefUnwindSafe for mmap_io::iterator::ChunkIterator<'a>
+impl<'a> !core::panic::unwind_safe::UnwindSafe for mmap_io::iterator::ChunkIterator<'a>
+pub struct mmap_io::MappedSlice<'a>
+impl<'a> mmap_io::mmap::MappedSlice<'a>
+pub fn mmap_io::mmap::MappedSlice<'a>::as_slice(&self) -> &[u8]
+pub fn mmap_io::mmap::MappedSlice<'a>::is_empty(&self) -> bool
+pub fn mmap_io::mmap::MappedSlice<'a>::len(&self) -> usize
+impl core::cmp::Eq for mmap_io::mmap::MappedSlice<'_>
+impl core::cmp::PartialEq for mmap_io::mmap::MappedSlice<'_>
+pub fn mmap_io::mmap::MappedSlice<'_>::eq(&self, other: &Self) -> bool
+impl core::cmp::PartialEq<&[u8]> for mmap_io::mmap::MappedSlice<'_>
+pub fn mmap_io::mmap::MappedSlice<'_>::eq(&self, other: &&[u8]) -> bool
+impl core::cmp::PartialEq<[u8]> for mmap_io::mmap::MappedSlice<'_>
+pub fn mmap_io::mmap::MappedSlice<'_>::eq(&self, other: &[u8]) -> bool
+impl core::convert::AsRef<[u8]> for mmap_io::mmap::MappedSlice<'_>
+pub fn mmap_io::mmap::MappedSlice<'_>::as_ref(&self) -> &[u8]
+impl core::convert::From<&mmap_io::mmap::MappedSlice<'_>> for bytes::bytes::Bytes
+pub fn bytes::bytes::Bytes::from(slice: &mmap_io::mmap::MappedSlice<'_>) -> Self
+impl core::convert::From<mmap_io::mmap::MappedSlice<'_>> for bytes::bytes::Bytes
+pub fn bytes::bytes::Bytes::from(slice: mmap_io::mmap::MappedSlice<'_>) -> Self
+impl core::fmt::Debug for mmap_io::mmap::MappedSlice<'_>
+pub fn mmap_io::mmap::MappedSlice<'_>::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::ops::deref::Deref for mmap_io::mmap::MappedSlice<'_>
+pub type mmap_io::mmap::MappedSlice<'_>::Target = [u8]
+pub fn mmap_io::mmap::MappedSlice<'_>::deref(&self) -> &[u8]
+impl<const N: usize> core::cmp::PartialEq<&[u8; N]> for mmap_io::mmap::MappedSlice<'_>
+pub fn mmap_io::mmap::MappedSlice<'_>::eq(&self, other: &&[u8; N]) -> bool
+impl<const N: usize> core::cmp::PartialEq<[u8; N]> for mmap_io::mmap::MappedSlice<'_>
+pub fn mmap_io::mmap::MappedSlice<'_>::eq(&self, other: &[u8; N]) -> bool
+impl<'a> core::marker::Freeze for mmap_io::mmap::MappedSlice<'a>
+impl<'a> !core::marker::Send for mmap_io::mmap::MappedSlice<'a>
+impl<'a> core::marker::Sync for mmap_io::mmap::MappedSlice<'a>
+impl<'a> core::marker::Unpin for mmap_io::mmap::MappedSlice<'a>
+impl<'a> core::marker::UnsafeUnpin for mmap_io::mmap::MappedSlice<'a>
+impl<'a> !core::panic::unwind_safe::RefUnwindSafe for mmap_io::mmap::MappedSlice<'a>
+impl<'a> !core::panic::unwind_safe::UnwindSafe for mmap_io::mmap::MappedSlice<'a>
+pub struct mmap_io::MappedSliceMut<'a>
+impl<'a> mmap_io::mmap::MappedSliceMut<'a>
+pub fn mmap_io::mmap::MappedSliceMut<'a>::as_mut(&mut self) -> &mut [u8]
+pub fn mmap_io::mmap::MappedSliceMut<'a>::is_empty(&self) -> bool
+pub fn mmap_io::mmap::MappedSliceMut<'a>::len(&self) -> usize
+impl core::ops::deref::Deref for mmap_io::mmap::MappedSliceMut<'_>
+pub type mmap_io::mmap::MappedSliceMut<'_>::Target = [u8]
+pub fn mmap_io::mmap::MappedSliceMut<'_>::deref(&self) -> &[u8]
+impl core::ops::deref::DerefMut for mmap_io::mmap::MappedSliceMut<'_>
+pub fn mmap_io::mmap::MappedSliceMut<'_>::deref_mut(&mut self) -> &mut [u8]
+impl<'a> core::marker::Freeze for mmap_io::mmap::MappedSliceMut<'a>
+impl<'a> !core::marker::Send for mmap_io::mmap::MappedSliceMut<'a>
+impl<'a> core::marker::Sync for mmap_io::mmap::MappedSliceMut<'a>
+impl<'a> core::marker::Unpin for mmap_io::mmap::MappedSliceMut<'a>
+impl<'a> core::marker::UnsafeUnpin for mmap_io::mmap::MappedSliceMut<'a>
+impl<'a> !core::panic::unwind_safe::RefUnwindSafe for mmap_io::mmap::MappedSliceMut<'a>
+impl<'a> !core::panic::unwind_safe::UnwindSafe for mmap_io::mmap::MappedSliceMut<'a>
+pub struct mmap_io::MemoryMappedFile
+impl mmap_io::mmap::MemoryMappedFile
+pub fn mmap_io::mmap::MemoryMappedFile::advise(&self, offset: u64, len: u64, advice: mmap_io::advise::MmapAdvice) -> mmap_io::errors::Result<()>
+impl mmap_io::mmap::MemoryMappedFile
+pub unsafe fn mmap_io::mmap::MemoryMappedFile::as_mut_ptr(&self) -> mmap_io::errors::Result<*mut u8>
+pub unsafe fn mmap_io::mmap::MemoryMappedFile::as_ptr(&self) -> *const u8
+pub fn mmap_io::mmap::MemoryMappedFile::flush_policy(&self) -> mmap_io::flush::FlushPolicy
+pub fn mmap_io::mmap::MemoryMappedFile::from_file<P: core::convert::AsRef<std::path::Path>>(file: std::fs::File, mode: mmap_io::mmap::MmapMode, path: P) -> mmap_io::errors::Result<Self>
+pub fn mmap_io::mmap::MemoryMappedFile::open_or_create<P: core::convert::AsRef<std::path::Path>>(path: P, default_size: u64) -> mmap_io::errors::Result<Self>
+pub fn mmap_io::mmap::MemoryMappedFile::pending_bytes(&self) -> u64
+pub fn mmap_io::mmap::MemoryMappedFile::prefetch_range(&self, offset: u64, len: u64) -> mmap_io::errors::Result<()>
+pub fn mmap_io::mmap::MemoryMappedFile::unmap(self) -> core::result::Result<std::fs::File, Self>
+impl mmap_io::mmap::MemoryMappedFile
+pub fn mmap_io::mmap::MemoryMappedFile::as_slice(&self, offset: u64, len: u64) -> mmap_io::errors::Result<mmap_io::mmap::MappedSlice<'_>>
+pub fn mmap_io::mmap::MemoryMappedFile::as_slice_bytes(&self, offset: u64, len: u64) -> mmap_io::errors::Result<&[u8]>
+pub fn mmap_io::mmap::MemoryMappedFile::as_slice_mut(&self, offset: u64, len: u64) -> mmap_io::errors::Result<mmap_io::mmap::MappedSliceMut<'_>>
+pub fn mmap_io::mmap::MemoryMappedFile::builder<P: core::convert::AsRef<std::path::Path>>(path: P) -> mmap_io::mmap::MemoryMappedFileBuilder
+pub fn mmap_io::mmap::MemoryMappedFile::create_rw<P: core::convert::AsRef<std::path::Path>>(path: P, size: u64) -> mmap_io::errors::Result<Self>
+pub fn mmap_io::mmap::MemoryMappedFile::flush(&self) -> mmap_io::errors::Result<()>
+pub async fn mmap_io::mmap::MemoryMappedFile::flush_async(&self) -> mmap_io::errors::Result<()>
+pub fn mmap_io::mmap::MemoryMappedFile::flush_range(&self, offset: u64, len: u64) -> mmap_io::errors::Result<()>
+pub async fn mmap_io::mmap::MemoryMappedFile::flush_range_async(&self, offset: u64, len: u64) -> mmap_io::errors::Result<()>
+pub fn mmap_io::mmap::MemoryMappedFile::is_empty(&self) -> bool
+pub fn mmap_io::mmap::MemoryMappedFile::len(&self) -> u64
+pub fn mmap_io::mmap::MemoryMappedFile::mode(&self) -> mmap_io::mmap::MmapMode
+pub fn mmap_io::mmap::MemoryMappedFile::open_ro<P: core::convert::AsRef<std::path::Path>>(path: P) -> mmap_io::errors::Result<Self>
+pub fn mmap_io::mmap::MemoryMappedFile::open_rw<P: core::convert::AsRef<std::path::Path>>(path: P) -> mmap_io::errors::Result<Self>
+pub fn mmap_io::mmap::MemoryMappedFile::path(&self) -> &std::path::Path
+pub fn mmap_io::mmap::MemoryMappedFile::read_bytes(&self, offset: u64, len: u64) -> mmap_io::errors::Result<bytes::bytes::Bytes>
+pub fn mmap_io::mmap::MemoryMappedFile::reader(&self) -> mmap_io::mmap::MmapReader<'_>
+pub fn mmap_io::mmap::MemoryMappedFile::resize(&self, new_size: u64) -> mmap_io::errors::Result<()>
+pub fn mmap_io::mmap::MemoryMappedFile::touch_pages(&self) -> mmap_io::errors::Result<()>
+pub fn mmap_io::mmap::MemoryMappedFile::touch_pages_range(&self, offset: u64, len: u64) -> mmap_io::errors::Result<()>
+pub fn mmap_io::mmap::MemoryMappedFile::update_region(&self, offset: u64, data: &[u8]) -> mmap_io::errors::Result<()>
+pub async fn mmap_io::mmap::MemoryMappedFile::update_region_async(&self, offset: u64, data: &[u8]) -> mmap_io::errors::Result<()>
+impl mmap_io::mmap::MemoryMappedFile
+pub fn mmap_io::mmap::MemoryMappedFile::atomic_u32(&self, offset: u64) -> mmap_io::errors::Result<mmap_io::atomic::AtomicView<'_, core::sync::atomic::AtomicU32>>
+pub fn mmap_io::mmap::MemoryMappedFile::atomic_u32_slice(&self, offset: u64, count: usize) -> mmap_io::errors::Result<mmap_io::atomic::AtomicSliceView<'_, core::sync::atomic::AtomicU32>>
+pub fn mmap_io::mmap::MemoryMappedFile::atomic_u64(&self, offset: u64) -> mmap_io::errors::Result<mmap_io::atomic::AtomicView<'_, core::sync::atomic::AtomicU64>>
+pub fn mmap_io::mmap::MemoryMappedFile::atomic_u64_slice(&self, offset: u64, count: usize) -> mmap_io::errors::Result<mmap_io::atomic::AtomicSliceView<'_, core::sync::atomic::AtomicU64>>
+impl mmap_io::mmap::MemoryMappedFile
+pub fn mmap_io::mmap::MemoryMappedFile::chunks(&self, chunk_size: usize) -> mmap_io::iterator::ChunkIterator<'_>
+pub fn mmap_io::mmap::MemoryMappedFile::chunks_mut(&self, chunk_size: usize) -> mmap_io::iterator::ChunkIteratorMut<'_>
+pub fn mmap_io::mmap::MemoryMappedFile::chunks_owned(&self, chunk_size: usize) -> mmap_io::iterator::ChunkIteratorOwned<'_>
+pub fn mmap_io::mmap::MemoryMappedFile::pages(&self) -> mmap_io::iterator::PageIterator<'_>
+pub fn mmap_io::mmap::MemoryMappedFile::pages_owned(&self) -> mmap_io::iterator::PageIteratorOwned<'_>
+impl mmap_io::mmap::MemoryMappedFile
+pub fn mmap_io::mmap::MemoryMappedFile::current_len(&self) -> mmap_io::errors::Result<u64>
+pub fn mmap_io::mmap::MemoryMappedFile::read_into(&self, offset: u64, buf: &mut [u8]) -> mmap_io::errors::Result<()>
+impl mmap_io::mmap::MemoryMappedFile
+pub fn mmap_io::mmap::MemoryMappedFile::is_hugepage_backed(&self) -> core::option::Option<bool>
+impl mmap_io::mmap::MemoryMappedFile
+pub fn mmap_io::mmap::MemoryMappedFile::lock(&self, offset: u64, len: u64) -> mmap_io::errors::Result<()>
+pub fn mmap_io::mmap::MemoryMappedFile::lock_all(&self) -> mmap_io::errors::Result<()>
+pub fn mmap_io::mmap::MemoryMappedFile::unlock(&self, offset: u64, len: u64) -> mmap_io::errors::Result<()>
+pub fn mmap_io::mmap::MemoryMappedFile::unlock_all(&self) -> mmap_io::errors::Result<()>
+impl mmap_io::mmap::MemoryMappedFile
+pub fn mmap_io::mmap::MemoryMappedFile::open_cow<P: core::convert::AsRef<std::path::Path>>(path: P) -> mmap_io::errors::Result<Self>
+impl mmap_io::mmap::MemoryMappedFile
+pub fn mmap_io::mmap::MemoryMappedFile::watch<F>(&self, callback: F) -> mmap_io::errors::Result<mmap_io::watch::WatchHandle> where F: core::ops::function::Fn(mmap_io::watch::ChangeEvent) + core::marker::Send + 'static
+impl core::clone::Clone for mmap_io::mmap::MemoryMappedFile
+pub fn mmap_io::mmap::MemoryMappedFile::clone(&self) -> mmap_io::mmap::MemoryMappedFile
+impl core::fmt::Debug for mmap_io::mmap::MemoryMappedFile
+pub fn mmap_io::mmap::MemoryMappedFile::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl std::os::windows::io::handle::AsHandle for mmap_io::mmap::MemoryMappedFile
+pub fn mmap_io::mmap::MemoryMappedFile::as_handle(&self) -> std::os::windows::io::handle::BorrowedHandle<'_>
+impl std::os::windows::io::raw::AsRawHandle for mmap_io::mmap::MemoryMappedFile
+pub fn mmap_io::mmap::MemoryMappedFile::as_raw_handle(&self) -> std::os::windows::io::raw::RawHandle
+impl core::marker::Freeze for mmap_io::mmap::MemoryMappedFile
+impl core::marker::Send for mmap_io::mmap::MemoryMappedFile
+impl core::marker::Sync for mmap_io::mmap::MemoryMappedFile
+impl core::marker::Unpin for mmap_io::mmap::MemoryMappedFile
+impl core::marker::UnsafeUnpin for mmap_io::mmap::MemoryMappedFile
+impl !core::panic::unwind_safe::RefUnwindSafe for mmap_io::mmap::MemoryMappedFile
+impl !core::panic::unwind_safe::UnwindSafe for mmap_io::mmap::MemoryMappedFile
+pub struct mmap_io::PageIterator<'a>
+impl<'a> core::iter::traits::exact_size::ExactSizeIterator for mmap_io::iterator::PageIterator<'a>
+impl<'a> core::iter::traits::iterator::Iterator for mmap_io::iterator::PageIterator<'a>
+pub type mmap_io::iterator::PageIterator<'a>::Item = mmap_io::mmap::MappedSlice<'a>
+pub fn mmap_io::iterator::PageIterator<'a>::next(&mut self) -> core::option::Option<Self::Item>
+pub fn mmap_io::iterator::PageIterator<'a>::size_hint(&self) -> (usize, core::option::Option<usize>)
+impl<'a> core::marker::Freeze for mmap_io::iterator::PageIterator<'a>
+impl<'a> core::marker::Send for mmap_io::iterator::PageIterator<'a>
+impl<'a> core::marker::Sync for mmap_io::iterator::PageIterator<'a>
+impl<'a> core::marker::Unpin for mmap_io::iterator::PageIterator<'a>
+impl<'a> core::marker::UnsafeUnpin for mmap_io::iterator::PageIterator<'a>
+impl<'a> !core::panic::unwind_safe::RefUnwindSafe for mmap_io::iterator::PageIterator<'a>
+impl<'a> !core::panic::unwind_safe::UnwindSafe for mmap_io::iterator::PageIterator<'a>
+pub struct mmap_io::WatchHandle
+impl mmap_io::watch::WatchHandle
+pub fn mmap_io::watch::WatchHandle::is_active(&self) -> bool
+impl core::ops::drop::Drop for mmap_io::watch::WatchHandle
+pub fn mmap_io::watch::WatchHandle::drop(&mut self)
+impl core::marker::Freeze for mmap_io::watch::WatchHandle
+impl core::marker::Send for mmap_io::watch::WatchHandle
+impl core::marker::Sync for mmap_io::watch::WatchHandle
+impl core::marker::Unpin for mmap_io::watch::WatchHandle
+impl core::marker::UnsafeUnpin for mmap_io::watch::WatchHandle
+impl !core::panic::unwind_safe::RefUnwindSafe for mmap_io::watch::WatchHandle
+impl !core::panic::unwind_safe::UnwindSafe for mmap_io::watch::WatchHandle
+pub fn mmap_io::copy_mmap<P: core::convert::AsRef<std::path::Path>>(src: P, dst: P) -> mmap_io::errors::Result<()>
+pub fn mmap_io::create_mmap<P: core::convert::AsRef<std::path::Path>>(path: P, size: u64) -> mmap_io::errors::Result<mmap_io::mmap::MemoryMappedFile>
+pub fn mmap_io::delete_mmap<P: core::convert::AsRef<std::path::Path>>(path: P) -> mmap_io::errors::Result<()>
+pub fn mmap_io::flush(mmap: &mmap_io::mmap::MemoryMappedFile) -> mmap_io::errors::Result<()>
+pub fn mmap_io::load_mmap<P: core::convert::AsRef<std::path::Path>>(path: P, mode: mmap_io::mmap::MmapMode) -> mmap_io::errors::Result<mmap_io::mmap::MemoryMappedFile>
+pub fn mmap_io::update_region(mmap: &mmap_io::mmap::MemoryMappedFile, offset: u64, data: &[u8]) -> mmap_io::errors::Result<()>
+pub fn mmap_io::write_mmap<P: core::convert::AsRef<std::path::Path>>(path: P, offset: u64, data: &[u8]) -> mmap_io::errors::Result<()>
