@@ -15,13 +15,13 @@
 //! - Taking a second read view on the same thread while a writer is
 //!   queued does not deadlock.
 
-use mmap_io::MemoryMappedFile;
+use mmap_io::{MemoryMappedFile, MmapIoError};
 use std::fs;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::Arc;
+use std::sync::{mpsc, Arc};
 use std::thread;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 fn tmp_path(name: &str) -> PathBuf {
     let mut p = std::env::temp_dir();
@@ -29,7 +29,10 @@ fn tmp_path(name: &str) -> PathBuf {
     p
 }
 
-#[cfg(feature = "iterator")]
+fn on_disk_len(path: &Path) -> u64 {
+    fs::metadata(path).expect("metadata").len()
+}
+
 /// Spawn `resize(new_size)` on another thread. The returned flag flips
 /// to `true` once `resize` has returned.
 fn resize_in_background(
@@ -150,5 +153,162 @@ fn atomic_views_reject_copy_on_write_mapping() {
         Err(mmap_io::MmapIoError::InvalidMode(_))
     ));
     drop(cow);
+    let _ = fs::remove_file(&path);
+}
+
+#[test]
+fn shrink_does_not_truncate_file_under_live_view() {
+    let path = tmp_path("shrink_live_view");
+    let _ = fs::remove_file(&path);
+    let size = 64 * 1024;
+    let mmap = Arc::new(MemoryMappedFile::create_rw(&path, size).expect("create"));
+    mmap.update_region(size - 4096, &[0x77; 4096])
+        .expect("seed");
+
+    // Hold a view into the tail that the shrink would cut off.
+    let tail = mmap.as_slice(size - 4096, 4096).expect("tail view");
+
+    let (h, done) = resize_in_background(&mmap, 4096);
+    thread::sleep(Duration::from_millis(200));
+    assert!(!done.load(Ordering::SeqCst), "resize ran under a live view");
+    assert_eq!(
+        on_disk_len(&path),
+        size,
+        "file was truncated while a view into its tail was alive"
+    );
+    // Touching the tail must still be valid (SIGBUS before the fix).
+    assert!(tail.iter().all(|&b| b == 0x77));
+    drop(tail);
+
+    h.join().expect("resize thread");
+    assert_eq!(mmap.len(), 4096);
+    assert_eq!(on_disk_len(&path), 4096);
+
+    drop(mmap);
+    let _ = fs::remove_file(&path);
+}
+
+/// Hammer readers against a thread that flips the mapping between a
+/// large and a small size. Every read near the end of the large size
+/// must either succeed or fail with `OutOfBounds`; a stale cached
+/// length used to make the guarded slice index past the new mapping
+/// and panic.
+#[test]
+fn concurrent_resize_never_panics_readers() {
+    let path = tmp_path("resize_race");
+    let _ = fs::remove_file(&path);
+    let big: u64 = 256 * 1024;
+    let small: u64 = 4096;
+    let mmap = Arc::new(MemoryMappedFile::create_rw(&path, big).expect("create"));
+
+    let stop = Arc::new(AtomicBool::new(false));
+    let resizer = {
+        let m = Arc::clone(&mmap);
+        let stop = Arc::clone(&stop);
+        thread::spawn(move || {
+            let mut grow = false;
+            while !stop.load(Ordering::Relaxed) {
+                let target = if grow { big } else { small };
+                m.resize(target).expect("resize");
+                grow = !grow;
+            }
+        })
+    };
+
+    let readers: Vec<_> = (0..3)
+        .map(|i| {
+            let m = Arc::clone(&mmap);
+            let stop = Arc::clone(&stop);
+            thread::spawn(move || {
+                let mut buf = [0u8; 64];
+                let off = big - 128;
+                while !stop.load(Ordering::Relaxed) {
+                    let r = match i {
+                        0 => m.read_into(off, &mut buf),
+                        1 => m.as_slice(off, 64).map(|s| {
+                            buf.copy_from_slice(&s);
+                        }),
+                        _ => m.update_region(off, &buf),
+                    };
+                    match r {
+                        Ok(()) | Err(MmapIoError::OutOfBounds { .. }) => {}
+                        Err(e) => panic!("unexpected error: {e:?}"),
+                    }
+                }
+            })
+        })
+        .collect();
+
+    thread::sleep(Duration::from_millis(500));
+    stop.store(true, Ordering::Relaxed);
+    resizer.join().expect("resizer panicked");
+    for r in readers {
+        r.join().expect("reader panicked under concurrent resize");
+    }
+
+    drop(mmap);
+    let _ = fs::remove_file(&path);
+}
+
+/// Run `f` on a helper thread and fail if it does not finish in time.
+/// A deadlocked helper is leaked; the test still fails.
+fn finishes_within<F: FnOnce() + Send + 'static>(timeout: Duration, f: F) -> bool {
+    let (tx, rx) = mpsc::channel();
+    thread::spawn(move || {
+        f();
+        let _ = tx.send(());
+    });
+    rx.recv_timeout(timeout).is_ok()
+}
+
+#[test]
+fn second_read_view_on_same_thread_does_not_deadlock_behind_writer() {
+    let path = tmp_path("recursive_read");
+    let _ = fs::remove_file(&path);
+    let mmap = Arc::new(MemoryMappedFile::create_rw(&path, 4096).expect("create"));
+
+    let m = Arc::clone(&mmap);
+    let ok = finishes_within(Duration::from_secs(5), move || {
+        let first = m.as_slice(0, 16).expect("first view");
+
+        // Queue a writer behind the read guard we hold.
+        let w = Arc::clone(&m);
+        let writer = thread::spawn(move || {
+            w.update_region(0, b"writer").expect("write");
+        });
+        thread::sleep(Duration::from_millis(100));
+
+        // A fair RwLock blocks new readers once a writer is queued;
+        // the crate's read paths must still let this thread in.
+        let second = m.as_slice(16, 16).expect("second view");
+        let mut buf = [0u8; 8];
+        m.read_into(0, &mut buf).expect("read_into");
+        drop(second);
+        drop(first);
+        writer.join().expect("writer");
+    });
+    assert!(
+        ok,
+        "same-thread read view deadlocked behind a queued writer"
+    );
+
+    let _ = fs::remove_file(&path);
+}
+
+#[test]
+fn resize_blocks_until_slice_drops_then_completes() {
+    let path = tmp_path("resize_waits");
+    let _ = fs::remove_file(&path);
+    let mmap = Arc::new(MemoryMappedFile::create_rw(&path, 8192).expect("create"));
+    let view = mmap.as_slice(0, 8192).expect("view");
+    let start = Instant::now();
+    let (h, done) = resize_in_background(&mmap, 16384);
+    thread::sleep(Duration::from_millis(100));
+    assert!(!done.load(Ordering::SeqCst));
+    drop(view);
+    h.join().expect("resize");
+    assert!(start.elapsed() >= Duration::from_millis(100));
+    assert_eq!(mmap.len(), 16384);
+    drop(mmap);
     let _ = fs::remove_file(&path);
 }

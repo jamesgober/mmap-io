@@ -40,31 +40,14 @@ impl MemoryMappedFile {
             return Ok(());
         }
 
-        let total = self.current_len()?;
-        let (start, end) = slice_range(offset, len, total)?;
-        let length = end - start;
-
-        // Get the base pointer for the mapping
-        let ptr = match &self.inner.map {
-            crate::mmap::MapVariant::Ro(m) => m.as_ptr(),
-            crate::mmap::MapVariant::Rw(lock) => {
-                let guard = lock.read();
-                guard.as_ptr()
-            }
-            crate::mmap::MapVariant::Cow(m) => m.as_ptr(),
-        };
-
-        // SAFETY: `start` satisfies `start < total` because `slice_range`
-        // returns `(start, end)` with `start + (end - start) <= total`,
-        // and `total` is the byte length of the mapping owned by
-        // `self.inner.map`. Therefore `ptr.add(start)` stays in-bounds
-        // of the same allocated object (the OS mapping), which is the
-        // precondition for `<*const u8>::add` under the Rust memory
-        // model. The pointer is not dereferenced here; the resulting
-        // address is only handed to a kernel syscall below, which
-        // operates on the address range without forming a Rust
-        // reference to the memory.
-        let addr = unsafe { ptr.add(start) };
+        // Hold read access (a read guard for RW mappings) until the
+        // syscall below returns, so `resize()` cannot unmap the range
+        // while the kernel is working on it.
+        let map = self.map_read();
+        let (start, end) = slice_range(offset, len, map.len() as u64)?;
+        let region = &map[start..end];
+        let addr = region.as_ptr();
+        let length = region.len();
 
         #[cfg(unix)]
         {
@@ -86,10 +69,9 @@ impl MemoryMappedFile {
             //      of triggering UB. (We do not pre-align here; the
             //      caller's offset/len is honored as-is.)
             //   2. The range `[addr, addr + length)` lies within a
-            //      mapped region of the process. This is established by
-            //      the `slice_range`/`ensure_in_bounds` check above:
-            //      `start + length <= total` where `total` is the
-            //      current mapped length.
+            //      mapped region of the process: it is `region`, a
+            //      subslice of the mapping that `map` keeps mapped
+            //      until after this call returns.
             //   3. `advice_flag` is one of the documented constants.
             //      Each branch of the match above selects exactly one
             //      libc constant.
@@ -148,9 +130,9 @@ impl MemoryMappedFile {
                 //      `VirtualAddresses`.
                 //   3. Each `WIN32_MEMORY_RANGE_ENTRY` describes a
                 //      region within the caller's address space.
-                //      `addr` was derived from a valid mapped region
-                //      (bounds-checked above) and `length` does not
-                //      extend past the mapping.
+                //      `addr` and `length` describe `region`, a
+                //      subslice of the mapping that `map` keeps mapped
+                //      until after this call returns.
                 //   4. `Flags` is reserved and must be 0.
                 // The function does not retain pointers past the call
                 // and does not mutate the described memory; it merely

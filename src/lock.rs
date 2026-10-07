@@ -25,35 +25,21 @@ impl MemoryMappedFile {
             return Ok(());
         }
 
-        let total = self.current_len()?;
-        let (start, end) = slice_range(offset, len, total)?;
-        let length = end - start;
-
-        // Get the base pointer for the mapping
-        let ptr = match &self.inner.map {
-            crate::mmap::MapVariant::Ro(m) => m.as_ptr(),
-            crate::mmap::MapVariant::Rw(lock) => {
-                let guard = lock.read();
-                guard.as_ptr()
-            }
-            crate::mmap::MapVariant::Cow(m) => m.as_ptr(),
-        };
-
-        // SAFETY: `start` satisfies `start + length <= total` per
-        // `slice_range` above, where `total` is the current mapped
-        // length owned by `self.inner.map`. `ptr.add(start)` therefore
-        // remains within the same allocated object (the OS mapping).
-        // We never form a Rust reference to the memory at `addr`; only
-        // the kernel reads it (via `mlock`/`VirtualLock`), which
-        // operates on the address range itself.
-        let addr = unsafe { ptr.add(start) };
+        // Hold read access (a read guard for RW mappings) until the
+        // syscall below returns, so `resize()` cannot unmap the range
+        // while the kernel is working on it.
+        let map = self.map_read();
+        let (start, end) = slice_range(offset, len, map.len() as u64)?;
+        let region = &map[start..end];
+        let addr = region.as_ptr();
+        let length = region.len();
 
         #[cfg(unix)]
         {
             // SAFETY: POSIX `mlock` requires:
             //   1. `[addr, addr + length)` lies within a mapped region
-            //      of the process. Established by the
-            //      `slice_range`/`ensure_in_bounds` check above.
+            //      of the process: it is `region`, a subslice of the
+            //      mapping that `map` keeps mapped until this returns.
             //   2. `length > 0` (we early-return on `len == 0` at the
             //      top of this method, and the bounds check guarantees
             //      `length == end - start > 0` reaches here).
@@ -86,8 +72,8 @@ impl MemoryMappedFile {
             //      caller's address space, and
             //      `[lpAddress, lpAddress + dwSize)` does not cross a
             //      region boundary. The mmap-io mapping is a single
-            //      committed region of length `total`, and our bounds
-            //      check guarantees the range is inside it.
+            //      committed view, `region` is a subslice of it, and
+            //      `map` keeps it mapped until this call returns.
             //   2. `dwSize > 0` (guaranteed by the early-return on
             //      `len == 0` and the bounds-check arithmetic).
             // Like `mlock`, the function operates on the address range
@@ -127,26 +113,12 @@ impl MemoryMappedFile {
             return Ok(());
         }
 
-        let total = self.current_len()?;
-        let (start, end) = slice_range(offset, len, total)?;
-        let length = end - start;
-
-        // Get the base pointer for the mapping
-        let ptr = match &self.inner.map {
-            crate::mmap::MapVariant::Ro(m) => m.as_ptr(),
-            crate::mmap::MapVariant::Rw(lock) => {
-                let guard = lock.read();
-                guard.as_ptr()
-            }
-            crate::mmap::MapVariant::Cow(m) => m.as_ptr(),
-        };
-
-        // SAFETY: same justification as in `lock`: `start + length`
-        // is within the mapping per the prior `slice_range` check, so
-        // `ptr.add(start)` is in-bounds of the underlying allocated
-        // object. The resulting pointer is only handed to a kernel
-        // syscall below; no Rust reference is formed.
-        let addr = unsafe { ptr.add(start) };
+        // See `lock`: the guard stays alive across the syscall.
+        let map = self.map_read();
+        let (start, end) = slice_range(offset, len, map.len() as u64)?;
+        let region = &map[start..end];
+        let addr = region.as_ptr();
+        let length = region.len();
 
         #[cfg(unix)]
         {
@@ -208,8 +180,10 @@ impl MemoryMappedFile {
     /// Returns `MmapIoError::LockFailed` if the lock operation fails.
     #[cfg(feature = "locking")]
     pub fn lock_all(&self) -> Result<()> {
-        let len = self.current_len()?;
-        self.lock(0, len)
+        // A concurrent shrink between reading the length and locking
+        // shows up as `OutOfBounds` from `lock`, never as an
+        // out-of-range syscall.
+        self.lock(0, self.len())
     }
 
     /// Unlock all pages of the memory-mapped file.
@@ -221,8 +195,7 @@ impl MemoryMappedFile {
     /// Returns `MmapIoError::UnlockFailed` if the unlock operation fails.
     #[cfg(feature = "locking")]
     pub fn unlock_all(&self) -> Result<()> {
-        let len = self.current_len()?;
-        self.unlock(0, len)
+        self.unlock(0, self.len())
     }
 }
 
