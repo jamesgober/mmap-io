@@ -29,13 +29,12 @@ authors = [
 
 
 [dependencies]
-memmap2 = "0.9"
+memmap2 = "0.9.11"
 # Runtime-agnostic spawn-blocking for the `async` feature. Was
 # `tokio` through 0.9.10; switched to `blocking` in 0.9.11 so the
 # async surface works on every executor (tokio, smol, async-std)
 # instead of locking callers into tokio.
 blocking = { version = "1", optional = true }
-anyhow = "1.0"
 parking_lot = "0.12"
 log = "0.4"
 thiserror = "1.0"
