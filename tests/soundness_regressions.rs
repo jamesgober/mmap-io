@@ -15,8 +15,6 @@
 //! - Taking a second read view on the same thread while a writer is
 //!   queued does not deadlock.
 
-#![cfg(feature = "iterator")]
-
 use mmap_io::MemoryMappedFile;
 use std::fs;
 use std::path::PathBuf;
@@ -31,6 +29,7 @@ fn tmp_path(name: &str) -> PathBuf {
     p
 }
 
+#[cfg(feature = "iterator")]
 /// Spawn `resize(new_size)` on another thread. The returned flag flips
 /// to `true` once `resize` has returned.
 fn resize_in_background(
@@ -98,5 +97,58 @@ fn yielded_page_pins_mapping_after_iterator_drops() {
     assert_eq!(mmap.len(), ps * 64);
 
     drop(mmap);
+    let _ = fs::remove_file(&path);
+}
+
+#[cfg(feature = "atomic")]
+#[test]
+fn atomic_views_reject_read_only_mapping() {
+    let path = tmp_path("atomic_ro");
+    let _ = fs::remove_file(&path);
+    {
+        let rw = MemoryMappedFile::create_rw(&path, 64).expect("create");
+        rw.update_region(0, &42u64.to_ne_bytes()).expect("seed");
+        rw.flush().expect("flush");
+    }
+    let ro = MemoryMappedFile::open_ro(&path).expect("open_ro");
+    assert!(matches!(
+        ro.atomic_u64(0),
+        Err(mmap_io::MmapIoError::InvalidMode(_))
+    ));
+    assert!(matches!(
+        ro.atomic_u32(0),
+        Err(mmap_io::MmapIoError::InvalidMode(_))
+    ));
+    assert!(matches!(
+        ro.atomic_u64_slice(0, 2),
+        Err(mmap_io::MmapIoError::InvalidMode(_))
+    ));
+    assert!(matches!(
+        ro.atomic_u32_slice(0, 2),
+        Err(mmap_io::MmapIoError::InvalidMode(_))
+    ));
+    drop(ro);
+    let _ = fs::remove_file(&path);
+}
+
+#[cfg(all(feature = "atomic", feature = "cow"))]
+#[test]
+fn atomic_views_reject_copy_on_write_mapping() {
+    let path = tmp_path("atomic_cow");
+    let _ = fs::remove_file(&path);
+    {
+        let rw = MemoryMappedFile::create_rw(&path, 64).expect("create");
+        rw.flush().expect("flush");
+    }
+    let cow = MemoryMappedFile::open_cow(&path).expect("open_cow");
+    assert!(matches!(
+        cow.atomic_u64(0),
+        Err(mmap_io::MmapIoError::InvalidMode(_))
+    ));
+    assert!(matches!(
+        cow.atomic_u32_slice(0, 1),
+        Err(mmap_io::MmapIoError::InvalidMode(_))
+    ));
+    drop(cow);
     let _ = fs::remove_file(&path);
 }

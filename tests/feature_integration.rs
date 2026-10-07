@@ -154,9 +154,11 @@ mod all_features {
         let page_count = cow_mmap.pages().count();
         assert!(page_count > 0);
 
-        // Test atomic on COW (read-only)
-        let atomic = cow_mmap.atomic_u64(16).expect("atomic cow");
-        let _ = atomic.load(Ordering::SeqCst);
+        // Atomic views are refused on COW: the mapping is read-only.
+        assert!(matches!(
+            cow_mmap.atomic_u64(16),
+            Err(mmap_io::MmapIoError::InvalidMode(_))
+        ));
 
         // Clean up
         fs::remove_file(&path).expect("cleanup");
