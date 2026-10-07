@@ -35,7 +35,13 @@ memmap2 = "0.9.11"
 # async surface works on every executor (tokio, smol, async-std)
 # instead of locking callers into tokio.
 blocking = { version = "1", optional = true }
-parking_lot = "0.12"
+# `send_guard` makes parking_lot's lock guards `Send`. The crate's
+# iterator items, `MappedSlice`, and atomic views carry read guards and
+# are `Send`; without this feature those `Send` impls would rest on an
+# implementation detail of parking_lot instead of its documented
+# contract. Note: parking_lot rejects `send_guard` together with its
+# `deadlock_detection` feature at compile time.
+parking_lot = { version = "0.12", features = ["send_guard"] }
 log = "0.4"
 thiserror = "1.0"
 cfg-if = "1.0"

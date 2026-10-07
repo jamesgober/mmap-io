@@ -4,7 +4,9 @@
 //! items that borrow directly from the underlying mapping (no
 //! allocation, no copy). On RW mappings the iterator holds a read
 //! guard for its entire lifetime, which blocks any concurrent
-//! `resize()` until iteration completes.
+//! `resize()` until iteration completes, and every yielded item holds
+//! its own read guard as well, so an item kept after the iterator is
+//! dropped still blocks `resize()` until the item itself is dropped.
 //!
 //! The owned variants ([`ChunkIteratorOwned`], [`PageIteratorOwned`])
 //! yield `Result<Vec<u8>>` for callers that genuinely need owned
@@ -15,31 +17,35 @@ use crate::errors::{MmapIoError, Result};
 use crate::mmap::{MapVariant, MappedSlice, MemoryMappedFile};
 use crate::utils::page_size;
 use memmap2::MmapMut;
-use parking_lot::RwLockReadGuard;
+use parking_lot::{RwLock, RwLockReadGuard};
 use std::marker::PhantomData;
 
-/// Internal guard variant: holds the RW read lock alive (so the
-/// underlying mapping cannot be remapped via `resize()`), or is
-/// `None` for RO / COW mappings whose mappings are inherently
-/// immutable.
-///
-/// The `Held` variant's field is never read; it exists for its
-/// destructor only (drops the read lock when the iterator is
-/// dropped).
-#[allow(dead_code)]
-enum IterGuard<'a> {
-    /// RW mapping: read guard kept alive for the iterator's life.
-    Held(RwLockReadGuard<'a, MmapMut>),
-    /// RO / COW mapping: no lock to hold.
-    None,
+/// Where a [`ChunkIterator`] reads its bytes from.
+enum ChunkSource<'a> {
+    /// RO / COW mapping: the underlying `Mmap` is never remapped, so a
+    /// plain borrow is valid for `'a`.
+    Shared(&'a [u8]),
+    /// RW mapping. `pin` keeps the length stable for the iterator's
+    /// lifetime (so `ExactSizeIterator` stays accurate); each yielded
+    /// item takes its own recursive read guard from `lock`.
+    Locked {
+        lock: &'a RwLock<MmapMut>,
+        pin: RwLockReadGuard<'a, MmapMut>,
+    },
 }
 
 /// Iterator over fixed-size chunks of a memory-mapped file.
 ///
 /// Yields [`MappedSlice<'a>`] items that borrow directly from the
-/// mapped region. The iterator holds the underlying read lock (on RW
-/// mappings) for its lifetime, so calls to `resize()` from another
-/// thread will block until the iterator is dropped.
+/// mapped region. On RW mappings the iterator holds the read lock for
+/// its lifetime and every yielded item holds its own read guard, so
+/// `resize()` from another thread blocks until the iterator AND every
+/// item it produced have been dropped.
+///
+/// Calling a write method (`update_region`, `as_slice_mut`, `resize`,
+/// `chunks_mut`) on the same thread while the iterator or one of its
+/// items is alive deadlocks: the write lock waits for the read guards
+/// this thread holds.
 ///
 /// # Examples
 ///
@@ -58,61 +64,37 @@ enum IterGuard<'a> {
 /// # Ok::<(), mmap_io::MmapIoError>(())
 /// ```
 pub struct ChunkIterator<'a> {
-    /// Base pointer to the mapped region. Valid for `'a` because the
-    /// guard (or the immutable underlying mapping for RO/COW) keeps
-    /// the address space stable.
-    base: *const u8,
-    /// Total bytes in the mapping. Captured at iterator construction
-    /// and not re-checked; the guard (RW) or immutable mapping
-    /// (RO/COW) ensures the length cannot change during iteration.
+    source: ChunkSource<'a>,
+    /// Total bytes in the mapping, read under the pin guard (RW) or
+    /// from the immutable mapping (RO/COW).
     total_len: usize,
     /// Bytes per yielded chunk. The final chunk may be shorter.
     chunk_size: usize,
     /// Offset into the mapped region of the next chunk to yield.
     current_offset: usize,
-    /// Lifetime / unmap guard.
-    _guard: IterGuard<'a>,
-    /// Notional borrow tying the raw pointer to `'a`.
-    _marker: PhantomData<&'a [u8]>,
 }
 
-// SAFETY: ChunkIterator is `Send` because:
-// - For `Held`, parking_lot's `RwLockReadGuard` is `Send` and `Sync`.
-// - For `None`, no lock is held; the pointer targets an immutable
-//   mapping that lives at least as long as `'a`.
-// - The pointer itself targets `u8`, which is `Send + Sync`.
-// The iterator yields immutable slices, so multiple yielded items
-// can coexist as standard shared borrows.
-unsafe impl<'a> Send for ChunkIterator<'a> {}
-// SAFETY: same justification as `Send`; sharing `&ChunkIterator`
-// across threads only allows calling `next()` from one thread at a
-// time (Iterator's contract requires `&mut self`), and the read-only
-// access pattern matches.
-unsafe impl<'a> Sync for ChunkIterator<'a> {}
-
 impl<'a> ChunkIterator<'a> {
-    pub(crate) fn new(mmap: &'a MemoryMappedFile, chunk_size: usize) -> Result<Self> {
-        let total_len = usize::try_from(mmap.current_len()?)
-            .map_err(|_| MmapIoError::ResizeFailed("mapping length exceeds usize::MAX".into()))?;
-
-        let (base, guard) = match &mmap.inner.map {
-            MapVariant::Ro(m) => (m.as_ptr(), IterGuard::None),
-            MapVariant::Rw(lock) => {
-                let g = lock.read();
-                let ptr = g.as_ptr();
-                (ptr, IterGuard::Held(g))
-            }
-            MapVariant::Cow(m) => (m.as_ptr(), IterGuard::None),
+    pub(crate) fn new(mmap: &'a MemoryMappedFile, chunk_size: usize) -> Self {
+        let source = match &mmap.inner.map {
+            MapVariant::Ro(m) | MapVariant::Cow(m) => ChunkSource::Shared(&m[..]),
+            MapVariant::Rw(lock) => ChunkSource::Locked {
+                lock,
+                // Recursive so a caller that already holds a view on
+                // this thread cannot deadlock behind a queued writer.
+                pin: lock.read_recursive(),
+            },
         };
-
-        Ok(Self {
-            base,
+        let total_len = match &source {
+            ChunkSource::Shared(s) => s.len(),
+            ChunkSource::Locked { pin, .. } => pin.len(),
+        };
+        Self {
+            source,
             total_len,
             chunk_size,
             current_offset: 0,
-            _guard: guard,
-            _marker: PhantomData,
-        })
+        }
     }
 }
 
@@ -123,24 +105,19 @@ impl<'a> Iterator for ChunkIterator<'a> {
         if self.chunk_size == 0 || self.current_offset >= self.total_len {
             return None;
         }
-        let remaining = self.total_len - self.current_offset;
-        let chunk_len = remaining.min(self.chunk_size);
-
-        // SAFETY: `base.add(current_offset)` produces a pointer
-        // inside the mapped region because `current_offset <
-        // total_len <= mapping length` (the mapping is stable for
-        // `'a` per the guard / immutable variant in construction).
-        // `slice::from_raw_parts` with `chunk_len <= remaining`
-        // produces a slice that does not escape the mapped region.
-        // The resulting `&'a [u8]` shares the lifetime of the guard
-        // (`'a`), so multiple yielded chunks can coexist as
-        // immutable borrows. No mutation of the mapping is possible
-        // while the guard is alive (write lock would be required and
-        // is blocked by the held read guard).
-        let slice: &'a [u8] =
-            unsafe { std::slice::from_raw_parts(self.base.add(self.current_offset), chunk_len) };
-        self.current_offset += chunk_len;
-        Some(MappedSlice::owned(slice))
+        let start = self.current_offset;
+        let end = start + (self.total_len - start).min(self.chunk_size);
+        self.current_offset = end;
+        match &self.source {
+            ChunkSource::Shared(s) => Some(MappedSlice::owned(&s[start..end])),
+            // The item gets its own guard: it may outlive the iterator
+            // (and the pin guard), and must keep `resize()` out for as
+            // long as it lives. `end <= total_len` was read under the
+            // pin guard, which is still held, so the range is valid.
+            ChunkSource::Locked { lock, .. } => {
+                Some(MappedSlice::guarded(lock.read_recursive(), start..end))
+            }
+        }
     }
 
     fn size_hint(&self) -> (usize, Option<usize>) {
@@ -176,11 +153,10 @@ pub struct PageIterator<'a> {
 }
 
 impl<'a> PageIterator<'a> {
-    pub(crate) fn new(mmap: &'a MemoryMappedFile) -> Result<Self> {
-        let ps = page_size();
-        Ok(Self {
-            inner: ChunkIterator::new(mmap, ps)?,
-        })
+    pub(crate) fn new(mmap: &'a MemoryMappedFile) -> Self {
+        Self {
+            inner: ChunkIterator::new(mmap, page_size()),
+        }
     }
 }
 
@@ -219,10 +195,10 @@ pub struct ChunkIteratorOwned<'a> {
 }
 
 impl<'a> ChunkIteratorOwned<'a> {
-    pub(crate) fn new(mmap: &'a MemoryMappedFile, chunk_size: usize) -> Result<Self> {
-        Ok(Self {
-            inner: ChunkIterator::new(mmap, chunk_size)?,
-        })
+    pub(crate) fn new(mmap: &'a MemoryMappedFile, chunk_size: usize) -> Self {
+        Self {
+            inner: ChunkIterator::new(mmap, chunk_size),
+        }
     }
 }
 
@@ -247,10 +223,10 @@ pub struct PageIteratorOwned<'a> {
 }
 
 impl<'a> PageIteratorOwned<'a> {
-    pub(crate) fn new(mmap: &'a MemoryMappedFile) -> Result<Self> {
-        Ok(Self {
-            inner: PageIterator::new(mmap)?,
-        })
+    pub(crate) fn new(mmap: &'a MemoryMappedFile) -> Self {
+        Self {
+            inner: PageIterator::new(mmap),
+        }
     }
 }
 
@@ -272,23 +248,57 @@ impl<'a> ExactSizeIterator for PageIteratorOwned<'a> {}
 /// checker does not allow yielding multiple mutable references from
 /// one iterator. The iterator acquires the underlying RW write lock
 /// once and holds it for the entire iteration, then drives the
-/// caller's closure on each chunk in order.
+/// caller's closure on each chunk in order. The mapping length is
+/// read under that write lock, so a `resize()` between `chunks_mut()`
+/// and `for_each_mut()` is picked up correctly.
 pub struct ChunkIteratorMut<'a> {
     mmap: &'a MemoryMappedFile,
     chunk_size: usize,
-    total_len: u64,
     _phantom: PhantomData<&'a mut [u8]>,
 }
 
 impl<'a> ChunkIteratorMut<'a> {
-    pub(crate) fn new(mmap: &'a MemoryMappedFile, chunk_size: usize) -> Result<Self> {
-        let total_len = mmap.current_len()?;
-        Ok(Self {
+    pub(crate) fn new(mmap: &'a MemoryMappedFile, chunk_size: usize) -> Self {
+        Self {
             mmap,
             chunk_size,
-            total_len,
             _phantom: PhantomData,
-        })
+        }
+    }
+
+    /// Run `f` over every chunk under one held write guard. Stops at
+    /// the first `Err` from `f` and returns it as `Ok(Err(e))`.
+    fn drive<F, E>(self, mut f: F) -> Result<std::result::Result<(), E>>
+    where
+        F: FnMut(u64, &mut [u8]) -> std::result::Result<(), E>,
+    {
+        if self.chunk_size == 0 {
+            return Ok(Ok(()));
+        }
+        match &self.mmap.inner.map {
+            MapVariant::Ro(_) => Err(MmapIoError::InvalidMode(
+                "chunks_mut requires ReadWrite mode",
+            )),
+            MapVariant::Cow(_) => Err(MmapIoError::InvalidMode(
+                "chunks_mut is not supported on copy-on-write mappings (read-only)",
+            )),
+            MapVariant::Rw(lock) => {
+                let mut guard = lock.write();
+                let total = guard.len();
+                let mut offset = 0usize;
+                let mut result = Ok(());
+                while offset < total {
+                    let end = offset + (total - offset).min(self.chunk_size);
+                    let r = f(offset as u64, &mut guard[offset..end]);
+                    offset = end;
+                    if let Err(e) = r {
+                        result = Err(e);
+                        break;
+                    }
+                }
+                Ok(result)
+            }
+        }
     }
 
     /// Process each chunk under a single held write guard. The
@@ -306,35 +316,11 @@ impl<'a> ChunkIteratorMut<'a> {
     /// Returns [`MmapIoError::InvalidMode`] on read-only or COW
     /// mappings (mutable iteration requires `ReadWrite`). Returns any
     /// error propagated from the user closure.
-    pub fn for_each_mut<F>(self, mut f: F) -> Result<()>
+    pub fn for_each_mut<F>(self, f: F) -> Result<()>
     where
         F: FnMut(u64, &mut [u8]) -> Result<()>,
     {
-        if self.chunk_size == 0 || self.total_len == 0 {
-            return Ok(());
-        }
-        match &self.mmap.inner.map {
-            MapVariant::Ro(_) => Err(MmapIoError::InvalidMode(
-                "chunks_mut requires ReadWrite mode",
-            )),
-            MapVariant::Cow(_) => Err(MmapIoError::InvalidMode(
-                "chunks_mut on copy-on-write mapping is not supported (phase-1 read-only)",
-            )),
-            MapVariant::Rw(lock) => {
-                let mut guard = lock.write();
-                let total = self.total_len as usize;
-                let chunk_size = self.chunk_size;
-                let mut offset = 0usize;
-                while offset < total {
-                    let remaining = total - offset;
-                    let chunk_len = remaining.min(chunk_size);
-                    let end = offset + chunk_len;
-                    f(offset as u64, &mut guard[offset..end])?;
-                    offset = end;
-                }
-                Ok(())
-            }
-        }
+        self.drive(f)?
     }
 
     /// Migration shim that mirrors the 0.9.6 `for_each_mut`
@@ -348,57 +334,30 @@ impl<'a> ChunkIteratorMut<'a> {
     /// before returning.
     ///
     /// This shim exists for callers migrating off the 0.9.6
-    /// signature. Internally it still uses the new single-held-
-    /// guard implementation (the H2 perf win is preserved); only
-    /// the return shape is back-compat.
+    /// signature. Internally it uses the same single-held-guard
+    /// implementation as `for_each_mut`; only the return shape is
+    /// back-compat.
     ///
     /// # Errors
     ///
-    /// Returns the outer `Err(MmapIoError)` for any mmap-side
-    /// failure (e.g. RW lock unavailable, OOB chunk during a
-    /// concurrent resize). Returns `Ok(Err(E))` for closure
-    /// errors. Returns `Ok(Ok(()))` when iteration completes
-    /// cleanly.
-    pub fn for_each_mut_legacy<F, E>(self, mut f: F) -> Result<std::result::Result<(), E>>
+    /// Returns the outer `Err(MmapIoError::InvalidMode)` on read-only
+    /// or COW mappings. Returns `Ok(Err(E))` for closure errors.
+    /// Returns `Ok(Ok(()))` when iteration completes cleanly.
+    pub fn for_each_mut_legacy<F, E>(self, f: F) -> Result<std::result::Result<(), E>>
     where
         F: FnMut(u64, &mut [u8]) -> std::result::Result<(), E>,
     {
-        if self.chunk_size == 0 || self.total_len == 0 {
-            return Ok(Ok(()));
-        }
-        match &self.mmap.inner.map {
-            MapVariant::Ro(_) => Err(MmapIoError::InvalidMode(
-                "chunks_mut requires ReadWrite mode",
-            )),
-            MapVariant::Cow(_) => Err(MmapIoError::InvalidMode(
-                "chunks_mut on copy-on-write mapping is not supported (phase-1 read-only)",
-            )),
-            MapVariant::Rw(lock) => {
-                let mut guard = lock.write();
-                let total = self.total_len as usize;
-                let chunk_size = self.chunk_size;
-                let mut offset = 0usize;
-                while offset < total {
-                    let remaining = total - offset;
-                    let chunk_len = remaining.min(chunk_size);
-                    let end = offset + chunk_len;
-                    match f(offset as u64, &mut guard[offset..end]) {
-                        Ok(()) => offset = end,
-                        Err(e) => return Ok(Err(e)),
-                    }
-                }
-                Ok(Ok(()))
-            }
-        }
+        self.drive(f)
     }
 }
 
 impl MemoryMappedFile {
     /// Zero-copy chunk iterator. Yields [`MappedSlice<'_>`] of size
-    /// `chunk_size` (final chunk may be shorter).
+    /// `chunk_size` (final chunk may be shorter). A `chunk_size` of
+    /// zero yields nothing.
     ///
-    /// For RW mappings, the iterator holds a read guard for its
-    /// lifetime; concurrent `resize()` blocks until the iterator is
+    /// For RW mappings, the iterator and every item it yields hold a
+    /// read guard; concurrent `resize()` blocks until all of them are
     /// dropped.
     ///
     /// # Examples
@@ -411,60 +370,41 @@ impl MemoryMappedFile {
     /// }
     /// # Ok::<(), mmap_io::MmapIoError>(())
     /// ```
-    ///
-    /// # Panics
-    ///
-    /// Panics if iterator construction fails. This is unreachable for
-    /// supported inputs: the constructor's only failure mode is
-    /// `chunk_size == 0`, which the type-level contract documents as
-    /// invalid usage. Empty mappings produce an already-exhausted
-    /// iterator rather than an error.
     #[cfg(feature = "iterator")]
     #[must_use]
     pub fn chunks(&self, chunk_size: usize) -> ChunkIterator<'_> {
-        ChunkIterator::new(self, chunk_size).expect("chunk iterator creation should not fail")
+        ChunkIterator::new(self, chunk_size)
     }
 
-    /// Zero-copy page-aligned iterator.
-    ///
-    /// # Panics
-    ///
-    /// Unreachable in practice; see [`chunks`](Self::chunks).
+    /// Zero-copy page-aligned iterator. Same lifetime rules as
+    /// [`chunks`](Self::chunks).
     #[cfg(feature = "iterator")]
     #[must_use]
     pub fn pages(&self) -> PageIterator<'_> {
-        PageIterator::new(self).expect("page iterator creation should not fail")
+        PageIterator::new(self)
     }
 
     /// Migration-aid: chunk iterator yielding owned `Vec<u8>` items.
     /// Allocates one `Vec<u8>` per chunk and copies the data into it.
     /// Prefer `chunks()` for zero-copy.
-    ///
-    /// # Panics
-    ///
-    /// Unreachable in practice; see [`chunks`](Self::chunks).
     #[cfg(feature = "iterator")]
     #[must_use]
     pub fn chunks_owned(&self, chunk_size: usize) -> ChunkIteratorOwned<'_> {
         ChunkIteratorOwned::new(self, chunk_size)
-            .expect("owned chunk iterator creation should not fail")
     }
 
     /// Migration-aid: page iterator yielding owned `Vec<u8>` items.
     /// Prefer `pages()` for zero-copy.
-    ///
-    /// # Panics
-    ///
-    /// Unreachable in practice; see [`chunks`](Self::chunks).
     #[cfg(feature = "iterator")]
     #[must_use]
     pub fn pages_owned(&self) -> PageIteratorOwned<'_> {
-        PageIteratorOwned::new(self).expect("owned page iterator creation should not fail")
+        PageIteratorOwned::new(self)
     }
 
     /// Callback-driven mutable iterator. Acquires a single write
-    /// guard for the entire iteration. Available only on
-    /// `ReadWrite` mappings.
+    /// guard for the entire iteration (in
+    /// [`ChunkIteratorMut::for_each_mut`]). Available only on
+    /// `ReadWrite` mappings; the mode is checked when iteration runs.
     ///
     /// # Examples
     ///
@@ -478,15 +418,10 @@ impl MemoryMappedFile {
     /// })?;
     /// # Ok::<(), mmap_io::MmapIoError>(())
     /// ```
-    ///
-    /// # Panics
-    ///
-    /// Unreachable in practice; see [`chunks`](Self::chunks).
     #[cfg(feature = "iterator")]
     #[must_use]
     pub fn chunks_mut(&self, chunk_size: usize) -> ChunkIteratorMut<'_> {
         ChunkIteratorMut::new(self, chunk_size)
-            .expect("mutable chunk iterator creation should not fail")
     }
 }
 

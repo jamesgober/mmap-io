@@ -2213,8 +2213,8 @@ impl std::ops::DerefMut for MappedSliceMut<'_> {
 /// For RO and COW mappings this is a thin wrapper around a `&[u8]`
 /// borrowed directly from the underlying immutable mapping. For RW
 /// mappings this also holds the `RwLock` read guard for its lifetime,
-/// blocking any concurrent `resize()` (which needs the write lock)
-/// while the slice is alive.
+/// blocking any concurrent `resize()` (and every write, which also
+/// needs the write lock) while the slice is alive.
 ///
 /// Implements [`Deref<Target = [u8]>`] and [`AsRef<[u8]>`], so callers
 /// can use it as a byte slice directly: indexing, iteration,
@@ -2227,12 +2227,39 @@ enum MappedSliceInner<'a> {
     /// RO / COW: the mapping is immutable; we lend a direct slice.
     Owned(&'a [u8]),
     /// RW: the read guard keeps the mapping alive (and prevents
-    /// `resize()` from running) for the slice's lifetime.
+    /// `resize()` and writes from running) for the slice's lifetime.
+    /// `bytes` is computed once at construction so `Deref` does no
+    /// range arithmetic or bounds checks.
     Guarded {
-        guard: RwLockReadGuard<'a, MmapMut>,
-        range: std::ops::Range<usize>,
+        _guard: RwLockReadGuard<'a, MmapMut>,
+        bytes: *const [u8],
     },
 }
+
+// SAFETY: `MappedSlice` only ever hands out `&[u8]` to bytes that no
+// one can mutate while it lives (RO/COW mappings are immutable; for RW
+// the held read guard excludes every writer). `Owned` holds a `&[u8]`,
+// which is `Send + Sync`. `Guarded` holds a parking_lot read guard,
+// which is `Send` because this crate enables parking_lot's
+// `send_guard` feature (checked at compile time by
+// `_ASSERT_GUARDS_SEND_SYNC` below) and `Sync` because `MmapMut` is
+// `Sync`; the raw `bytes` pointer is only a cached view of memory
+// owned by that guarded mapping, so moving or sharing it across
+// threads is no different from moving or sharing the guard itself.
+unsafe impl Send for MappedSlice<'_> {}
+// SAFETY: see the `Send` impl above; shared access only reads.
+unsafe impl Sync for MappedSlice<'_> {}
+
+/// Compile-time proof that the guards stored in `MappedSlice`,
+/// `MappedSliceMut`, the iterators, and the atomic views are
+/// `Send + Sync`. This fails to build if parking_lot's `send_guard`
+/// feature is ever dropped, which would make the `unsafe impl Send`
+/// blocks in this crate unsound.
+const _ASSERT_GUARDS_SEND_SYNC: fn() = || {
+    fn assert_send_sync<T: Send + Sync>() {}
+    assert_send_sync::<RwLockReadGuard<'static, MmapMut>>();
+    assert_send_sync::<RwLockWriteGuard<'static, MmapMut>>();
+};
 
 impl<'a> MappedSlice<'a> {
     /// Construct a `MappedSlice` from a direct `&[u8]`. Used for RO
@@ -2246,12 +2273,21 @@ impl<'a> MappedSlice<'a> {
 
     /// Construct a `MappedSlice` that holds a read guard for its
     /// lifetime. Used for RW paths to keep the mapping stable.
+    ///
+    /// # Panics
+    ///
+    /// Panics if `range` is not within `guard`'s mapping. Callers
+    /// validate the range against `guard.len()` first.
     pub(crate) fn guarded(
         guard: RwLockReadGuard<'a, MmapMut>,
         range: std::ops::Range<usize>,
     ) -> Self {
+        let bytes: *const [u8] = &guard[range];
         Self {
-            inner: MappedSliceInner::Guarded { guard, range },
+            inner: MappedSliceInner::Guarded {
+                _guard: guard,
+                bytes,
+            },
         }
     }
 
@@ -2260,17 +2296,20 @@ impl<'a> MappedSlice<'a> {
     pub fn as_slice(&self) -> &[u8] {
         match &self.inner {
             MappedSliceInner::Owned(s) => s,
-            MappedSliceInner::Guarded { guard, range } => &guard[range.clone()],
+            // SAFETY: `bytes` was derived from `&_guard[range]` at
+            // construction. The mapping it points into cannot be
+            // unmapped, remapped, or written while `_guard` (a read
+            // guard on the mapping's lock) is alive, and `_guard`
+            // lives exactly as long as `self`. The returned borrow is
+            // tied to `&self`, so it cannot outlive the guard.
+            MappedSliceInner::Guarded { bytes, .. } => unsafe { &**bytes },
         }
     }
 
     /// Length of the slice in bytes.
     #[must_use]
     pub fn len(&self) -> usize {
-        match &self.inner {
-            MappedSliceInner::Owned(s) => s.len(),
-            MappedSliceInner::Guarded { range, .. } => range.end - range.start,
-        }
+        self.as_slice().len()
     }
 
     /// Whether the slice is empty.

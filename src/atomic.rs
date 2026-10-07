@@ -58,11 +58,14 @@ pub struct AtomicView<'a, T> {
 }
 
 // SAFETY: AtomicView is safe to send to another thread because:
-// - For Locked, parking_lot::RwLockReadGuard is Send + Sync.
+// - For Locked, parking_lot::RwLockReadGuard is Send (this crate
+//   enables parking_lot's `send_guard` feature; the compile-time
+//   assertion `_ASSERT_GUARDS_SEND_SYNC` in mmap.rs fails the build
+//   otherwise) and Sync (`MmapMut` is Sync).
 // - For None (RO/COW), the lifetime tie to &MemoryMappedFile means
 //   the mapping outlives the view.
 // - The pointer targets atomic memory (T is AtomicU32/AtomicU64),
-//   which is Send + Sync by construction.
+//   which is Send + Sync by construction; `T: Sync` is required.
 unsafe impl<T: Sync> Send for AtomicView<'_, T> {}
 // SAFETY: Same justification as Send. Sharing &AtomicView across
 // threads is no different from sharing &T where T is Sync.
