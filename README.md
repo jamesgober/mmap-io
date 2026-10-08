@@ -28,7 +28,7 @@
 - **Aligned atomic views.** On read-write mappings, `atomic_u32` / `atomic_u64` return a wrapper that derefs to `&AtomicU64`. Multi-thread `fetch_add` over a memory-mapped counter is one cache-line ping; no cross-process locking required.
 - **Configurable durability.** `flush()` is synchronous (`msync(MS_SYNC)` on Unix, `FlushViewOfFile` + `FlushFileBuffers` on Windows). `FlushPolicy::EveryBytes(N)`, `EveryWrites(N)`, `EveryMillis(N)`, `Always`, or `Manual` decide when the crate flushes for you; the millis policy runs a background flusher bound to the mapping's lifetime.
 - **Thread-safe.** Interior mutability via `parking_lot::RwLock`. Multiple concurrent readers, one writer at a time. Every live read view (slice, iterator item, atomic view) blocks writes and `resize()` until released, so memory under your reference cannot move.
-- **Anonymous mappings.** Process-local memory without a backing file via `AnonymousMmap::new(size)` for shared scratch buffers between threads, large temporary allocations, or as the kernel substrate for IPC patterns.
+- **Anonymous mappings.** Process-local memory without a backing file via `AnonymousMmap::new(size)` for shared scratch buffers between threads, large temporary allocations, or as the kernel substrate for IPC patterns. Atomic views (feature `atomic`) and the non-blocking `try_` methods work on them too.
 - **Cross-platform.** Linux, macOS, Windows. Per-platform hooks where they exist (`MADV_HUGEPAGE` for the huge-page hint, `posix_fadvise` for OS-level prefetch on Linux).
 - **Opt-in surface.** Default features are `advise` + `iterator`. Everything else (`async`, `atomic`, `cow`, `locking`, `watch`, `hugepages`) is off by default to keep compile time tight.
 - **MSRV: 1.75.** Pinned and verified in CI.

@@ -261,7 +261,7 @@ pub struct AnonymousMmap { /* private fields */ }
 - No `flush` (volatile memory; nothing to persist).
 - No `path` (there is no path).
 
-Everything else (read, write, slice access) works identically.
+Everything else (read, write, slice access, the `try_` methods, and since 1.1.0 atomic views with feature `atomic`) works identically.
 
 **Example**:
 ```rust
@@ -289,6 +289,8 @@ assert_eq!(&buf, b"hello");
 | `try_as_slice` | `fn try_as_slice(&self, offset: u64, len: u64) -> Result<Option<MappedSlice<'_>>>` | 1.1.0. `Ok(None)` instead of waiting for a writer. |
 | `try_as_mut_slice` | `fn try_as_mut_slice(&self, offset: u64, len: u64) -> Result<Option<MappedSliceMut<'_>>>` | 1.1.0. `Ok(None)` instead of waiting for views or writers. |
 | `try_update_region` | `fn try_update_region(&self, offset: u64, data: &[u8]) -> Result<bool>` | 1.1.0. `Ok(false)` instead of waiting. |
+| `atomic_u64` / `atomic_u32` | `fn atomic_u64(&self, offset: u64) -> Result<AtomicView<'_, AtomicU64>>` | 1.1.0, feature `atomic`. Same checks as on `MemoryMappedFile`. |
+| `atomic_u64_slice` / `atomic_u32_slice` | `fn atomic_u64_slice(&self, offset: u64, count: usize) -> Result<AtomicSliceView<'_, AtomicU64>>` | 1.1.0, feature `atomic`. |
 | `as_ptr` | `unsafe fn as_ptr(&self) -> *const u8` | Raw byte pointer for FFI. |
 | `as_mut_ptr` | `unsafe fn as_mut_ptr(&self) -> *mut u8` | Raw mutable byte pointer for FFI. |
 

@@ -54,6 +54,7 @@
 //! same element size are allowed (same-size atomic accesses to the
 //! same bytes are fine).
 
+use crate::anonymous::AnonymousMmap;
 use crate::errors::{MmapIoError, Result};
 use crate::mmap::MemoryMappedFile;
 use crate::raw::RawMmapMut;
@@ -403,6 +404,153 @@ impl MemoryMappedFile {
     ) -> Result<AtomicSliceView<'_, AtomicU32>> {
         let parts = self.atomic_parts::<AtomicU32>(offset, count)?;
         Ok(slice(parts, count, self.pending_counter()))
+    }
+}
+
+// Atomic views on anonymous mappings (1.1.0). Same shape and checks as
+// the `MemoryMappedFile` methods: alignment, bounds, then overlap with
+// live views. An anonymous mapping is always writable and never
+// resized, and has no flush accounting.
+impl AnonymousMmap {
+    /// Get an atomic view of a `u64` at `offset` (8-byte aligned).
+    /// Since 1.1.0.
+    ///
+    /// Same contract as [`MemoryMappedFile::atomic_u64`]: the view
+    /// holds a read guard, so writers ([`update_region`](Self::update_region),
+    /// [`as_mut_slice`](Self::as_mut_slice)) wait until it is dropped,
+    /// and it cannot overlap a live `MappedSlice` or an atomic view of
+    /// the other element size. The memory is zero-initialised, so a
+    /// fresh view reads 0. Useful for counters shared between threads
+    /// without a backing file.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`MmapIoError::Misaligned`] if `offset` is not a multiple
+    /// of 8.
+    /// Returns [`MmapIoError::OutOfBounds`] if `offset + 8` exceeds the
+    /// mapping length.
+    /// Returns [`MmapIoError::InvalidMode`] if the range overlaps a live
+    /// `MappedSlice`, or a live atomic view of the other element size.
+    ///
+    /// # Example
+    ///
+    /// ```
+    /// use std::sync::atomic::Ordering;
+    /// use mmap_io::AnonymousMmap;
+    ///
+    /// let scratch = AnonymousMmap::new(4096)?;
+    /// let hits = scratch.atomic_u64(0)?;
+    /// hits.fetch_add(1, Ordering::Relaxed);
+    /// assert_eq!(hits.load(Ordering::Relaxed), 1);
+    /// # Ok::<(), mmap_io::MmapIoError>(())
+    /// ```
+    #[cfg(feature = "atomic")]
+    pub fn atomic_u64(&self, offset: u64) -> Result<AtomicView<'_, AtomicU64>> {
+        let parts = view_parts::<AtomicU64>(&self.map, &self.views, offset, 1)?;
+        Ok(single(parts, None))
+    }
+
+    /// Get an atomic view of a `u32` at `offset` (4-byte aligned).
+    /// Since 1.1.0. See [`atomic_u64`](Self::atomic_u64) for the
+    /// contract.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`MmapIoError::Misaligned`] if `offset` is not a multiple
+    /// of 4.
+    /// Returns [`MmapIoError::OutOfBounds`] if `offset + 4` exceeds the
+    /// mapping length.
+    /// Returns [`MmapIoError::InvalidMode`] if the range overlaps a live
+    /// `MappedSlice`, or a live atomic view of the other element size.
+    ///
+    /// # Example
+    ///
+    /// ```
+    /// use std::sync::atomic::Ordering;
+    /// use mmap_io::AnonymousMmap;
+    ///
+    /// let scratch = AnonymousMmap::new(64)?;
+    /// scratch.atomic_u32(4)?.store(7, Ordering::Release);
+    /// assert!(scratch.atomic_u32(2).is_err()); // misaligned
+    /// # Ok::<(), mmap_io::MmapIoError>(())
+    /// ```
+    #[cfg(feature = "atomic")]
+    pub fn atomic_u32(&self, offset: u64) -> Result<AtomicView<'_, AtomicU32>> {
+        let parts = view_parts::<AtomicU32>(&self.map, &self.views, offset, 1)?;
+        Ok(single(parts, None))
+    }
+
+    /// Get a view of `count` consecutive `AtomicU64` values starting at
+    /// `offset` (8-byte aligned). Since 1.1.0. A `count` of 0 gives an
+    /// empty view (the offset must still be aligned and within the
+    /// mapping).
+    ///
+    /// # Errors
+    ///
+    /// Returns [`MmapIoError::Misaligned`] if `offset` is not a multiple
+    /// of 8.
+    /// Returns [`MmapIoError::OutOfBounds`] if the run exceeds the
+    /// mapping length (`count * 8` saturates instead of overflowing).
+    /// Returns [`MmapIoError::InvalidMode`] if the range overlaps a live
+    /// `MappedSlice`, or a live atomic view of the other element size.
+    ///
+    /// # Example
+    ///
+    /// ```
+    /// use std::sync::atomic::Ordering;
+    /// use mmap_io::AnonymousMmap;
+    ///
+    /// let scratch = AnonymousMmap::new(4096)?;
+    /// let slots = scratch.atomic_u64_slice(0, 4)?;
+    /// for (i, s) in slots.iter().enumerate() {
+    ///     s.store(i as u64, Ordering::Relaxed);
+    /// }
+    /// assert_eq!(slots[3].load(Ordering::Relaxed), 3);
+    /// # Ok::<(), mmap_io::MmapIoError>(())
+    /// ```
+    #[cfg(feature = "atomic")]
+    pub fn atomic_u64_slice(
+        &self,
+        offset: u64,
+        count: usize,
+    ) -> Result<AtomicSliceView<'_, AtomicU64>> {
+        let parts = view_parts::<AtomicU64>(&self.map, &self.views, offset, count)?;
+        Ok(slice(parts, count, None))
+    }
+
+    /// Get a view of `count` consecutive `AtomicU32` values starting at
+    /// `offset` (4-byte aligned). Since 1.1.0. See
+    /// [`atomic_u64_slice`](Self::atomic_u64_slice).
+    ///
+    /// # Errors
+    ///
+    /// Returns [`MmapIoError::Misaligned`] if `offset` is not a multiple
+    /// of 4.
+    /// Returns [`MmapIoError::OutOfBounds`] if the run exceeds the
+    /// mapping length.
+    /// Returns [`MmapIoError::InvalidMode`] if the range overlaps a live
+    /// `MappedSlice`, or a live atomic view of the other element size.
+    ///
+    /// # Example
+    ///
+    /// ```
+    /// use std::sync::atomic::Ordering;
+    /// use mmap_io::AnonymousMmap;
+    ///
+    /// let scratch = AnonymousMmap::new(64)?;
+    /// let flags = scratch.atomic_u32_slice(0, 16)?;
+    /// flags[15].store(1, Ordering::Relaxed);
+    /// assert_eq!(flags.len(), 16);
+    /// # Ok::<(), mmap_io::MmapIoError>(())
+    /// ```
+    #[cfg(feature = "atomic")]
+    pub fn atomic_u32_slice(
+        &self,
+        offset: u64,
+        count: usize,
+    ) -> Result<AtomicSliceView<'_, AtomicU32>> {
+        let parts = view_parts::<AtomicU32>(&self.map, &self.views, offset, count)?;
+        Ok(slice(parts, count, None))
     }
 }
 

@@ -19,10 +19,8 @@
 //! - No `flush` (volatile memory; nothing to persist).
 //! - No `path` (there is no path).
 //!
-//! - No atomic views (`atomic_u64` and friends exist only on
-//!   `MemoryMappedFile`).
-//!
-//! Reads, writes, and slice access work the same way.
+//! Reads, writes, slice access, the non-blocking `try_` methods, and
+//! (feature `atomic`, since 1.1.0) atomic views work the same way.
 //!
 //! [`MemoryMappedFile`]: crate::mmap::MemoryMappedFile
 
@@ -63,10 +61,10 @@ const MAX_MMAP_SIZE: u64 = 2 * (1 << 30); // 2 GB
 /// # Ok::<(), mmap_io::MmapIoError>(())
 /// ```
 pub struct AnonymousMmap {
-    map: RwLock<RawMmapMut>,
+    pub(crate) map: RwLock<RawMmapMut>,
     len: u64,
     /// Live plain and atomic views; see `crate::views`.
-    views: ViewRegistry,
+    pub(crate) views: ViewRegistry,
 }
 
 impl AnonymousMmap {
