@@ -405,6 +405,80 @@ impl<'a> core::marker::Unpin for mmap_io::mmap::MmapReader<'a>
 impl<'a> core::marker::UnsafeUnpin for mmap_io::mmap::MmapReader<'a>
 impl<'a> !core::panic::unwind_safe::RefUnwindSafe for mmap_io::mmap::MmapReader<'a>
 impl<'a> !core::panic::unwind_safe::UnwindSafe for mmap_io::mmap::MmapReader<'a>
+pub mod mmap_io::raw
+pub struct mmap_io::raw::RawMmap
+impl mmap_io::raw::RawMmap
+pub fn mmap_io::raw::RawMmap::as_ptr(&self) -> *const u8
+pub fn mmap_io::raw::RawMmap::is_empty(&self) -> bool
+pub fn mmap_io::raw::RawMmap::len(&self) -> usize
+pub unsafe fn mmap_io::raw::RawMmap::map(file: &std::fs::File) -> std::io::error::Result<Self>
+impl core::convert::AsRef<[u8]> for mmap_io::raw::RawMmap
+pub fn mmap_io::raw::RawMmap::as_ref(&self) -> &[u8]
+impl core::fmt::Debug for mmap_io::raw::RawMmap
+pub fn mmap_io::raw::RawMmap::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::ops::deref::Deref for mmap_io::raw::RawMmap
+pub type mmap_io::raw::RawMmap::Target = [u8]
+pub fn mmap_io::raw::RawMmap::deref(&self) -> &[u8]
+impl core::marker::Freeze for mmap_io::raw::RawMmap
+impl core::marker::Send for mmap_io::raw::RawMmap
+impl core::marker::Sync for mmap_io::raw::RawMmap
+impl core::marker::Unpin for mmap_io::raw::RawMmap
+impl core::marker::UnsafeUnpin for mmap_io::raw::RawMmap
+impl core::panic::unwind_safe::RefUnwindSafe for mmap_io::raw::RawMmap
+impl core::panic::unwind_safe::UnwindSafe for mmap_io::raw::RawMmap
+pub struct mmap_io::raw::RawMmapMut
+impl mmap_io::raw::RawMmapMut
+pub fn mmap_io::raw::RawMmapMut::as_mut_ptr(&mut self) -> *mut u8
+pub fn mmap_io::raw::RawMmapMut::as_ptr(&self) -> *const u8
+pub fn mmap_io::raw::RawMmapMut::flush(&self) -> std::io::error::Result<()>
+pub fn mmap_io::raw::RawMmapMut::flush_async(&self) -> std::io::error::Result<()>
+pub fn mmap_io::raw::RawMmapMut::flush_async_range(&self, offset: usize, len: usize) -> std::io::error::Result<()>
+pub fn mmap_io::raw::RawMmapMut::flush_range(&self, offset: usize, len: usize) -> std::io::error::Result<()>
+pub fn mmap_io::raw::RawMmapMut::is_empty(&self) -> bool
+pub fn mmap_io::raw::RawMmapMut::len(&self) -> usize
+pub fn mmap_io::raw::RawMmapMut::map_anon(len: usize) -> std::io::error::Result<Self>
+pub unsafe fn mmap_io::raw::RawMmapMut::map_mut(file: &std::fs::File) -> std::io::error::Result<Self>
+impl core::convert::AsMut<[u8]> for mmap_io::raw::RawMmapMut
+pub fn mmap_io::raw::RawMmapMut::as_mut(&mut self) -> &mut [u8]
+impl core::convert::AsRef<[u8]> for mmap_io::raw::RawMmapMut
+pub fn mmap_io::raw::RawMmapMut::as_ref(&self) -> &[u8]
+impl core::fmt::Debug for mmap_io::raw::RawMmapMut
+pub fn mmap_io::raw::RawMmapMut::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::ops::deref::Deref for mmap_io::raw::RawMmapMut
+pub type mmap_io::raw::RawMmapMut::Target = [u8]
+pub fn mmap_io::raw::RawMmapMut::deref(&self) -> &[u8]
+impl core::ops::deref::DerefMut for mmap_io::raw::RawMmapMut
+pub fn mmap_io::raw::RawMmapMut::deref_mut(&mut self) -> &mut [u8]
+impl core::marker::Freeze for mmap_io::raw::RawMmapMut
+impl core::marker::Send for mmap_io::raw::RawMmapMut
+impl core::marker::Sync for mmap_io::raw::RawMmapMut
+impl core::marker::Unpin for mmap_io::raw::RawMmapMut
+impl core::marker::UnsafeUnpin for mmap_io::raw::RawMmapMut
+impl core::panic::unwind_safe::RefUnwindSafe for mmap_io::raw::RawMmapMut
+impl core::panic::unwind_safe::UnwindSafe for mmap_io::raw::RawMmapMut
+pub struct mmap_io::raw::RawMmapOptions
+impl mmap_io::raw::RawMmapOptions
+pub fn mmap_io::raw::RawMmapOptions::len(&mut self, len: usize) -> &mut Self
+pub unsafe fn mmap_io::raw::RawMmapOptions::map(&self, file: &std::fs::File) -> std::io::error::Result<mmap_io::raw::RawMmap>
+pub fn mmap_io::raw::RawMmapOptions::map_anon(&self) -> std::io::error::Result<mmap_io::raw::RawMmapMut>
+pub unsafe fn mmap_io::raw::RawMmapOptions::map_copy(&self, file: &std::fs::File) -> std::io::error::Result<mmap_io::raw::RawMmapMut>
+pub unsafe fn mmap_io::raw::RawMmapOptions::map_mut(&self, file: &std::fs::File) -> std::io::error::Result<mmap_io::raw::RawMmapMut>
+pub const fn mmap_io::raw::RawMmapOptions::new() -> Self
+pub fn mmap_io::raw::RawMmapOptions::offset(&mut self, offset: u64) -> &mut Self
+impl core::clone::Clone for mmap_io::raw::RawMmapOptions
+pub fn mmap_io::raw::RawMmapOptions::clone(&self) -> mmap_io::raw::RawMmapOptions
+impl core::default::Default for mmap_io::raw::RawMmapOptions
+pub fn mmap_io::raw::RawMmapOptions::default() -> mmap_io::raw::RawMmapOptions
+impl core::fmt::Debug for mmap_io::raw::RawMmapOptions
+pub fn mmap_io::raw::RawMmapOptions::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::Freeze for mmap_io::raw::RawMmapOptions
+impl core::marker::Send for mmap_io::raw::RawMmapOptions
+impl core::marker::Sync for mmap_io::raw::RawMmapOptions
+impl core::marker::Unpin for mmap_io::raw::RawMmapOptions
+impl core::marker::UnsafeUnpin for mmap_io::raw::RawMmapOptions
+impl core::panic::unwind_safe::RefUnwindSafe for mmap_io::raw::RawMmapOptions
+impl core::panic::unwind_safe::UnwindSafe for mmap_io::raw::RawMmapOptions
+pub fn mmap_io::raw::offset_granularity() -> std::io::error::Result<usize>
 pub mod mmap_io::segment
 pub struct mmap_io::segment::Segment
 impl mmap_io::segment::Segment
