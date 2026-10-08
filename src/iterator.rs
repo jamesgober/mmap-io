@@ -267,7 +267,8 @@ impl<'a> ChunkIteratorMut<'a> {
     }
 
     /// Run `f` over every chunk under one held write guard. Stops at
-    /// the first `Err` from `f` and returns it as `Ok(Err(e))`.
+    /// the first `Err` from `f` and returns it as `Ok(Err(e))`. Bytes
+    /// handed to `f` are added to the mapping's pending-bytes counter.
     fn drive<F, E>(self, mut f: F) -> Result<std::result::Result<(), E>>
     where
         F: FnMut(u64, &mut [u8]) -> std::result::Result<(), E>,
@@ -296,6 +297,8 @@ impl<'a> ChunkIteratorMut<'a> {
                         break;
                     }
                 }
+                // Every byte handed to `f` may have been written.
+                self.mmap.record_write(offset as u64);
                 Ok(result)
             }
         }
@@ -310,6 +313,11 @@ impl<'a> ChunkIteratorMut<'a> {
     /// Callers carrying a foreign error type should map into
     /// `MmapIoError` before returning (e.g. via `.map_err(|e|
     /// MmapIoError::Io(...))`).
+    ///
+    /// Every byte handed to the closure counts toward
+    /// [`MemoryMappedFile::pending_bytes`]. The flush policy is not
+    /// evaluated here; call [`MemoryMappedFile::flush`] when the data
+    /// must be durable.
     ///
     /// # Errors
     ///

@@ -15,6 +15,11 @@
 //! and swapping out the underlying memory under a live view, which
 //! would otherwise be use-after-free.
 //!
+//! Dropping a view adds its byte size to
+//! [`MemoryMappedFile::pending_bytes`], because individual atomic
+//! stores are invisible to the crate's flush accounting. Call
+//! [`MemoryMappedFile::flush`] when stored values must be durable.
+//!
 //! Practical consequence: while any [`AtomicView`] or
 //! [`AtomicSliceView`] is alive, calls to `resize()` and to every
 //! write method (`update_region`, `as_slice_mut`, `chunks_mut`) on the
@@ -36,7 +41,7 @@ use memmap2::MmapMut;
 use parking_lot::RwLockReadGuard;
 use std::marker::PhantomData;
 use std::ops::Deref;
-use std::sync::atomic::{AtomicU32, AtomicU64};
+use std::sync::atomic::{AtomicU32, AtomicU64, Ordering};
 
 /// The atomic integer types a view can expose. Sealed: every
 /// implementor has the same size and alignment as its integer type
@@ -66,7 +71,18 @@ mod private {
 pub struct AtomicView<'a, T> {
     _guard: RwLockReadGuard<'a, MmapMut>,
     ptr: *const T,
+    /// The mapping's pending-bytes counter; see `Drop`.
+    pending: &'a AtomicU64,
     _marker: PhantomData<&'a T>,
+}
+
+impl<T> Drop for AtomicView<'_, T> {
+    fn drop(&mut self) {
+        // Stores through the view cannot be observed individually, so
+        // the view's bytes count as written once it is released.
+        self.pending
+            .fetch_add(std::mem::size_of::<T>() as u64, Ordering::AcqRel);
+    }
 }
 
 // SAFETY: AtomicView is safe to send to another thread because:
@@ -103,7 +119,17 @@ pub struct AtomicSliceView<'a, T> {
     _guard: RwLockReadGuard<'a, MmapMut>,
     ptr: *const T,
     len: usize,
+    /// The mapping's pending-bytes counter; see `Drop`.
+    pending: &'a AtomicU64,
     _marker: PhantomData<&'a [T]>,
+}
+
+impl<T> Drop for AtomicSliceView<'_, T> {
+    fn drop(&mut self) {
+        // See `AtomicView`'s `Drop`.
+        let bytes = (std::mem::size_of::<T>() as u64).saturating_mul(self.len as u64);
+        self.pending.fetch_add(bytes, Ordering::AcqRel);
+    }
 }
 
 // SAFETY: see AtomicView's Send justification; identical here for a
@@ -221,6 +247,7 @@ impl MemoryMappedFile {
         Ok(AtomicView {
             _guard: guard,
             ptr,
+            pending: &self.inner.written_since_last_flush,
             _marker: PhantomData,
         })
     }
@@ -247,6 +274,7 @@ impl MemoryMappedFile {
         Ok(AtomicView {
             _guard: guard,
             ptr,
+            pending: &self.inner.written_since_last_flush,
             _marker: PhantomData,
         })
     }
@@ -280,6 +308,7 @@ impl MemoryMappedFile {
             _guard: guard,
             ptr,
             len: count,
+            pending: &self.inner.written_since_last_flush,
             _marker: PhantomData,
         })
     }
@@ -310,6 +339,7 @@ impl MemoryMappedFile {
             _guard: guard,
             ptr,
             len: count,
+            pending: &self.inner.written_since_last_flush,
             _marker: PhantomData,
         })
     }

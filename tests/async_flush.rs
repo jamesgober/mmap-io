@@ -46,7 +46,7 @@ async fn async_explicit_flush_still_works() {
     mmap.update_region_async(0, b"XYZ")
         .await
         .expect("update_region_async");
-    // extra explicit async flush is a no-op but should succeed
+    // extra explicit async flush flushes again and should succeed
     mmap.flush_async().await.expect("flush_async");
 
     let ro = MemoryMappedFile::open_ro(&path).expect("open_ro");

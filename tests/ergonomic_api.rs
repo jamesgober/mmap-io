@@ -247,8 +247,7 @@ fn pending_bytes_tracks_accumulator() {
     assert_eq!(mmap.pending_bytes(), 2048);
 
     // Pushing past threshold triggers a flush which clears the
-    // accumulator (or near-clear; the C1 path debits by the flushed
-    // length).
+    // accumulator.
     mmap.update_region(2048, &vec![0u8; 8 * 1024])
         .expect("write");
     assert!(

@@ -59,9 +59,8 @@ fn flush_range_preserves_accumulator_for_unflushed_writes() {
 
     // Now flush_range a 4 KiB sub-range. With C1 unfixed, the
     // accumulator gets zeroed and subsequent writes fail to trigger.
-    // With the fix, the accumulator is debited by the flushed length
-    // (likely page-aligned upward by the microflush optimization, but
-    // strictly less than the pre_threshold accumulator).
+    // Since 1.1 a partial flush_range leaves the accumulator unchanged
+    // (the crate does not track which bytes are dirty).
     mmap.flush_range(0, 4096).expect("flush_range");
 
     // Now write enough additional bytes to push the (correctly
@@ -74,7 +73,7 @@ fn flush_range_preserves_accumulator_for_unflushed_writes() {
 
     // At this point, IF C1 is fixed:
     //   accumulator after first write   = pre_threshold (~1008 KiB)
-    //   accumulator after flush_range   = pre_threshold - flushed (~1008 - some page-multiple)
+    //   accumulator after flush_range   = pre_threshold (partial range: unchanged)
     //   accumulator after second write  = (above) + 32 KiB
     //                                   >= threshold (1024 KiB)
     //   -> auto-flush triggered

@@ -27,7 +27,7 @@ use crate::flush::FlushPolicy;
 use parking_lot::RwLock;
 
 use crate::errors::{MmapIoError, Result};
-use crate::utils::{ensure_in_bounds, slice_range};
+use crate::utils::slice_range;
 
 // Error message constants
 const ERR_ZERO_SIZE: &str = "Size must be greater than zero";
@@ -66,9 +66,15 @@ pub struct Inner {
     pub(crate) cached_len: AtomicU64,
     // The mapping itself. We use an enum to hold either RO or RW mapping.
     pub(crate) map: MapVariant,
-    // Flush policy and accounting (RW only)
+    // Flush policy and accounting (RW only). `written_since_last_flush`
+    // counts bytes written through every write path since the last
+    // successful full flush; `writes_since_last_flush` counts
+    // `update_region` calls for `FlushPolicy::EveryWrites`. Both only
+    // drive the policy's automatic flushes; an explicit `flush()`
+    // always flushes.
     pub(crate) flush_policy: FlushPolicy,
-    pub(crate) written_since_last_flush: RwLock<u64>,
+    pub(crate) written_since_last_flush: AtomicU64,
+    pub(crate) writes_since_last_flush: AtomicU64,
     // Time-based flusher background thread (used only when
     // FlushPolicy::EveryMillis is selected on the builder path). Held
     // here so the worker thread's lifetime is bound to the mapping;
@@ -222,7 +228,8 @@ impl MemoryMappedFile {
             cached_len: AtomicU64::new(size),
             map: MapVariant::Rw(RwLock::new(mmap)),
             flush_policy: FlushPolicy::default(),
-            written_since_last_flush: RwLock::new(0),
+            written_since_last_flush: AtomicU64::new(0),
+            writes_since_last_flush: AtomicU64::new(0),
             flusher: RwLock::new(None),
             #[cfg(feature = "hugepages")]
             huge_pages: false,
@@ -258,7 +265,8 @@ impl MemoryMappedFile {
             cached_len: AtomicU64::new(len),
             map: MapVariant::Ro(mmap),
             flush_policy: FlushPolicy::Never,
-            written_since_last_flush: RwLock::new(0),
+            written_since_last_flush: AtomicU64::new(0),
+            writes_since_last_flush: AtomicU64::new(0),
             flusher: RwLock::new(None),
             #[cfg(feature = "hugepages")]
             huge_pages: false,
@@ -296,7 +304,8 @@ impl MemoryMappedFile {
             cached_len: AtomicU64::new(len),
             map: MapVariant::Rw(RwLock::new(mmap)),
             flush_policy: FlushPolicy::default(),
-            written_since_last_flush: RwLock::new(0),
+            written_since_last_flush: AtomicU64::new(0),
+            writes_since_last_flush: AtomicU64::new(0),
             flusher: RwLock::new(None),
             #[cfg(feature = "hugepages")]
             huge_pages: false,
@@ -454,6 +463,7 @@ impl MemoryMappedFile {
                 Ok(MappedSliceMut {
                     guard,
                     range: start..end,
+                    pending: Some(&self.inner.written_since_last_flush),
                 })
             }
             // COW mappings are exposed read-only; see `open_cow`.
@@ -520,6 +530,15 @@ impl MemoryMappedFile {
     /// smol, async-std), so callers are no longer locked into
     /// tokio (since 0.9.11).
     ///
+    /// # Allocation
+    ///
+    /// `data` is copied into a heap-allocated `Vec<u8>` (one
+    /// allocation of `data.len()` bytes) because the blocking task
+    /// must own its input; the caller's slice cannot be borrowed
+    /// across the thread hand-off. For large or frequent writes from
+    /// async code, prefer calling [`update_region`](Self::update_region)
+    /// plus [`flush_async`](Self::flush_async).
+    ///
     /// # Errors
     ///
     /// Propagates any error from the synchronous [`update_region`](Self::update_region)
@@ -538,49 +557,58 @@ impl MemoryMappedFile {
         .await
     }
 
-    /// Flush changes to disk. For read-only mappings, this is a no-op.
+    /// Flush changes to disk and wait for the OS to report them
+    /// written. For read-only and copy-on-write mappings this is a
+    /// no-op.
     ///
-    /// Smart internal guards:
-    /// - Skip I/O when there are no pending writes (accumulator is zero)
-    /// - On Linux, use msync(MS_ASYNC) as a cheaper hint; fall back to full flush on error
+    /// On a `ReadWrite` mapping every call flushes, whatever
+    /// [`pending_bytes`](Self::pending_bytes) reports; the counter only
+    /// drives the [`FlushPolicy`] automatic flushes. The flush is
+    /// synchronous:
+    ///
+    /// - **Linux / Unix**: `msync(MS_SYNC)` over the whole mapping.
+    ///   On Linux this writes the dirty pages and the metadata needed
+    ///   to read them back (`fdatasync` semantics). On macOS `msync`
+    ///   does not issue `F_FULLFSYNC`, so the drive's own write cache
+    ///   may still hold the data.
+    /// - **Windows**: `FlushViewOfFile` followed by `FlushFileBuffers`
+    ///   on the file handle, which waits for the data to reach the
+    ///   device.
+    ///
+    /// The mapping's read lock is held for the duration, so writers
+    /// wait for the flush to finish.
     ///
     /// # Performance
     ///
     /// - **Time Complexity**: O(n) where n is the size of dirty pages
-    /// - **I/O Operations**: Triggers disk write of modified pages
-    /// - **Optimization**: Skips flush if no writes since last flush
-    /// - **Platform**: Linux uses async msync for better performance
+    /// - **I/O Operations**: Synchronous write-back of modified pages;
+    ///   expect milliseconds, not nanoseconds (see `docs/PERFORMANCE.md`)
     ///
     /// # Errors
     ///
     /// Returns `MmapIoError::FlushFailed` if flush operation fails.
     pub fn flush(&self) -> Result<()> {
         match &self.inner.map {
-            MapVariant::Ro(_) => Ok(()),
-            MapVariant::Cow(_) => Ok(()), // no-op for COW
+            MapVariant::Ro(_) | MapVariant::Cow(_) => Ok(()),
             MapVariant::Rw(lock) => {
-                // Fast path: no pending writes => skip flushing I/O
-                if *self.inner.written_since_last_flush.read() == 0 {
-                    return Ok(());
+                let guard = lock.read_recursive();
+                // Take the counters before flushing: anything recorded
+                // after this point (e.g. an atomic view dropped during
+                // the flush) stays pending for the next flush.
+                let bytes = self
+                    .inner
+                    .written_since_last_flush
+                    .swap(0, Ordering::AcqRel);
+                let writes = self.inner.writes_since_last_flush.swap(0, Ordering::AcqRel);
+                if let Err(e) = guard.flush() {
+                    self.inner
+                        .written_since_last_flush
+                        .fetch_add(bytes, Ordering::AcqRel);
+                    self.inner
+                        .writes_since_last_flush
+                        .fetch_add(writes, Ordering::AcqRel);
+                    return Err(MmapIoError::FlushFailed(e.to_string()));
                 }
-
-                // Platform-optimized path: Linux MS_ASYNC best-effort
-                #[cfg(all(unix, target_os = "linux"))]
-                {
-                    if let Ok(len) = self.current_len() {
-                        if len > 0 && self.try_linux_async_flush(len as usize)? {
-                            return Ok(());
-                        }
-                    }
-                }
-
-                // Fallback/full flush using memmap2 API
-                let guard = lock.read();
-                guard
-                    .flush()
-                    .map_err(|e| MmapIoError::FlushFailed(e.to_string()))?;
-                // Reset accumulator after a successful flush
-                *self.inner.written_since_last_flush.write() = 0;
                 Ok(())
             }
         }
@@ -612,19 +640,19 @@ impl MemoryMappedFile {
         blocking::unblock(move || this.flush_range(offset, len)).await
     }
 
-    /// Flush a specific byte range to disk.
+    /// Flush a specific byte range to disk and wait for the OS to
+    /// report it written. Same durability and platform behavior as
+    /// [`flush`](Self::flush); the kernel works in whole pages, so the
+    /// range is widened to page boundaries internally.
     ///
-    /// Smart internal guards:
-    /// - Skip I/O when there are no pending writes in accumulator
-    /// - Optimize microflushes (< page size) with page-aligned batching
-    /// - On Linux, prefer msync(MS_ASYNC) for the range; fall back to full range flush on error
+    /// A range that covers the whole mapping resets
+    /// [`pending_bytes`](Self::pending_bytes) like `flush()`. A partial
+    /// range leaves the counter unchanged: the crate does not track
+    /// which bytes are dirty, so it cannot know how many pending bytes
+    /// the range covered. On Windows, `FlushFileBuffers` flushes the
+    /// whole file's buffers regardless of the range.
     ///
-    /// # Performance Optimizations
-    ///
-    /// - **Microflush Detection**: Ranges smaller than page size are batched
-    /// - **Page Alignment**: Small ranges are expanded to page boundaries
-    /// - **Async Hints**: Linux uses MS_ASYNC for better performance
-    /// - **Zero-Copy**: No data copying during flush operations
+    /// A zero-length range is accepted at any offset and does nothing.
     ///
     /// # Errors
     ///
@@ -634,70 +662,24 @@ impl MemoryMappedFile {
         if len == 0 {
             return Ok(());
         }
-        ensure_in_bounds(offset, len, self.current_len()?)?;
         match &self.inner.map {
-            MapVariant::Ro(_) => Ok(()),
-            MapVariant::Cow(_) => Ok(()), // no-op for COW
-            MapVariant::Rw(lock) => {
-                // If we have no accumulated writes, skip I/O
-                if *self.inner.written_since_last_flush.read() == 0 {
-                    return Ok(());
-                }
-
-                let (start, end) = slice_range(offset, len, self.current_len()?)?;
-                let range_len = end - start;
-
-                // Microflush optimization: For small ranges, align to page boundaries
-                // to reduce syscall overhead and improve cache locality
-                let (optimized_start, optimized_len) = if range_len < crate::utils::page_size() {
-                    use crate::utils::{align_up, page_size};
-                    let page_sz = page_size();
-                    let aligned_start = (start / page_sz) * page_sz;
-                    let aligned_end = align_up(end as u64, page_sz as u64) as usize;
-                    let file_len = self.current_len()? as usize;
-                    let bounded_end = std::cmp::min(aligned_end, file_len);
-                    let bounded_len = bounded_end.saturating_sub(aligned_start);
-                    (aligned_start, bounded_len)
-                } else {
-                    (start, range_len)
-                };
-
-                // Linux MS_ASYNC optimization
-                #[cfg(all(unix, target_os = "linux"))]
-                {
-                    // SAFETY: `optimized_start` is within the mapped region (bounded above
-                    // by `file_len` via the microflush calculation, or by the validated
-                    // `start` from `slice_range` on the non-micro path), so `base.add(...)`
-                    // produces a pointer inside the mapping. `msync` (POSIX) on a valid
-                    // pointer + length within a mapped region with MS_ASYNC schedules an
-                    // asynchronous writeback and does not access the memory after the call
-                    // returns. Reference: https://man7.org/linux/man-pages/man2/msync.2.html
-                    let msync_res: i32 = {
-                        let guard = lock.read();
-                        let base = guard.as_ptr();
-                        let ptr = unsafe { base.add(optimized_start) } as *mut libc::c_void;
-                        unsafe { libc::msync(ptr, optimized_len, libc::MS_ASYNC) }
-                    };
-                    if msync_res == 0 {
-                        // C1 fix: a range flush must NOT zero the global accumulator.
-                        // Debit by the bytes actually flushed (clamped at zero) so the
-                        // FlushPolicy threshold tracking remains accurate for the
-                        // unflushed pages. See .dev/AUDIT.md C1.
-                        let mut acc = self.inner.written_since_last_flush.write();
-                        *acc = acc.saturating_sub(optimized_len as u64);
-                        return Ok(());
-                    }
-                    // else fall through to full flush_range
-                }
-
-                let guard = lock.read();
-                guard
-                    .flush_range(optimized_start, optimized_len)
-                    .map_err(|e| MmapIoError::FlushFailed(e.to_string()))?;
-                // C1 fix: same debit logic as the MS_ASYNC path above.
-                let mut acc = self.inner.written_since_last_flush.write();
-                *acc = acc.saturating_sub(optimized_len as u64);
+            MapVariant::Ro(_) | MapVariant::Cow(_) => {
+                // Nothing to write back, but the range is still
+                // validated so callers get the same contract everywhere.
+                let map = self.map_read();
+                slice_range(offset, len, map.len() as u64)?;
                 Ok(())
+            }
+            MapVariant::Rw(lock) => {
+                let guard = lock.read_recursive();
+                let (start, end) = slice_range(offset, len, guard.len() as u64)?;
+                if start == 0 && end == guard.len() {
+                    drop(guard);
+                    return self.flush();
+                }
+                guard
+                    .flush_range(start, end - start)
+                    .map_err(|e| MmapIoError::FlushFailed(e.to_string()))
             }
         }
     }
@@ -1001,7 +983,8 @@ impl MemoryMappedFile {
                     cached_len: AtomicU64::new(len),
                     map: MapVariant::Ro(mmap),
                     flush_policy: FlushPolicy::Never,
-                    written_since_last_flush: RwLock::new(0),
+                    written_since_last_flush: AtomicU64::new(0),
+                    writes_since_last_flush: AtomicU64::new(0),
                     flusher: RwLock::new(None),
                     #[cfg(feature = "hugepages")]
                     huge_pages: false,
@@ -1023,7 +1006,8 @@ impl MemoryMappedFile {
                     cached_len: AtomicU64::new(len),
                     map: MapVariant::Rw(RwLock::new(mmap)),
                     flush_policy: FlushPolicy::default(),
-                    written_since_last_flush: RwLock::new(0),
+                    written_since_last_flush: AtomicU64::new(0),
+                    writes_since_last_flush: AtomicU64::new(0),
                     flusher: RwLock::new(None),
                     #[cfg(feature = "hugepages")]
                     huge_pages: false,
@@ -1050,7 +1034,8 @@ impl MemoryMappedFile {
                     cached_len: AtomicU64::new(len),
                     map: MapVariant::Cow(mmap),
                     flush_policy: FlushPolicy::Never,
-                    written_since_last_flush: RwLock::new(0),
+                    written_since_last_flush: AtomicU64::new(0),
+                    writes_since_last_flush: AtomicU64::new(0),
                     flusher: RwLock::new(None),
                     #[cfg(feature = "hugepages")]
                     huge_pages: false,
@@ -1127,18 +1112,28 @@ impl MemoryMappedFile {
         self.inner.flush_policy
     }
 
-    /// Bytes written since the last successful flush. Mainly useful
-    /// for diagnostics / observability under
-    /// [`FlushPolicy::EveryBytes`] and
-    /// [`FlushPolicy::EveryWrites`]: callers can poll this to see
-    /// how close they are to the next auto-flush.
+    /// Bytes written since the last successful full flush, under
+    /// every flush policy. Mainly useful for diagnostics and for
+    /// seeing how close [`FlushPolicy::EveryBytes`] is to its next
+    /// automatic flush.
     ///
-    /// Reads only the accumulator (one atomic read of a `u64` under
-    /// the parking_lot read lock); no I/O is performed.
+    /// Counted write paths: [`update_region`](Self::update_region)
+    /// (at the write), [`MappedSliceMut`] from
+    /// [`as_slice_mut`](Self::as_slice_mut) or `SegmentMut` (its full
+    /// length, when it is dropped), `chunks_mut` (bytes handed to the
+    /// closure), atomic views (their byte size, when dropped; stores
+    /// cannot be observed individually), and
+    /// [`as_mut_ptr`](Self::as_mut_ptr) (the whole mapping length,
+    /// since writes through the pointer are invisible to the crate).
+    /// The count is reset by [`flush`](Self::flush) and by a
+    /// [`flush_range`](Self::flush_range) that covers the whole
+    /// mapping. It is a policy heuristic, not a dirty-page tracker.
+    ///
+    /// One atomic load; no I/O is performed.
     #[inline]
     #[must_use]
     pub fn pending_bytes(&self) -> u64 {
-        *self.inner.written_since_last_flush.read()
+        self.inner.written_since_last_flush.load(Ordering::Acquire)
     }
 
     /// Raw read-only pointer to the start of the mapped region.
@@ -1200,7 +1195,14 @@ impl MemoryMappedFile {
             // not deadlock when this thread already holds a view. The
             // pointer comes from memmap2's raw mapping pointer (not
             // from a `&[u8]`), so writing through it is permitted.
-            MapVariant::Rw(lock) => Ok(lock.read_recursive().as_ptr().cast_mut()),
+            MapVariant::Rw(lock) => {
+                let guard = lock.read_recursive();
+                // Writes through the pointer are invisible to us; count
+                // the whole mapping as pending so EveryMillis/EveryBytes
+                // still see a dirty mapping.
+                self.record_write(guard.len() as u64);
+                Ok(guard.as_ptr().cast_mut())
+            }
             MapVariant::Ro(_) | MapVariant::Cow(_) => Err(MmapIoError::InvalidMode(
                 "as_mut_ptr requires ReadWrite mode",
             )),
@@ -1375,55 +1377,6 @@ fn map_file_rw(file: &File, len: usize) -> Result<MmapMut> {
     let map = unsafe { MmapOptions::new().len(len).map_mut(file)? };
     Ok(map)
 }
-
-impl MemoryMappedFile {
-    // Helper method to attempt Linux-specific async flush
-    #[cfg(all(unix, target_os = "linux"))]
-    fn try_linux_async_flush(&self, len: usize) -> Result<bool> {
-        use std::os::fd::AsRawFd;
-
-        // Get the file descriptor (unused but kept for potential future use)
-        let _fd = self.inner.file.as_raw_fd();
-
-        // Try to get the mapping pointer for msync
-        match &self.inner.map {
-            MapVariant::Rw(lock) => {
-                let guard = lock.read();
-                let ptr = guard.as_ptr() as *mut libc::c_void;
-
-                // SAFETY: POSIX `msync` requires:
-                //   1. `addr` is page-aligned. `guard.as_ptr()` returns
-                //      the base of the mapping, which the kernel
-                //      page-aligned at `mmap(2)` time.
-                //   2. `[addr, addr + len)` lies within a mapped region.
-                //      `len` is `self.current_len()` which equals the
-                //      mapping length at the time the read guard was
-                //      acquired (the guard prevents `resize` from
-                //      shrinking the mapping under us).
-                //   3. `flags` is a valid combination. `MS_ASYNC` is a
-                //      defined Linux/POSIX flag that schedules
-                //      asynchronous writeback and returns immediately.
-                // `msync` does not access the memory at `ptr` from
-                // Rust's perspective; it queues a kernel writeback. The
-                // pointer is not retained past the call.
-                // Reference: https://man7.org/linux/man-pages/man2/msync.2.html
-                let ret = unsafe { libc::msync(ptr, len, libc::MS_ASYNC) };
-
-                if ret == 0 {
-                    // MS_ASYNC succeeded, reset accumulator
-                    *self.inner.written_since_last_flush.write() = 0;
-                    Ok(true)
-                } else {
-                    // Fall back to full flush
-                    Ok(false)
-                }
-            }
-            _ => Ok(false),
-        }
-    }
-}
-
-// (Removed duplicate import of RwLockWriteGuard)
 
 /// Create a memory mapping with optional huge pages support.
 ///
@@ -1623,7 +1576,8 @@ impl MemoryMappedFile {
             map: MapVariant::Cow(mmap),
             // COW never flushes underlying file in phase-1
             flush_policy: FlushPolicy::Never,
-            written_since_last_flush: RwLock::new(0),
+            written_since_last_flush: AtomicU64::new(0),
+            writes_since_last_flush: AtomicU64::new(0),
             flusher: RwLock::new(None),
             #[cfg(feature = "hugepages")]
             huge_pages: false,
@@ -1635,53 +1589,46 @@ impl MemoryMappedFile {
 }
 
 impl MemoryMappedFile {
+    /// Add `bytes` to the pending-bytes counter without evaluating the
+    /// flush policy. Used by write paths that cannot flush at the
+    /// point of the write (guards being dropped, closures returning).
+    pub(crate) fn record_write(&self, bytes: u64) {
+        self.inner
+            .written_since_last_flush
+            .fetch_add(bytes, Ordering::AcqRel);
+    }
+
+    /// Count one `update_region` of `written` bytes and run the flush
+    /// policy. Called after the write lock has been released.
     fn apply_flush_policy(&self, written: u64) -> Result<()> {
+        let pending = self
+            .inner
+            .written_since_last_flush
+            .fetch_add(written, Ordering::AcqRel)
+            .saturating_add(written);
+        let writes = self
+            .inner
+            .writes_since_last_flush
+            .fetch_add(1, Ordering::AcqRel)
+            .saturating_add(1);
         match self.inner.flush_policy {
-            FlushPolicy::Never | FlushPolicy::Manual => Ok(()),
-            FlushPolicy::Always => {
-                // Record then flush immediately
-                *self.inner.written_since_last_flush.write() += written;
-                self.flush()
-            }
+            // EveryMillis flushes from its background thread, which
+            // checks `pending_bytes()`.
+            FlushPolicy::Never | FlushPolicy::Manual | FlushPolicy::EveryMillis(_) => Ok(()),
+            FlushPolicy::Always => self.flush(),
             FlushPolicy::EveryBytes(n) => {
-                let n = n as u64;
-                if n == 0 {
-                    return Ok(());
-                }
-                let mut acc = self.inner.written_since_last_flush.write();
-                *acc += written;
-                if *acc >= n {
-                    // Do not reset prematurely; let flush() clear on success
-                    drop(acc);
+                if n > 0 && pending >= n as u64 {
                     self.flush()
                 } else {
                     Ok(())
                 }
             }
             FlushPolicy::EveryWrites(w) => {
-                if w == 0 {
-                    return Ok(());
-                }
-                let mut acc = self.inner.written_since_last_flush.write();
-                *acc += 1;
-                if *acc >= w as u64 {
-                    drop(acc);
+                if w > 0 && writes >= w as u64 {
                     self.flush()
                 } else {
                     Ok(())
                 }
-            }
-            FlushPolicy::EveryMillis(ms) => {
-                if ms == 0 {
-                    return Ok(());
-                }
-
-                // Record the write
-                *self.inner.written_since_last_flush.write() += written;
-
-                // For EveryMillis, time-based flushing is handled by the background thread
-                // The policy just ensures writes are tracked
-                Ok(())
             }
         }
     }
@@ -1944,7 +1891,8 @@ impl MemoryMappedFileBuilder {
                     cached_len: AtomicU64::new(size),
                     map: MapVariant::Rw(RwLock::new(mmap)),
                     flush_policy: self.flush_policy,
-                    written_since_last_flush: RwLock::new(0),
+                    written_since_last_flush: AtomicU64::new(0),
+                    writes_since_last_flush: AtomicU64::new(0),
                     flusher: RwLock::new(None),
                     #[cfg(feature = "hugepages")]
                     huge_pages: self.huge_pages,
@@ -1969,7 +1917,8 @@ impl MemoryMappedFileBuilder {
                                 return false;
                             };
                             // Only flush if there are pending writes.
-                            let pending = *inner.written_since_last_flush.read() > 0;
+                            let pending =
+                                inner.written_since_last_flush.load(Ordering::Acquire) > 0;
                             if !pending {
                                 return false;
                             }
@@ -2011,7 +1960,8 @@ impl MemoryMappedFileBuilder {
                     cached_len: AtomicU64::new(len),
                     map: MapVariant::Ro(mmap),
                     flush_policy: FlushPolicy::Never,
-                    written_since_last_flush: RwLock::new(0),
+                    written_since_last_flush: AtomicU64::new(0),
+                    writes_since_last_flush: AtomicU64::new(0),
                     flusher: RwLock::new(None),
                     #[cfg(feature = "hugepages")]
                     huge_pages: false,
@@ -2044,7 +1994,8 @@ impl MemoryMappedFileBuilder {
                     cached_len: AtomicU64::new(len),
                     map: MapVariant::Cow(mmap),
                     flush_policy: FlushPolicy::Never,
-                    written_since_last_flush: RwLock::new(0),
+                    written_since_last_flush: AtomicU64::new(0),
+                    writes_since_last_flush: AtomicU64::new(0),
                     flusher: RwLock::new(None),
                     #[cfg(feature = "hugepages")]
                     huge_pages: false,
@@ -2085,7 +2036,8 @@ impl MemoryMappedFileBuilder {
                     cached_len: AtomicU64::new(len),
                     map: MapVariant::Ro(mmap),
                     flush_policy: FlushPolicy::Never,
-                    written_since_last_flush: RwLock::new(0),
+                    written_since_last_flush: AtomicU64::new(0),
+                    writes_since_last_flush: AtomicU64::new(0),
                     flusher: RwLock::new(None),
                     #[cfg(feature = "hugepages")]
                     huge_pages: false,
@@ -2114,7 +2066,8 @@ impl MemoryMappedFileBuilder {
                     cached_len: AtomicU64::new(len),
                     map: MapVariant::Rw(RwLock::new(mmap)),
                     flush_policy: self.flush_policy,
-                    written_since_last_flush: RwLock::new(0),
+                    written_since_last_flush: AtomicU64::new(0),
+                    writes_since_last_flush: AtomicU64::new(0),
                     flusher: RwLock::new(None),
                     #[cfg(feature = "hugepages")]
                     huge_pages: self.huge_pages,
@@ -2144,7 +2097,8 @@ impl MemoryMappedFileBuilder {
                     cached_len: AtomicU64::new(len),
                     map: MapVariant::Cow(mmap),
                     flush_policy: FlushPolicy::Never,
-                    written_since_last_flush: RwLock::new(0),
+                    written_since_last_flush: AtomicU64::new(0),
+                    writes_since_last_flush: AtomicU64::new(0),
                     flusher: RwLock::new(None),
                     #[cfg(feature = "hugepages")]
                     huge_pages: false,
@@ -2201,19 +2155,30 @@ use parking_lot::{RwLockReadGuard, RwLockWriteGuard};
 
 /// Wrapper for a mutable slice that holds a write lock guard,
 /// ensuring exclusive access for the lifetime of the slice.
+///
+/// For file-backed mappings, dropping it adds its length to
+/// [`MemoryMappedFile::pending_bytes`]; the bytes are assumed written.
 pub struct MappedSliceMut<'a> {
     guard: RwLockWriteGuard<'a, MmapMut>,
     range: std::ops::Range<usize>,
+    /// Pending-bytes counter of the owning `MemoryMappedFile`; `None`
+    /// for `AnonymousMmap`, which has nothing to flush.
+    pending: Option<&'a AtomicU64>,
 }
 
 impl<'a> MappedSliceMut<'a> {
     /// Construct a `MappedSliceMut` that holds a write guard for its
-    /// lifetime. Used by RW file-backed paths and by `AnonymousMmap`.
+    /// lifetime. Used by `AnonymousMmap`, which has no flush
+    /// accounting.
     pub(crate) fn guarded(
         guard: RwLockWriteGuard<'a, MmapMut>,
         range: std::ops::Range<usize>,
     ) -> Self {
-        Self { guard, range }
+        Self {
+            guard,
+            range,
+            pending: None,
+        }
     }
 
     /// Get the mutable slice.
@@ -2238,6 +2203,16 @@ impl<'a> MappedSliceMut<'a> {
     #[must_use]
     pub fn is_empty(&self) -> bool {
         self.range.start == self.range.end
+    }
+}
+
+impl Drop for MappedSliceMut<'_> {
+    fn drop(&mut self) {
+        // Runs before the write guard is released, so a flush cannot
+        // observe the lock free while this write is still uncounted.
+        if let Some(pending) = self.pending {
+            pending.fetch_add(self.len() as u64, Ordering::AcqRel);
+        }
     }
 }
 
