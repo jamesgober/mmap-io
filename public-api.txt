@@ -1,5 +1,3 @@
- Documenting mmap-io v1.0.0 (C:\Dev\libraries\Rust\mmap-io)
-    Finished `dev` profile [unoptimized + debuginfo] target(s) in 0.50s
 pub mod mmap_io
 pub mod mmap_io::advise
 pub enum mmap_io::advise::MmapAdvice
@@ -52,6 +50,8 @@ impl<T: core::marker::Sync> core::marker::Sync for mmap_io::atomic::AtomicSliceV
 impl<T> core::ops::deref::Deref for mmap_io::atomic::AtomicSliceView<'_, T>
 pub type mmap_io::atomic::AtomicSliceView<'_, T>::Target = [T]
 pub fn mmap_io::atomic::AtomicSliceView<'_, T>::deref(&self) -> &[T]
+impl<T> core::ops::drop::Drop for mmap_io::atomic::AtomicSliceView<'_, T>
+pub fn mmap_io::atomic::AtomicSliceView<'_, T>::drop(&mut self)
 impl<'a, T> core::marker::Freeze for mmap_io::atomic::AtomicSliceView<'a, T>
 impl<'a, T> core::marker::Unpin for mmap_io::atomic::AtomicSliceView<'a, T>
 impl<'a, T> core::marker::UnsafeUnpin for mmap_io::atomic::AtomicSliceView<'a, T>
@@ -63,6 +63,8 @@ impl<T: core::marker::Sync> core::marker::Sync for mmap_io::atomic::AtomicView<'
 impl<T> core::ops::deref::Deref for mmap_io::atomic::AtomicView<'_, T>
 pub type mmap_io::atomic::AtomicView<'_, T>::Target = T
 pub fn mmap_io::atomic::AtomicView<'_, T>::deref(&self) -> &T
+impl<T> core::ops::drop::Drop for mmap_io::atomic::AtomicView<'_, T>
+pub fn mmap_io::atomic::AtomicView<'_, T>::drop(&mut self)
 impl<'a, T> core::marker::Freeze for mmap_io::atomic::AtomicView<'a, T>
 impl<'a, T> core::marker::Unpin for mmap_io::atomic::AtomicView<'a, T>
 impl<'a, T> core::marker::UnsafeUnpin for mmap_io::atomic::AtomicView<'a, T>
@@ -92,7 +94,7 @@ pub fn mmap_io::errors::MmapIoError::source(&self) -> core::option::Option<&(dyn
 impl core::fmt::Debug for mmap_io::errors::MmapIoError
 pub fn mmap_io::errors::MmapIoError::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
 impl core::fmt::Display for mmap_io::errors::MmapIoError
-pub fn mmap_io::errors::MmapIoError::fmt(&self, __formatter: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+pub fn mmap_io::errors::MmapIoError::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
 impl core::marker::Freeze for mmap_io::errors::MmapIoError
 impl core::marker::Send for mmap_io::errors::MmapIoError
 impl core::marker::Sync for mmap_io::errors::MmapIoError
@@ -134,9 +136,9 @@ impl<'a> core::iter::traits::iterator::Iterator for mmap_io::iterator::ChunkIter
 pub type mmap_io::iterator::ChunkIterator<'a>::Item = mmap_io::mmap::MappedSlice<'a>
 pub fn mmap_io::iterator::ChunkIterator<'a>::next(&mut self) -> core::option::Option<Self::Item>
 pub fn mmap_io::iterator::ChunkIterator<'a>::size_hint(&self) -> (usize, core::option::Option<usize>)
+impl<'a> core::marker::Freeze for mmap_io::iterator::ChunkIterator<'a>
 impl<'a> core::marker::Send for mmap_io::iterator::ChunkIterator<'a>
 impl<'a> core::marker::Sync for mmap_io::iterator::ChunkIterator<'a>
-impl<'a> core::marker::Freeze for mmap_io::iterator::ChunkIterator<'a>
 impl<'a> core::marker::Unpin for mmap_io::iterator::ChunkIterator<'a>
 impl<'a> core::marker::UnsafeUnpin for mmap_io::iterator::ChunkIterator<'a>
 impl<'a> !core::panic::unwind_safe::RefUnwindSafe for mmap_io::iterator::ChunkIterator<'a>
@@ -267,6 +269,8 @@ impl core::convert::From<mmap_io::mmap::MappedSlice<'_>> for bytes::bytes::Bytes
 pub fn bytes::bytes::Bytes::from(slice: mmap_io::mmap::MappedSlice<'_>) -> Self
 impl core::fmt::Debug for mmap_io::mmap::MappedSlice<'_>
 pub fn mmap_io::mmap::MappedSlice<'_>::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::Send for mmap_io::mmap::MappedSlice<'_>
+impl core::marker::Sync for mmap_io::mmap::MappedSlice<'_>
 impl core::ops::deref::Deref for mmap_io::mmap::MappedSlice<'_>
 pub type mmap_io::mmap::MappedSlice<'_>::Target = [u8]
 pub fn mmap_io::mmap::MappedSlice<'_>::deref(&self) -> &[u8]
@@ -275,8 +279,6 @@ pub fn mmap_io::mmap::MappedSlice<'_>::eq(&self, other: &&[u8; N]) -> bool
 impl<const N: usize> core::cmp::PartialEq<[u8; N]> for mmap_io::mmap::MappedSlice<'_>
 pub fn mmap_io::mmap::MappedSlice<'_>::eq(&self, other: &[u8; N]) -> bool
 impl<'a> core::marker::Freeze for mmap_io::mmap::MappedSlice<'a>
-impl<'a> !core::marker::Send for mmap_io::mmap::MappedSlice<'a>
-impl<'a> core::marker::Sync for mmap_io::mmap::MappedSlice<'a>
 impl<'a> core::marker::Unpin for mmap_io::mmap::MappedSlice<'a>
 impl<'a> core::marker::UnsafeUnpin for mmap_io::mmap::MappedSlice<'a>
 impl<'a> !core::panic::unwind_safe::RefUnwindSafe for mmap_io::mmap::MappedSlice<'a>
@@ -291,8 +293,10 @@ pub type mmap_io::mmap::MappedSliceMut<'_>::Target = [u8]
 pub fn mmap_io::mmap::MappedSliceMut<'_>::deref(&self) -> &[u8]
 impl core::ops::deref::DerefMut for mmap_io::mmap::MappedSliceMut<'_>
 pub fn mmap_io::mmap::MappedSliceMut<'_>::deref_mut(&mut self) -> &mut [u8]
+impl core::ops::drop::Drop for mmap_io::mmap::MappedSliceMut<'_>
+pub fn mmap_io::mmap::MappedSliceMut<'_>::drop(&mut self)
 impl<'a> core::marker::Freeze for mmap_io::mmap::MappedSliceMut<'a>
-impl<'a> !core::marker::Send for mmap_io::mmap::MappedSliceMut<'a>
+impl<'a> core::marker::Send for mmap_io::mmap::MappedSliceMut<'a>
 impl<'a> core::marker::Sync for mmap_io::mmap::MappedSliceMut<'a>
 impl<'a> core::marker::Unpin for mmap_io::mmap::MappedSliceMut<'a>
 impl<'a> core::marker::UnsafeUnpin for mmap_io::mmap::MappedSliceMut<'a>
@@ -565,7 +569,7 @@ pub fn mmap_io::errors::MmapIoError::source(&self) -> core::option::Option<&(dyn
 impl core::fmt::Debug for mmap_io::errors::MmapIoError
 pub fn mmap_io::errors::MmapIoError::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
 impl core::fmt::Display for mmap_io::errors::MmapIoError
-pub fn mmap_io::errors::MmapIoError::fmt(&self, __formatter: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+pub fn mmap_io::errors::MmapIoError::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
 impl core::marker::Freeze for mmap_io::errors::MmapIoError
 impl core::marker::Send for mmap_io::errors::MmapIoError
 impl core::marker::Sync for mmap_io::errors::MmapIoError
@@ -656,9 +660,9 @@ impl<'a> core::iter::traits::iterator::Iterator for mmap_io::iterator::ChunkIter
 pub type mmap_io::iterator::ChunkIterator<'a>::Item = mmap_io::mmap::MappedSlice<'a>
 pub fn mmap_io::iterator::ChunkIterator<'a>::next(&mut self) -> core::option::Option<Self::Item>
 pub fn mmap_io::iterator::ChunkIterator<'a>::size_hint(&self) -> (usize, core::option::Option<usize>)
+impl<'a> core::marker::Freeze for mmap_io::iterator::ChunkIterator<'a>
 impl<'a> core::marker::Send for mmap_io::iterator::ChunkIterator<'a>
 impl<'a> core::marker::Sync for mmap_io::iterator::ChunkIterator<'a>
-impl<'a> core::marker::Freeze for mmap_io::iterator::ChunkIterator<'a>
 impl<'a> core::marker::Unpin for mmap_io::iterator::ChunkIterator<'a>
 impl<'a> core::marker::UnsafeUnpin for mmap_io::iterator::ChunkIterator<'a>
 impl<'a> !core::panic::unwind_safe::RefUnwindSafe for mmap_io::iterator::ChunkIterator<'a>
@@ -683,6 +687,8 @@ impl core::convert::From<mmap_io::mmap::MappedSlice<'_>> for bytes::bytes::Bytes
 pub fn bytes::bytes::Bytes::from(slice: mmap_io::mmap::MappedSlice<'_>) -> Self
 impl core::fmt::Debug for mmap_io::mmap::MappedSlice<'_>
 pub fn mmap_io::mmap::MappedSlice<'_>::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::Send for mmap_io::mmap::MappedSlice<'_>
+impl core::marker::Sync for mmap_io::mmap::MappedSlice<'_>
 impl core::ops::deref::Deref for mmap_io::mmap::MappedSlice<'_>
 pub type mmap_io::mmap::MappedSlice<'_>::Target = [u8]
 pub fn mmap_io::mmap::MappedSlice<'_>::deref(&self) -> &[u8]
@@ -691,8 +697,6 @@ pub fn mmap_io::mmap::MappedSlice<'_>::eq(&self, other: &&[u8; N]) -> bool
 impl<const N: usize> core::cmp::PartialEq<[u8; N]> for mmap_io::mmap::MappedSlice<'_>
 pub fn mmap_io::mmap::MappedSlice<'_>::eq(&self, other: &[u8; N]) -> bool
 impl<'a> core::marker::Freeze for mmap_io::mmap::MappedSlice<'a>
-impl<'a> !core::marker::Send for mmap_io::mmap::MappedSlice<'a>
-impl<'a> core::marker::Sync for mmap_io::mmap::MappedSlice<'a>
 impl<'a> core::marker::Unpin for mmap_io::mmap::MappedSlice<'a>
 impl<'a> core::marker::UnsafeUnpin for mmap_io::mmap::MappedSlice<'a>
 impl<'a> !core::panic::unwind_safe::RefUnwindSafe for mmap_io::mmap::MappedSlice<'a>
@@ -707,8 +711,10 @@ pub type mmap_io::mmap::MappedSliceMut<'_>::Target = [u8]
 pub fn mmap_io::mmap::MappedSliceMut<'_>::deref(&self) -> &[u8]
 impl core::ops::deref::DerefMut for mmap_io::mmap::MappedSliceMut<'_>
 pub fn mmap_io::mmap::MappedSliceMut<'_>::deref_mut(&mut self) -> &mut [u8]
+impl core::ops::drop::Drop for mmap_io::mmap::MappedSliceMut<'_>
+pub fn mmap_io::mmap::MappedSliceMut<'_>::drop(&mut self)
 impl<'a> core::marker::Freeze for mmap_io::mmap::MappedSliceMut<'a>
-impl<'a> !core::marker::Send for mmap_io::mmap::MappedSliceMut<'a>
+impl<'a> core::marker::Send for mmap_io::mmap::MappedSliceMut<'a>
 impl<'a> core::marker::Sync for mmap_io::mmap::MappedSliceMut<'a>
 impl<'a> core::marker::Unpin for mmap_io::mmap::MappedSliceMut<'a>
 impl<'a> core::marker::UnsafeUnpin for mmap_io::mmap::MappedSliceMut<'a>

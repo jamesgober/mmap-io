@@ -85,7 +85,7 @@ impl std::error::Error for MmapIoError {
 }
 
 impl From<io::Error> for MmapIoError {
-    fn from(e: io::Error) -> Self {
-        Self::Io(e)
+    fn from(source: io::Error) -> Self {
+        Self::Io(source)
     }
 }

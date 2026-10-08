@@ -10,6 +10,10 @@ on:
 # formats. Both are pinned to a combination known to work together.
 # Bump them together, and regenerate public-api.txt with the same pair:
 #   cargo +$NIGHTLY public-api --simplified --all-features > public-api.txt
+#
+# The snapshot contains platform-specific items (AsHandle/AsRawHandle
+# on Windows, AsFd/AsRawFd on Unix). It is generated on Windows, so the
+# check runs on windows-latest.
 env:
   NIGHTLY: nightly-2026-05-11
   CARGO_PUBLIC_API_VERSION: 0.51.0
@@ -22,8 +26,11 @@ concurrency:
 jobs:
   public-api:
     name: cargo-public-api diff
-    runs-on: ubuntu-latest
-    timeout-minutes: 15
+    runs-on: windows-latest
+    timeout-minutes: 20
+    defaults:
+      run:
+        shell: bash
     steps:
       - uses: actions/checkout@v5
 
@@ -37,7 +44,7 @@ jobs:
         id: cache-public-api
         uses: actions/cache@v6
         with:
-          path: ~/.cargo/bin/cargo-public-api
+          path: ~/.cargo/bin/cargo-public-api.exe
           # Keyed by version: bumping the pin installs the new binary.
           key: cargo-public-api-${{ runner.os }}-${{ env.CARGO_PUBLIC_API_VERSION }}
 
@@ -46,6 +53,8 @@ jobs:
         run: cargo install cargo-public-api --locked --version "$CARGO_PUBLIC_API_VERSION"
 
       - name: Regenerate public-api.txt from current branch
+        # stdout only: cargo's progress lines go to stderr and must not
+        # end up in the snapshot.
         run: cargo +"$NIGHTLY" public-api --simplified --all-features > public-api.current.txt
 
       - name: Diff against committed snapshot
@@ -54,7 +63,7 @@ jobs:
         # accidental (back out the change). Either way, the PR author
         # must acknowledge the diff explicitly.
         run: |
-          if ! diff -u public-api.txt public-api.current.txt; then
+          if ! diff -u --strip-trailing-cr public-api.txt public-api.current.txt; then
             echo ""
             echo "::error::Public API changed without updating public-api.txt"
             echo ""
