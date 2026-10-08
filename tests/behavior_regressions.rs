@@ -8,6 +8,7 @@ use mmap_io::flush::FlushPolicy;
 use mmap_io::segment::SegmentMut;
 use mmap_io::{MemoryMappedFile, MmapIoError, MmapMode};
 use std::fs;
+use std::io::{Read, Seek, SeekFrom};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::thread;
@@ -341,6 +342,97 @@ fn advise_accepts_unaligned_offsets() {
         mmap.advise(4097, 5000, advice).expect("unaligned span");
         mmap.advise(64 * 1024 - 1, 1, advice).expect("last byte");
     }
+    drop(mmap);
+    let _ = fs::remove_file(&path);
+}
+
+// ---------------------------------------------------------------------
+// MmapReader / utils
+// ---------------------------------------------------------------------
+
+#[test]
+fn reader_seek_rejects_negative_and_overflowing_positions() {
+    let path = tmp_path("reader_seek");
+    let _ = fs::remove_file(&path);
+    let mmap = MemoryMappedFile::create_rw(&path, 100).expect("create");
+    let mut r = mmap.reader();
+
+    let e = r.seek(SeekFrom::End(i64::MIN)).expect_err("End(i64::MIN)");
+    assert_eq!(e.kind(), std::io::ErrorKind::InvalidInput);
+    assert_eq!(r.position(), 0, "failed seek leaves the cursor unchanged");
+
+    let e = r.seek(SeekFrom::Current(-1)).expect_err("before start");
+    assert_eq!(e.kind(), std::io::ErrorKind::InvalidInput);
+
+    assert_eq!(r.seek(SeekFrom::End(-10)).expect("end-10"), 90);
+    assert_eq!(r.seek(SeekFrom::Current(-90)).expect("to 0"), 0);
+    assert_eq!(r.seek(SeekFrom::End(5)).expect("past end"), 105);
+    let mut buf = [0u8; 4];
+    assert_eq!(r.read(&mut buf).expect("read at EOF"), 0);
+
+    r.set_position(u64::MAX);
+    let e = r.seek(SeekFrom::Current(1)).expect_err("overflow");
+    assert_eq!(e.kind(), std::io::ErrorKind::InvalidInput);
+    assert_eq!(
+        r.seek(SeekFrom::Current(i64::MIN)).expect("back"),
+        u64::MAX - (1u64 << 63)
+    );
+
+    drop(mmap);
+    let _ = fs::remove_file(&path);
+}
+
+#[test]
+fn align_up_saturates_instead_of_overflowing() {
+    use mmap_io::utils::align_up;
+    assert_eq!(align_up(u64::MAX, 4096), u64::MAX);
+    assert_eq!(align_up(u64::MAX - 1, 3), u64::MAX);
+    assert_eq!(align_up(u64::MAX - 4095, 4096), u64::MAX - 4095);
+    assert_eq!(align_up(1, 4096), 4096);
+}
+
+// ---------------------------------------------------------------------
+// Zero-length range rule
+// ---------------------------------------------------------------------
+
+#[test]
+fn zero_length_requests_are_accepted_at_any_offset() {
+    let path = tmp_path("zero_len_rule");
+    let _ = fs::remove_file(&path);
+    let size = 4096u64;
+    let mmap = MemoryMappedFile::create_rw(&path, size).expect("create");
+    for off in [0, size, size + 1, u64::MAX] {
+        assert!(mmap.as_slice(off, 0).expect("as_slice").is_empty());
+        assert!(mmap.as_slice_mut(off, 0).expect("as_slice_mut").is_empty());
+        mmap.read_into(off, &mut []).expect("read_into");
+        mmap.update_region(off, &[]).expect("update_region");
+        mmap.flush_range(off, 0).expect("flush_range");
+        mmap.touch_pages_range(off, 0).expect("touch_pages_range");
+        mmap.prefetch_range(off, 0).expect("prefetch_range");
+        let seg = SegmentMut::new(Arc::new(mmap.clone()), off, 0).expect("segment");
+        assert!(seg.is_valid());
+    }
+    drop(mmap);
+
+    let ro = MemoryMappedFile::open_ro(&path).expect("open_ro");
+    assert!(ro.as_slice_bytes(size + 10, 0).expect("bytes").is_empty());
+    drop(ro);
+    let _ = fs::remove_file(&path);
+}
+
+// ---------------------------------------------------------------------
+// Error Display
+// ---------------------------------------------------------------------
+
+#[test]
+fn reader_reads_whole_file() {
+    let path = tmp_path("reader_whole");
+    let _ = fs::remove_file(&path);
+    let mmap = MemoryMappedFile::create_rw(&path, 10).expect("create");
+    mmap.update_region(0, b"0123456789").expect("write");
+    let mut out = Vec::new();
+    mmap.reader().read_to_end(&mut out).expect("read_to_end");
+    assert_eq!(out, b"0123456789");
     drop(mmap);
     let _ = fs::remove_file(&path);
 }

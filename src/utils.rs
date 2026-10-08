@@ -96,6 +96,10 @@ fn unix_page_size() -> usize {
 /// Returns the original value unchanged when `alignment == 0` (a
 /// permissive convention rather than a panic; callers passing 0 are
 /// presumed to mean "no alignment requested").
+///
+/// Saturates: if the next multiple of `alignment` does not fit in a
+/// `u64`, returns `u64::MAX` (which is then generally not a multiple
+/// of `alignment`) instead of overflowing.
 #[inline]
 #[must_use]
 pub fn align_up(value: u64, alignment: u64) -> u64 {
@@ -103,12 +107,13 @@ pub fn align_up(value: u64, alignment: u64) -> u64 {
         return value;
     }
     // Fast path for power-of-2 alignments (common case for page sizes)
-    if alignment.is_power_of_two() {
+    let aligned = if alignment.is_power_of_two() {
         let mask = alignment - 1;
-        (value + mask) & !mask
+        value.checked_add(mask).map(|v| v & !mask)
     } else {
-        value.div_ceil(alignment) * alignment
-    }
+        value.div_ceil(alignment).checked_mul(alignment)
+    };
+    aligned.unwrap_or(u64::MAX)
 }
 
 /// Ensure the requested [offset, offset+len) range is within [0, total).

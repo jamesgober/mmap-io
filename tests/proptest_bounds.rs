@@ -73,12 +73,14 @@ fn ro_mmap(size: u64, tag: &str, seed: u64) -> (MemoryMappedFile, PathBuf) {
 }
 
 /// Predicate: would the request `(offset, len)` against a file of
-/// `total` bytes be in-bounds?
+/// `total` bytes be accepted? Zero-length requests are accepted at any
+/// offset (crate-level range rule).
 fn is_in_bounds(offset: u64, len: u64, total: u64) -> bool {
-    offset
-        .checked_add(len)
-        .map(|end| end <= total)
-        .unwrap_or(false)
+    len == 0
+        || offset
+            .checked_add(len)
+            .map(|end| end <= total)
+            .unwrap_or(false)
 }
 
 proptest! {

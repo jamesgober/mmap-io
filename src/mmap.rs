@@ -366,11 +366,17 @@ impl MemoryMappedFile {
     /// - **Memory Usage**: No additional allocation (zero-copy)
     /// - **Cache Behavior**: May trigger page faults on first access
     ///
+    /// A zero-length request returns an empty slice at any offset
+    /// without taking the lock.
+    ///
     /// # Errors
     ///
     /// Returns [`MmapIoError::OutOfBounds`] if `offset + len` exceeds
     /// the file's current length.
     pub fn as_slice(&self, offset: u64, len: u64) -> Result<MappedSlice<'_>> {
+        if len == 0 {
+            return Ok(MappedSlice::owned(&[]));
+        }
         let map = self.map_read();
         let (start, end) = slice_range(offset, len, map.len() as u64)?;
         Ok(map.into_slice(start..end))
@@ -404,6 +410,7 @@ impl MemoryMappedFile {
     /// for RW).
     pub fn as_slice_bytes(&self, offset: u64, len: u64) -> Result<&[u8]> {
         match &self.inner.map {
+            MapVariant::Ro(_) | MapVariant::Cow(_) if len == 0 => Ok(&[]),
             MapVariant::Ro(m) | MapVariant::Cow(m) => {
                 let (start, end) = slice_range(offset, len, m.len() as u64)?;
                 Ok(&m[start..end])
@@ -457,6 +464,9 @@ impl MemoryMappedFile {
     /// [`MappedSlice`], an iterator item, or an atomic view of this
     /// mapping deadlocks.
     ///
+    /// A zero-length request returns an empty slice at any offset (it
+    /// still takes the write lock).
+    ///
     /// # Errors
     ///
     /// Returns `MmapIoError::InvalidMode` if not in `ReadWrite` mode.
@@ -468,7 +478,11 @@ impl MemoryMappedFile {
             )),
             MapVariant::Rw(lock) => {
                 let guard = lock.write();
-                let (start, end) = slice_range(offset, len, guard.len() as u64)?;
+                let (start, end) = if len == 0 {
+                    (0, 0)
+                } else {
+                    slice_range(offset, len, guard.len() as u64)?
+                };
                 Ok(MappedSliceMut {
                     guard,
                     range: start..end,
@@ -483,7 +497,8 @@ impl MemoryMappedFile {
     }
 
     /// Copy the provided bytes into the mapped file at the given offset.
-    /// Bounds-checked, zero-copy write.
+    /// Bounds-checked, zero-copy write. Empty `data` is accepted at any
+    /// offset (and in any mode) and does nothing.
     ///
     /// Takes the mapping's write lock for the duration of the copy, so
     /// it waits for every live [`MappedSlice`], iterator item, and
@@ -1582,7 +1597,8 @@ impl MemoryMappedFile {
     }
 
     /// Read bytes from the mapping into the provided buffer starting at `offset`.
-    /// Length is `buf.len()`; performs bounds checks.
+    /// Length is `buf.len()`; performs bounds checks. An empty `buf`
+    /// is accepted at any offset.
     ///
     /// # Performance
     ///
@@ -1594,6 +1610,9 @@ impl MemoryMappedFile {
     ///
     /// Returns `MmapIoError::OutOfBounds` if range exceeds file bounds.
     pub fn read_into(&self, offset: u64, buf: &mut [u8]) -> Result<()> {
+        if buf.is_empty() {
+            return Ok(());
+        }
         let map = self.map_read();
         let (start, end) = slice_range(offset, buf.len() as u64, map.len() as u64)?;
         buf.copy_from_slice(&map[start..end]);
@@ -2339,29 +2358,36 @@ impl<'a> std::io::Read for MmapReader<'a> {
     }
 }
 
+/// Same contract as `std::io::Cursor`: seeking past the end is allowed
+/// (the next `read` returns 0), seeking to a negative position or past
+/// `u64::MAX` returns `ErrorKind::InvalidInput` and leaves the position
+/// unchanged.
 impl<'a> std::io::Seek for MmapReader<'a> {
     fn seek(&mut self, pos: std::io::SeekFrom) -> std::io::Result<u64> {
         use std::io::SeekFrom;
-        let total = self.mmap.len();
-        let new_pos = match pos {
-            SeekFrom::Start(n) => n,
-            SeekFrom::End(delta) => {
-                if delta >= 0 {
-                    total.saturating_add(delta as u64)
-                } else {
-                    total.saturating_sub((-delta) as u64)
-                }
+        let (base, delta) = match pos {
+            SeekFrom::Start(n) => {
+                self.pos = n;
+                return Ok(n);
             }
-            SeekFrom::Current(delta) => {
-                if delta >= 0 {
-                    self.pos.saturating_add(delta as u64)
-                } else {
-                    self.pos.saturating_sub((-delta) as u64)
-                }
-            }
+            SeekFrom::End(delta) => (self.mmap.len(), delta),
+            SeekFrom::Current(delta) => (self.pos, delta),
         };
-        self.pos = new_pos;
-        Ok(self.pos)
+        let new_pos = if delta >= 0 {
+            base.checked_add(delta.unsigned_abs())
+        } else {
+            base.checked_sub(delta.unsigned_abs())
+        };
+        match new_pos {
+            Some(p) => {
+                self.pos = p;
+                Ok(p)
+            }
+            None => Err(std::io::Error::new(
+                std::io::ErrorKind::InvalidInput,
+                "invalid seek to a negative or overflowing position",
+            )),
+        }
     }
 }
 

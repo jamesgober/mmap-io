@@ -57,8 +57,7 @@ impl Segment {
     /// Returns `MmapIoError::OutOfBounds` if the segment exceeds the
     /// parent's current length at construction time.
     pub fn new(parent: Arc<MemoryMappedFile>, offset: u64, len: u64) -> Result<Self> {
-        let total = parent.current_len()?;
-        let _ = slice_range(offset, len, total)?;
+        validate_segment(&parent, offset, len)?;
         Ok(Self {
             parent,
             offset,
@@ -117,11 +116,18 @@ impl Segment {
     /// the segment after a known resize).
     #[must_use]
     pub fn is_valid(&self) -> bool {
-        match self.parent.current_len() {
-            Ok(total) => crate::utils::ensure_in_bounds(self.offset, self.len, total).is_ok(),
-            Err(_) => false,
-        }
+        validate_segment(&self.parent, self.offset, self.len).is_ok()
     }
+}
+
+/// Check a segment range against the parent's current length. A
+/// zero-length segment is valid at any offset, matching the crate's
+/// range rule.
+fn validate_segment(parent: &MemoryMappedFile, offset: u64, len: u64) -> Result<()> {
+    if len == 0 {
+        return Ok(());
+    }
+    slice_range(offset, len, parent.len()).map(|_| ())
 }
 
 /// Mutable view into a region of a memory-mapped file.
@@ -170,8 +176,7 @@ impl SegmentMut {
     /// Returns `MmapIoError::OutOfBounds` if the segment exceeds the
     /// parent's current length at construction time.
     pub fn new(parent: Arc<MemoryMappedFile>, offset: u64, len: u64) -> Result<Self> {
-        let total = parent.current_len()?;
-        let _ = slice_range(offset, len, total)?;
+        validate_segment(&parent, offset, len)?;
         Ok(Self {
             parent,
             offset,
@@ -251,9 +256,6 @@ impl SegmentMut {
     /// current bounds. See [`Segment::is_valid`].
     #[must_use]
     pub fn is_valid(&self) -> bool {
-        match self.parent.current_len() {
-            Ok(total) => crate::utils::ensure_in_bounds(self.offset, self.len, total).is_ok(),
-            Err(_) => false,
-        }
+        validate_segment(&self.parent, self.offset, self.len).is_ok()
     }
 }

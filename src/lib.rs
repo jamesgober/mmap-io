@@ -37,6 +37,25 @@
 //! - [`utils`]: Alignment and bounds-checking helpers.
 //! - [`mod@flush`]: [`flush::FlushPolicy`] and time-based flushing.
 //!
+//! ## Range validation
+//!
+//! Every method that takes an `(offset, len)` pair (or an offset plus
+//! a buffer) follows one rule:
+//!
+//! - A **zero-length** request is accepted at any offset, including
+//!   past the end of the mapping, and does nothing (slice methods
+//!   return an empty slice). No syscall is made.
+//! - Any other request must satisfy `offset + len <= len()` (checked
+//!   without overflow) or it fails with
+//!   [`MmapIoError::OutOfBounds`]. Nothing is ever clamped.
+//! - On `ReadWrite` mappings the check runs against the length of the
+//!   mapping the method holds a lock on, so a concurrent
+//!   [`MemoryMappedFile::resize`] produces `OutOfBounds`, never an
+//!   out-of-range access.
+//!
+//! Atomic views are not range requests: `atomic_u64_slice(offset, 0)`
+//! still requires `offset <= len()` and a properly aligned offset.
+//!
 //! ## Feature flags
 //!
 //! All optional features are off by default except `advise` and `iterator`.
