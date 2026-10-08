@@ -37,3 +37,9 @@ path = "fuzz_targets/bounds_checks.rs"
 test = false
 doc = false
 bench = false
+[[bin]]
+name = "raw_map"
+path = "fuzz_targets/raw_map.rs"
+test = false
+doc = false
+bench = false

@@ -100,6 +100,12 @@ maintenance = { status = "actively-developed" }
 name = "mmap_bench"
 harness = false
 
+# Temporary: compares mmap_io::raw with memmap2. Delete this entry and
+# benches/raw_vs_memmap2.rs when the memmap2 dependency is removed.
+[[bench]]
+name = "raw_vs_memmap2"
+harness = false
+
 # Focused examples (since 0.9.10). Each example demonstrates one
 # concrete use case in <100 lines. Feature-gated examples use
 # `required-features` so `cargo build --examples` skips them

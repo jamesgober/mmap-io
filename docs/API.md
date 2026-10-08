@@ -92,6 +92,14 @@ Complete reference for public-facing APIs. Each item lists its signature, parame
   - [create_mmap_async](#create_mmap_async)
   - [copy_mmap_async](#copy_mmap_async)
   - [delete_mmap_async](#delete_mmap_async)
+- **[Raw Mapping Tier](#raw-mapping-tier-mmap_ioraw)**
+  - [When to use raw](#when-to-use-raw)
+  - [RawMmapOptions](#rawmmapoptions)
+  - [RawMmap](#rawmmap)
+  - [RawMmapMut](#rawmmapmut)
+  - [offset_granularity](#offset_granularity)
+  - [Behavior and platform notes](#behavior-and-platform-notes)
+  - [Performance](#performance)
 - **[Utility Functions](#utility-functions)**
   - [page_size](#page_size)
   - [align_up](#align_up)
@@ -1871,6 +1879,216 @@ pub async fn delete_mmap_async<P: AsRef<Path>>(path: P) -> Result<()>
 - `path`: Path to the file to delete
 
 **Returns**: `Result<()>`
+
+<hr>
+<div align="right"><a href="#doc-top">&uarr; TOP</a></div>
+<br>
+
+## Raw Mapping Tier (`mmap_io::raw`)
+
+`mmap_io::raw` is the platform layer underneath `MemoryMappedFile`:
+`mmap` / `msync` / `munmap` on Unix and `CreateFileMappingW` /
+`MapViewOfFile` / `FlushViewOfFile` / `UnmapViewOfFile` on Windows,
+with checked offset and length handling. It returns
+`std::io::Result`, has no locks, no flush policy and no path
+bookkeeping, and depends on nothing but `libc` (Unix). Its shape
+follows `memmap2` (`RawMmap` ~ `Mmap`, `RawMmapMut` ~ `MmapMut`,
+`RawMmapOptions` ~ `MmapOptions`).
+
+### When to use raw
+
+| Need | Use |
+|------|-----|
+| Safe API, bounds-checked regions, concurrent readers and writers, flush policies, resize, atomics, watch | `MemoryMappedFile` |
+| A bare mapping owned by your own type, already synchronised by your code | `raw::RawMmap` / `raw::RawMmapMut` |
+| A mapping without the `MmapIoError` type (for example inside another crate's I/O layer) | `raw` |
+| Anonymous scratch memory without locking | `raw::RawMmapMut::map_anon` (or `AnonymousMmap` for the locked, bounds-checked wrapper) |
+
+The file-backed raw constructors are `unsafe fn`: the caller promises
+that nothing modifies or truncates the mapped range for the lifetime
+of the mapping (see `docs/SAFETY.md`, section 8). `MemoryMappedFile`
+makes the same assumption internally (REPS section 5.1) but keeps the
+public API safe.
+
+### RawMmapOptions
+
+```rust
+#[derive(Debug, Clone, Default)]
+pub struct RawMmapOptions { /* offset: u64, len: Option<usize> */ }
+
+impl RawMmapOptions {
+    pub const fn new() -> Self;
+    pub fn offset(&mut self, offset: u64) -> &mut Self;
+    pub fn len(&mut self, len: usize) -> &mut Self;
+    pub unsafe fn map(&self, file: &File) -> io::Result<RawMmap>;
+    pub unsafe fn map_mut(&self, file: &File) -> io::Result<RawMmapMut>;
+    pub unsafe fn map_copy(&self, file: &File) -> io::Result<RawMmapMut>;
+    pub fn map_anon(&self) -> io::Result<RawMmapMut>;
+}
+```
+
+**Description**: Builds a window `[offset, offset + len)` of a file.
+Without `len` the window runs to the end of the file. Any offset is
+accepted; the OS mapping starts at the offset rounded down to the OS
+granularity and the leading bytes are hidden. `map` is read-only and
+shared, `map_mut` is writable and shared with the file, `map_copy` is
+private copy-on-write (writes never reach the file), `map_anon` is
+zero-filled anonymous memory (offset ignored).
+
+**Errors**: `InvalidInput` when the offset is past the end of the
+file, when `offset + len` overflows or exceeds the file size, or when
+the window does not fit in the address space (`isize::MAX`, relevant
+on 32-bit targets). OS errors (permissions, out of memory) pass
+through. `Unsupported` on targets without a backend.
+
+**Example**:
+```rust
+use mmap_io::raw::RawMmapOptions;
+
+let file = std::fs::File::open("data.bin")?;
+// SAFETY: data.bin is not modified while the windows are mapped.
+let header = unsafe { RawMmapOptions::new().len(64).map(&file)? };
+let body = unsafe { RawMmapOptions::new().offset(64).map(&file)? };
+# Ok::<(), std::io::Error>(())
+```
+
+<br>
+
+### RawMmap
+
+```rust
+pub struct RawMmap { /* private */ }
+
+impl RawMmap {
+    pub unsafe fn map(file: &File) -> io::Result<Self>;
+    pub fn len(&self) -> usize;
+    pub fn is_empty(&self) -> bool;
+    pub fn as_ptr(&self) -> *const u8;
+}
+impl Deref<Target = [u8]> for RawMmap;
+impl AsRef<[u8]> for RawMmap;
+impl Debug for RawMmap; // ptr and len only, never the contents
+// Send + Sync
+```
+
+**Description**: Read-only, shared mapping. Writes made to the file
+through other mappings become visible. The mapping stays valid after
+the `File` is dropped.
+
+<br>
+
+### RawMmapMut
+
+```rust
+pub struct RawMmapMut { /* private */ }
+
+impl RawMmapMut {
+    pub unsafe fn map_mut(file: &File) -> io::Result<Self>;
+    pub fn map_anon(len: usize) -> io::Result<Self>;
+    pub fn len(&self) -> usize;
+    pub fn is_empty(&self) -> bool;
+    pub fn as_ptr(&self) -> *const u8;
+    pub fn as_mut_ptr(&mut self) -> *mut u8;
+    pub fn flush(&self) -> io::Result<()>;
+    pub fn flush_async(&self) -> io::Result<()>;
+    pub fn flush_range(&self, offset: usize, len: usize) -> io::Result<()>;
+    pub fn flush_async_range(&self, offset: usize, len: usize) -> io::Result<()>;
+}
+impl Deref<Target = [u8]> + DerefMut for RawMmapMut;
+impl AsRef<[u8]> + AsMut<[u8]> for RawMmapMut;
+impl Debug for RawMmapMut; // ptr and len only
+// Send + Sync (mutation needs &mut self)
+```
+
+**Description**: Writable mapping: shared with the file
+(`map_mut`), private copy-on-write (`RawMmapOptions::map_copy`) or
+anonymous (`map_anon`). `flush` is durable; `flush_async` only starts
+write-back. `flush_range` validates `offset <= len` and
+`len <= self.len() - offset` before any pointer arithmetic and widens
+the range to page boundaries. On copy-on-write and anonymous mappings
+every flush is a validated no-op that returns `Ok`.
+
+**Example**:
+```rust
+use mmap_io::raw::RawMmapMut;
+
+let file = std::fs::OpenOptions::new().read(true).write(true).open("data.bin")?;
+// SAFETY: no other writer touches data.bin while it is mapped.
+let mut map = unsafe { RawMmapMut::map_mut(&file)? };
+map[..4].copy_from_slice(b"MMIO");
+map.flush_range(0, 4)?;
+# Ok::<(), std::io::Error>(())
+```
+
+<br>
+
+### offset_granularity
+
+```rust
+pub fn offset_granularity() -> io::Result<usize>
+```
+
+**Description**: The granularity at which the OS places a mapping's
+file offset: the page size on Unix, the allocation granularity on
+Windows (typically 64 KiB). The raw constructors align offsets
+internally; use this value to choose offsets that waste no address
+space.
+
+<br>
+
+### Behavior and platform notes
+
+| Topic | Unix | Windows |
+|-------|------|---------|
+| Read-only map | `PROT_READ`, `MAP_SHARED` | `PAGE_READONLY`, `FILE_MAP_READ` |
+| Read-write map | `PROT_READ \| PROT_WRITE`, `MAP_SHARED` | `PAGE_READWRITE`, `FILE_MAP_READ \| FILE_MAP_WRITE` |
+| Copy-on-write | `MAP_PRIVATE` | `PAGE_WRITECOPY`, `FILE_MAP_COPY` |
+| Anonymous | `MAP_PRIVATE \| MAP_ANON` | paging-file section |
+| Offset alignment | page size | allocation granularity |
+| Offsets above 2 GiB on 32-bit | `mmap64` (glibc, Android) or 64-bit `off_t` | high / low DWORD split |
+| `flush` | `msync(MS_SYNC)` | `FlushViewOfFile` + `FlushFileBuffers` |
+| `flush_async` | `msync(MS_ASYNC)` | `FlushViewOfFile` |
+| Zero-length window | no syscall, empty slice | no syscall, empty slice |
+| Handles held per mapping | none | none (read-only, COW, anonymous); one duplicated file handle (read-write) |
+
+- **Past end of file.** A window that extends past the end of the file
+  is an error, even with an explicit `len`. `memmap2` accepts an
+  explicit length past the end on Unix, which produces a mapping that
+  raises `SIGBUS` on access.
+- **Durability.** `FlushViewOfFile` alone does not wait for the disk;
+  `flush` therefore also calls `FlushFileBuffers`. On macOS, `msync`
+  and `fsync` do not force the drive's write cache; use
+  `F_FULLFSYNC` on the file when that matters.
+- **Empty windows.** An empty file, `len(0)`, or an offset equal to the
+  file length produce an empty mapping without any syscall. Flushing
+  it with `(0, 0)` succeeds; any other range is an error.
+- **Platforms.** Linux, Android, macOS, iOS, FreeBSD and the other BSDs
+  use the Unix backend; Windows uses the Windows backend; any other
+  target returns `Unsupported` from every constructor.
+
+### Performance
+
+Access through `Deref` is a pointer and a length: no allocation, no
+lock, no syscall. Creating and releasing a mapping costs the same or
+less than `memmap2` (criterion medians, `benches/raw_vs_memmap2.rs`):
+
+| Operation | Windows 11 `memmap2` | Windows 11 `raw` | Linux (WSL2) `memmap2` | Linux (WSL2) `raw` |
+|-----------|---------------------:|-----------------:|-----------------------:|-------------------:|
+| map + drop, 1 MiB read-only | 32.1 us | 16.4 us | 1.65 us | 1.63 us |
+| map + drop, 1 MiB read-write | 18.0 us | 17.0 us | 1.66 us | 1.59 us |
+| map + drop, 256 KiB window at offset 4097 | 21.9 us | 15.8 us | 3.80 us | 2.04 us |
+| map + drop, 1 MiB anonymous | 19.3 us | 12.1 us | 1.40 us | 1.24 us |
+| drop only, 1 MiB read-write | 2.68 us | 1.55 us | 1.28 us | 1.11 us |
+| dirty 1 page + durable flush, 4 KiB | 478 us | 481 us | 672 us | 661 us |
+| dirty 256 pages + durable flush, 1 MiB | 1.10 ms | 1.12 ms | 1.52 ms | 1.39 ms |
+
+On Windows the read-only and anonymous paths are cheaper because
+`raw` creates the section with the final protection directly
+(`memmap2` probes write and execute access with two extra
+`CreateFileMappingW` calls and a `VirtualProtect`), does not duplicate
+the file handle for mappings that never flush, and caches the system
+granularity instead of calling `GetSystemInfo` on every drop. Flush
+cost is dominated by the disk on both platforms and is unchanged.
 
 <hr>
 <div align="right"><a href="#doc-top">&uarr; TOP</a></div>

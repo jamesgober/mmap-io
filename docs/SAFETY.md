@@ -12,6 +12,9 @@ Everything in the public API is safe to call except four `unsafe fn`
 escape hatches, which carry their own contracts:
 `MemoryMappedFile::as_ptr`, `MemoryMappedFile::as_mut_ptr`,
 `AnonymousMmap::as_ptr`, and `AnonymousMmap::as_mut_ptr`.
+The `mmap_io::raw` tier adds `unsafe fn` file-backed constructors
+(`RawMmap::map`, `RawMmapMut::map_mut`, `RawMmapOptions::map`,
+`map_mut`, `map_copy`) for the reason given in category 8 below.
 
 ## Locking model
 
@@ -172,6 +175,81 @@ live `&` / `&mut` the crate handed out. `MemoryMappedFile::as_mut_ptr`
 adds the whole mapping length to `pending_bytes()`, since writes
 through the pointer are invisible to the crate.
 
+### 8. Raw mapping layer (`src/raw/`)
+
+`mmap_io::raw` is the platform layer (`RawMmap`, `RawMmapMut`,
+`RawMmapOptions`) intended to replace the `memmap2` dependency. It is
+split so that the arithmetic and the syscalls can be reviewed apart:
+
+- `range.rs`: pure, `unsafe`-free offset and length arithmetic. Runs
+  under Miri.
+- `unix.rs`: `mmap` / `msync` / `munmap` via `libc`.
+- `windows.rs`: `CreateFileMappingW` / `MapViewOfFile` /
+  `FlushViewOfFile` / `UnmapViewOfFile` / `GetSystemInfo`, declared by
+  hand with `extern "system"` (no `windows-sys`).
+- `stub.rs`: every constructor returns `Unsupported`.
+- `mod.rs`: the owning `Mapping` type, `Deref`, `Drop`, `Send`/`Sync`.
+
+**Why the file-backed constructors are `unsafe fn`.** A mapping hands
+out `&[u8]` (and `&mut [u8]` for `RawMmapMut`), and Rust assumes the
+bytes behind a shared reference do not change while it is alive. The
+OS cannot enforce that for a file: another process, another mapping
+in this process, or a plain `write` can change the bytes, and a
+truncation makes later accesses fault (`SIGBUS` on Unix,
+`EXCEPTION_IN_PAGE_ERROR` on Windows). Only the caller can rule this
+out, so the contract is pushed to the caller exactly as `memmap2`
+does. `map_anon` is safe: anonymous memory has no outside writer.
+
+**Invariants of `Mapping`** (established at construction, relied on by
+`Deref`, `flush` and `Drop`):
+
+1. `len == 0` if and only if no OS mapping exists. Zero-length windows
+   never call `mmap` (POSIX: a zero length fails with `EINVAL`) or
+   `CreateFileMappingW` (fails on empty files). The pointer is then a
+   non-null, granularity-aligned address used only for zero-length
+   slices and never unmapped.
+2. Otherwise the OS mapping starts at `ptr - delta`, is `delta + len`
+   bytes long, with `delta` below the OS offset granularity (page size
+   on Unix, allocation granularity on Windows) and
+   `delta + len <= isize::MAX`. The pair is computed by
+   `range::layout` with checked arithmetic.
+3. The window `[offset, offset + len)` lies inside the file at mapping
+   time (`range::resolve_len`): mapping past end of file is rejected
+   up front instead of producing a mapping that faults on access.
+4. The mapping is owned exclusively by one value, so `Drop` unmaps it
+   exactly once and never panics (errors from `munmap` /
+   `UnmapViewOfFile` are ignored, as there is no caller to report to).
+
+**Bounds before pointers.** `flush_range` passes the caller's
+`(offset, len)` through `range::flush_span`, which rejects
+`offset > len`, `len > window - offset` and any overflow, and aligns
+the start down to a page, before `ptr.add` or any syscall. This is the
+bug class of RUSTSEC-2026-0186 in `memmap2` (unchecked offset and
+length in `flush_range` / `advise_range`).
+
+**Windows handle lifetime.** The section handle from
+`CreateFileMappingW` is closed right after `MapViewOfFile`; MSDN
+documents that a view holds its own reference to the section. Shared
+writable views keep a duplicate of the file handle
+(`File::try_clone`, i.e. `DuplicateHandle` with
+`DUPLICATE_SAME_ACCESS`) so that a durable `flush` can call
+`FlushFileBuffers` after the caller's `File` is gone; the duplicate is
+closed when the mapping drops. Last-error values are captured before
+`CloseHandle` can overwrite them.
+
+**`Send` / `Sync`.** `Mapping` owns its OS mapping the way `Box<[u8]>`
+owns an allocation; a mapping is valid from every thread and can be
+released from any thread. Shared access only yields `&[u8]` and
+validated flush syscalls, and `&mut [u8]` requires `&mut RawMmapMut`.
+
+References:
+
+- POSIX `mmap`: https://pubs.opengroup.org/onlinepubs/9799919799/functions/mmap.html
+- POSIX `msync`: https://pubs.opengroup.org/onlinepubs/9799919799/functions/msync.html
+- `CreateFileMappingW`: https://learn.microsoft.com/en-us/windows/win32/api/memoryapi/nf-memoryapi-createfilemappingw
+- `MapViewOfFile`: https://learn.microsoft.com/en-us/windows/win32/api/memoryapi/nf-memoryapi-mapviewoffile
+- `FlushViewOfFile`: https://learn.microsoft.com/en-us/windows/win32/api/memoryapi/nf-memoryapi-flushviewoffile
+
 ## Flushing
 
 The crate has no `unsafe` on the flush path. `flush()` and
@@ -214,7 +292,11 @@ read guard so the mapping cannot be replaced during the call.
 - Property tests: `tests/proptest_bounds.rs`, `tests/proptest_atomic.rs`,
   `tests/proptest_flush.rs` (`PROPTEST_CASES=10000` for a deep run).
 - Fuzz targets under `fuzz/`: `atomic_view`, `bounds_checks`,
-  `read_into`, `update_region`.
+  `read_into`, `update_region`, `raw_map`.
 - Regression tests for the soundness fixes:
   `tests/soundness_regressions.rs`.
-- Miri is not run: it cannot execute the `mmap` family of syscalls.
+- Raw layer: `tests/raw_mapping.rs`, `tests/raw_concurrency.rs`,
+  `tests/raw_leak.rs`, `tests/raw_proptest.rs`.
+- Miri runs the pure offset and length arithmetic in
+  `src/raw/range.rs`; it cannot execute the `mmap` family of syscalls,
+  so the FFI tests are skipped under Miri.
