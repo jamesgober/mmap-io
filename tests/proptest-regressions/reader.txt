@@ -1,0 +1,7 @@
+# Seeds for failure cases proptest has generated in the past. It is
+# automatically read and these particular cases re-run before any
+# novel cases are generated.
+#
+# It is recommended to check this file in to source control so that
+# everyone who runs the test benefits from these saved cases.
+cc 46b7fbbb37dc24d923f516d1f1f244bbf40ad52612653c55f2df3aab28082a6f # shrinks to (len, ops) = (4, [SetPosition(0), Seek(Current(9223372036854775807)), Seek(Start(8)), SetPosition(0), SetPosition(7), SetPosition(0), SetPosition(18446744073709551615), Seek(Current(4)), Seek(End(0)), SetPosition(0), Seek(Start(7)), Seek(Start(7)), SetPosition(18446744073709551615), Read(6), Seek(Current(9)), Seek(Start(3)), Seek(Current(9223372036854775807)), Seek(Current(0)), ReadExact(12), Seek(Current(4)), Seek(Start(12)), SetPosition(11)])
