@@ -17,6 +17,7 @@ fn rw(size: u64) -> (TmpPath, MemoryMappedFile, Vec<u8>) {
 // The `s == &want` comparisons exercise the `PartialEq<&[u8; N]>` and
 // `PartialEq<&[u8]>` impls on purpose.
 #[allow(clippy::op_ref)]
+#[cfg_attr(miri, ignore = "FFI mmap syscalls are not supported by Miri")]
 #[test]
 fn mapped_slice_trait_impls_agree_with_the_bytes() {
     let (path, m, data) = rw(64);
@@ -45,6 +46,7 @@ fn mapped_slice_trait_impls_agree_with_the_bytes() {
     }
 }
 
+#[cfg_attr(miri, ignore = "FFI mmap syscalls are not supported by Miri")]
 #[test]
 fn mapped_slice_is_shareable_across_threads() {
     let (_p, m, data) = rw(4096);
@@ -65,6 +67,7 @@ fn mapped_slice_is_shareable_across_threads() {
     m.update_region(0, b"free again").unwrap();
 }
 
+#[cfg_attr(miri, ignore = "FFI mmap syscalls are not supported by Miri")]
 #[test]
 fn mapped_slice_mut_derefs_both_ways() {
     let (_p, m, _) = rw(100);
@@ -82,6 +85,7 @@ fn mapped_slice_mut_derefs_both_ways() {
     assert!(z.as_mut().is_empty());
 }
 
+#[cfg_attr(miri, ignore = "FFI mmap syscalls are not supported by Miri")]
 #[test]
 fn raw_pointers_match_the_mapping() {
     let (path, m, data) = rw(page() + 3);
@@ -105,6 +109,7 @@ fn raw_pointers_match_the_mapping() {
     }
 }
 
+#[cfg_attr(miri, ignore = "FFI mmap syscalls are not supported by Miri")]
 #[test]
 fn touch_hints_and_touch_calls_leave_contents_alone() {
     let path = tmp_path("touch.bin");
@@ -128,6 +133,7 @@ fn touch_hints_and_touch_calls_leave_contents_alone() {
 }
 
 #[cfg(feature = "advise")]
+#[cfg_attr(miri, ignore = "FFI mmap syscalls are not supported by Miri")]
 #[test]
 fn every_advice_keeps_the_data_including_dont_need_on_dirty_pages() {
     use mmap_io::MmapAdvice;
@@ -156,6 +162,7 @@ fn every_advice_keeps_the_data_including_dont_need_on_dirty_pages() {
 }
 
 #[cfg(feature = "locking")]
+#[cfg_attr(miri, ignore = "FFI mmap syscalls are not supported by Miri")]
 #[test]
 fn unlocking_a_range_that_was_never_locked_succeeds() {
     let (_p, m, _) = rw(3 * page());
@@ -165,6 +172,7 @@ fn unlocking_a_range_that_was_never_locked_succeeds() {
 }
 
 #[cfg(feature = "locking")]
+#[cfg_attr(miri, ignore = "FFI mmap syscalls are not supported by Miri")]
 #[test]
 fn lock_and_unlock_round_trip_when_permitted() {
     let (_p, m, data) = rw(2 * page());
@@ -188,6 +196,7 @@ fn lock_and_unlock_round_trip_when_permitted() {
 }
 
 #[cfg(feature = "bytes")]
+#[cfg_attr(miri, ignore = "FFI mmap syscalls are not supported by Miri")]
 #[test]
 fn bytes_conversions_copy_the_slice() {
     let (_p, m, data) = rw(100);
@@ -214,6 +223,7 @@ fn bytes_conversions_copy_the_slice() {
     assert_eq!(by_ref.len(), 5);
 }
 
+#[cfg_attr(miri, ignore = "FFI mmap syscalls are not supported by Miri")]
 #[test]
 fn hugepage_status_is_known_only_on_linux() {
     let (path, m, _) = rw(4096);
@@ -240,6 +250,7 @@ fn hugepage_status_is_known_only_on_linux() {
 }
 
 #[cfg(feature = "hugepages")]
+#[cfg_attr(miri, ignore = "FFI mmap syscalls are not supported by Miri")]
 #[test]
 fn hugepage_requests_never_fail_the_mapping() {
     let path = tmp_path("huge.bin");
@@ -265,6 +276,7 @@ fn hugepage_requests_never_fail_the_mapping() {
 }
 
 #[cfg(feature = "watch")]
+#[cfg_attr(miri, ignore = "FFI mmap syscalls are not supported by Miri")]
 #[test]
 fn watching_a_file_that_no_longer_exists_fails_cleanly() {
     let path = tmp_path("gone.bin");

@@ -8,6 +8,7 @@ use mmap_io::{MemoryMappedFile, MmapIoError};
 
 use crate::common::{pattern, tmp_path};
 
+#[cfg_attr(miri, ignore = "FFI mmap syscalls are not supported by Miri")]
 #[test]
 fn accessors_report_construction_values() {
     let path = tmp_path("seg.bin");
@@ -38,6 +39,7 @@ fn accessors_report_construction_values() {
     }
 }
 
+#[cfg_attr(miri, ignore = "FFI mmap syscalls are not supported by Miri")]
 #[test]
 fn segment_write_rules() {
     let path = tmp_path("segw.bin");
@@ -94,6 +96,7 @@ fn segment_write_rules() {
     assert_eq!(ro.as_slice().unwrap(), &pattern(20, 1)[..]);
 }
 
+#[cfg_attr(miri, ignore = "FFI mmap syscalls are not supported by Miri")]
 #[test]
 fn segments_on_read_only_parents_read_but_do_not_write() {
     let path = tmp_path("segro.bin");
@@ -111,6 +114,7 @@ fn segments_on_read_only_parents_read_but_do_not_write() {
     ));
 }
 
+#[cfg_attr(miri, ignore = "FFI mmap syscalls are not supported by Miri")]
 #[test]
 fn validity_follows_every_resize() {
     let path = tmp_path("segrs.bin");
@@ -154,6 +158,7 @@ fn validity_follows_every_resize() {
     }
 }
 
+#[cfg_attr(miri, ignore = "FFI mmap syscalls are not supported by Miri")]
 #[test]
 fn hostile_segment_ranges_are_rejected_with_exact_fields() {
     let path = tmp_path("seghostile.bin");

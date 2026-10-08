@@ -142,6 +142,7 @@ fn verify(file: &Path, report: &Report) {
 }
 
 /// The child: write, flush, report; die where the role says.
+#[cfg_attr(miri, ignore = "spawns child processes, which Miri does not support")]
 #[test]
 fn child() {
     let Ok(role) = std::env::var(ROLE) else {
@@ -218,6 +219,7 @@ fn abort_case(role: &str, seed: u64) {
     verify(&file, &report);
 }
 
+#[cfg_attr(miri, ignore = "spawns child processes, which Miri does not support")]
 #[test]
 fn abort_after_flush_keeps_every_flushed_region() {
     for seed in [0, 5, 13, 23] {
@@ -225,6 +227,7 @@ fn abort_after_flush_keeps_every_flushed_region() {
     }
 }
 
+#[cfg_attr(miri, ignore = "spawns child processes, which Miri does not support")]
 #[test]
 fn abort_with_an_unflushed_write_keeps_it_in_the_page_cache() {
     for seed in [1, 8, 22] {
@@ -232,6 +235,7 @@ fn abort_with_an_unflushed_write_keeps_it_in_the_page_cache() {
     }
 }
 
+#[cfg_attr(miri, ignore = "spawns child processes, which Miri does not support")]
 #[test]
 fn abort_while_holding_a_write_guard_keeps_the_partial_write() {
     for seed in [2, 11] {
@@ -241,6 +245,7 @@ fn abort_while_holding_a_write_guard_keeps_the_partial_write() {
 
 /// The parent kills the child at an arbitrary moment after it has
 /// reported a number of flushed regions.
+#[cfg_attr(miri, ignore = "spawns child processes, which Miri does not support")]
 #[test]
 fn kill_at_an_arbitrary_point_keeps_every_reported_region() {
     for (round, after) in [3usize, 17, 40].into_iter().enumerate() {

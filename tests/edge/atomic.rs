@@ -47,6 +47,7 @@ fn classify<T>(r: Result<T, MmapIoError>, offset: u64, total: u64) -> Expect {
     }
 }
 
+#[cfg_attr(miri, ignore = "FFI mmap syscalls are not supported by Miri")]
 #[test]
 fn single_views_alignment_and_bounds_table() {
     // 13 bytes: room for one u64 at 0, u32s at 0, 4 and 8.
@@ -100,6 +101,7 @@ fn single_views_alignment_and_bounds_table() {
     }
 }
 
+#[cfg_attr(miri, ignore = "FFI mmap syscalls are not supported by Miri")]
 #[test]
 fn slice_views_count_table() {
     let total = 4096u64;
@@ -157,6 +159,7 @@ fn slice_views_count_table() {
     assert!(s.is_empty());
 }
 
+#[cfg_attr(miri, ignore = "FFI mmap syscalls are not supported by Miri")]
 #[test]
 fn misalignment_is_reported_before_bounds() {
     let (_p, m) = rw(16);
@@ -176,6 +179,7 @@ fn misalignment_is_reported_before_bounds() {
     ));
 }
 
+#[cfg_attr(miri, ignore = "FFI mmap syscalls are not supported by Miri")]
 #[test]
 fn read_only_mappings_refuse_views_before_checking_alignment() {
     let path = tmp_path("ro.bin");
@@ -201,6 +205,7 @@ fn read_only_mappings_refuse_views_before_checking_alignment() {
     }
 }
 
+#[cfg_attr(miri, ignore = "FFI mmap syscalls are not supported by Miri")]
 #[test]
 fn stored_values_are_native_endian_bytes_and_persist() {
     let (path, m) = rw(64);
@@ -243,6 +248,7 @@ fn stored_values_are_native_endian_bytes_and_persist() {
     );
 }
 
+#[cfg_attr(miri, ignore = "FFI mmap syscalls are not supported by Miri")]
 #[test]
 fn views_follow_resizes() {
     let (_p, m) = rw(16);
@@ -264,6 +270,7 @@ fn views_follow_resizes() {
     assert_eq!(m.atomic_u32(8).unwrap().load(Ordering::SeqCst), half);
 }
 
+#[cfg_attr(miri, ignore = "FFI mmap syscalls are not supported by Miri")]
 #[test]
 fn concurrent_fetch_add_on_shared_counters_is_exact() {
     let (_p, m) = rw(4096);

@@ -448,6 +448,7 @@ mod tests {
         (dir, path)
     }
 
+    #[cfg_attr(miri, ignore = "FFI mmap syscalls are not supported by Miri")]
     #[test]
     #[cfg(feature = "iterator")]
     fn test_chunk_iterator_zero_copy() {
@@ -478,6 +479,7 @@ mod tests {
         fs::remove_file(&path).expect("cleanup");
     }
 
+    #[cfg_attr(miri, ignore = "FFI mmap syscalls are not supported by Miri")]
     #[test]
     #[cfg(feature = "iterator")]
     fn test_page_iterator_zero_copy() {
@@ -500,6 +502,7 @@ mod tests {
         fs::remove_file(&path).expect("cleanup");
     }
 
+    #[cfg_attr(miri, ignore = "FFI mmap syscalls are not supported by Miri")]
     #[test]
     #[cfg(feature = "iterator")]
     fn test_chunks_owned_compat() {
@@ -523,6 +526,7 @@ mod tests {
         fs::remove_file(&path).expect("cleanup");
     }
 
+    #[cfg_attr(miri, ignore = "FFI mmap syscalls are not supported by Miri")]
     #[test]
     #[cfg(feature = "iterator")]
     fn test_mutable_chunk_iterator_single_guard() {
@@ -551,6 +555,7 @@ mod tests {
         fs::remove_file(&path).expect("cleanup");
     }
 
+    #[cfg_attr(miri, ignore = "FFI mmap syscalls are not supported by Miri")]
     #[test]
     #[cfg(feature = "iterator")]
     fn test_iterator_size_hint() {
@@ -572,6 +577,7 @@ mod tests {
         fs::remove_file(&path).expect("cleanup");
     }
 
+    #[cfg_attr(miri, ignore = "FFI mmap syscalls are not supported by Miri")]
     #[test]
     #[cfg(feature = "iterator")]
     fn test_iterator_zero_chunk_size_yields_nothing() {
@@ -585,6 +591,7 @@ mod tests {
         fs::remove_file(&path).expect("cleanup");
     }
 
+    #[cfg_attr(miri, ignore = "FFI mmap syscalls are not supported by Miri")]
     #[test]
     #[cfg(feature = "iterator")]
     fn test_one_byte_file_iteration() {

@@ -13,6 +13,7 @@ const MAX_SIZE: u64 = if cfg!(target_pointer_width = "64") {
     2 << 30
 };
 
+#[cfg_attr(miri, ignore = "FFI mmap syscalls are not supported by Miri")]
 #[test]
 fn every_grow_and_shrink_pair_preserves_the_common_prefix() {
     let sizes = boundary_sizes();
@@ -48,6 +49,7 @@ fn every_grow_and_shrink_pair_preserves_the_common_prefix() {
     }
 }
 
+#[cfg_attr(miri, ignore = "FFI mmap syscalls are not supported by Miri")]
 #[test]
 fn shrinking_discards_the_tail_and_regrowing_exposes_zeros() {
     let path = tmp_path("regrow.bin");
@@ -61,6 +63,7 @@ fn shrinking_discards_the_tail_and_regrowing_exposes_zeros() {
     assert!(tail.iter().all(|&b| b == 0), "regrown tail is not zero");
 }
 
+#[cfg_attr(miri, ignore = "FFI mmap syscalls are not supported by Miri")]
 #[test]
 fn resizing_to_the_same_size_is_a_no_op() {
     let path = tmp_path("same.bin");
@@ -75,6 +78,7 @@ fn resizing_to_the_same_size_is_a_no_op() {
     assert_eq!(m.pending_bytes(), pending);
 }
 
+#[cfg_attr(miri, ignore = "FFI mmap syscalls are not supported by Miri")]
 #[test]
 fn invalid_sizes_leave_the_mapping_untouched() {
     let path = tmp_path("bad.bin");
@@ -91,6 +95,7 @@ fn invalid_sizes_leave_the_mapping_untouched() {
     }
 }
 
+#[cfg_attr(miri, ignore = "FFI mmap syscalls are not supported by Miri")]
 #[test]
 fn read_only_mappings_cannot_be_resized() {
     let path = tmp_path("ro.bin");
@@ -107,6 +112,7 @@ fn read_only_mappings_cannot_be_resized() {
     assert_eq!(ro.mode(), MmapMode::ReadOnly);
 }
 
+#[cfg_attr(miri, ignore = "FFI mmap syscalls are not supported by Miri")]
 #[test]
 fn many_alternating_resizes_keep_len_and_file_in_step() {
     let path = tmp_path("churn.bin");
@@ -131,6 +137,7 @@ fn many_alternating_resizes_keep_len_and_file_in_step() {
 /// A shrink to below a page keeps the first byte addressable, and the
 /// segment, iterator, and reader views built afterwards see the new
 /// length.
+#[cfg_attr(miri, ignore = "FFI mmap syscalls are not supported by Miri")]
 #[test]
 fn views_created_after_a_resize_see_the_new_length() {
     let path = tmp_path("views.bin");
@@ -154,6 +161,7 @@ fn views_created_after_a_resize_see_the_new_length() {
 /// documented behavior is an `Io` error with the mapping restored at
 /// its old size and contents.
 #[cfg(windows)]
+#[cfg_attr(miri, ignore = "FFI mmap syscalls are not supported by Miri")]
 #[test]
 fn shrink_with_a_second_mapping_open_fails_and_restores_on_windows() {
     let path = tmp_path("second.bin");
@@ -170,6 +178,7 @@ fn shrink_with_a_second_mapping_open_fails_and_restores_on_windows() {
 }
 
 #[cfg(target_pointer_width = "32")]
+#[cfg_attr(miri, ignore = "FFI mmap syscalls are not supported by Miri")]
 #[test]
 fn sizes_above_two_gib_are_rejected_on_32_bit() {
     let path = tmp_path("big32.bin");

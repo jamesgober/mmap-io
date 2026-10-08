@@ -365,6 +365,7 @@ proptest! {
         ..ProptestConfig::default()
     })]
 
+    #[cfg_attr(miri, ignore = "FFI mmap syscalls are not supported by Miri")]
     #[test]
     fn mapping_matches_a_vec_model(
         initial in 1..=MAX_SIZE,

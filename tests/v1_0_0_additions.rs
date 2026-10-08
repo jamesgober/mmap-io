@@ -7,12 +7,14 @@ use mmap_io::{AnonymousMmap, MemoryMappedFile, MmapIoError};
 // F1: AnonymousMmap
 // ---------------------------------------------------------------------
 
+#[cfg_attr(miri, ignore = "FFI mmap syscalls are not supported by Miri")]
 #[test]
 fn anonymous_new_rejects_zero_size() {
     let err = AnonymousMmap::new(0).unwrap_err();
     assert!(matches!(err, MmapIoError::ResizeFailed(_)));
 }
 
+#[cfg_attr(miri, ignore = "FFI mmap syscalls are not supported by Miri")]
 #[test]
 fn anonymous_new_rejects_oversized() {
     let oversized = if cfg!(target_pointer_width = "64") {
@@ -26,6 +28,7 @@ fn anonymous_new_rejects_oversized() {
     assert!(matches!(err, MmapIoError::ResizeFailed(_)));
 }
 
+#[cfg_attr(miri, ignore = "FFI mmap syscalls are not supported by Miri")]
 #[test]
 fn anonymous_new_succeeds_and_reports_len() {
     let mmap = AnonymousMmap::new(4096).expect("4 KiB anon");
@@ -33,6 +36,7 @@ fn anonymous_new_succeeds_and_reports_len() {
     assert!(!mmap.is_empty());
 }
 
+#[cfg_attr(miri, ignore = "FFI mmap syscalls are not supported by Miri")]
 #[test]
 fn anonymous_pages_are_zero_initialized() {
     let mmap = AnonymousMmap::new(8192).expect("anon");
@@ -44,6 +48,7 @@ fn anonymous_pages_are_zero_initialized() {
     );
 }
 
+#[cfg_attr(miri, ignore = "FFI mmap syscalls are not supported by Miri")]
 #[test]
 fn anonymous_update_region_roundtrip() {
     let mmap = AnonymousMmap::new(4096).expect("anon");
@@ -54,6 +59,7 @@ fn anonymous_update_region_roundtrip() {
     assert_eq!(&buf, data);
 }
 
+#[cfg_attr(miri, ignore = "FFI mmap syscalls are not supported by Miri")]
 #[test]
 fn anonymous_read_into_oob_errors() {
     let mmap = AnonymousMmap::new(64).expect("anon");
@@ -62,6 +68,7 @@ fn anonymous_read_into_oob_errors() {
     assert!(matches!(err, MmapIoError::OutOfBounds { .. }));
 }
 
+#[cfg_attr(miri, ignore = "FFI mmap syscalls are not supported by Miri")]
 #[test]
 fn anonymous_update_region_oob_errors() {
     let mmap = AnonymousMmap::new(64).expect("anon");
@@ -69,6 +76,7 @@ fn anonymous_update_region_oob_errors() {
     assert!(matches!(err, MmapIoError::OutOfBounds { .. }));
 }
 
+#[cfg_attr(miri, ignore = "FFI mmap syscalls are not supported by Miri")]
 #[test]
 fn anonymous_offset_at_end_with_zero_len_ok() {
     let mmap = AnonymousMmap::new(64).expect("anon");
@@ -77,6 +85,7 @@ fn anonymous_offset_at_end_with_zero_len_ok() {
         .expect("zero-len at boundary is allowed");
 }
 
+#[cfg_attr(miri, ignore = "FFI mmap syscalls are not supported by Miri")]
 #[test]
 fn anonymous_offset_past_end_errors() {
     let mmap = AnonymousMmap::new(64).expect("anon");
@@ -84,6 +93,7 @@ fn anonymous_offset_past_end_errors() {
     assert!(matches!(err, MmapIoError::OutOfBounds { .. }));
 }
 
+#[cfg_attr(miri, ignore = "FFI mmap syscalls are not supported by Miri")]
 #[test]
 fn anonymous_as_slice_reads_match_writes() {
     let mmap = AnonymousMmap::new(4096).expect("anon");
@@ -92,6 +102,7 @@ fn anonymous_as_slice_reads_match_writes() {
     assert_eq!(&*slice, b"abcdef");
 }
 
+#[cfg_attr(miri, ignore = "FFI mmap syscalls are not supported by Miri")]
 #[test]
 fn anonymous_as_mut_slice_writes_are_visible() {
     let mmap = AnonymousMmap::new(4096).expect("anon");
@@ -104,6 +115,7 @@ fn anonymous_as_mut_slice_writes_are_visible() {
     assert_eq!(&buf, b"YEAH");
 }
 
+#[cfg_attr(miri, ignore = "FFI mmap syscalls are not supported by Miri")]
 #[test]
 fn anonymous_concurrent_readers_do_not_block() {
     use std::sync::Arc;
@@ -127,6 +139,7 @@ fn anonymous_concurrent_readers_do_not_block() {
     }
 }
 
+#[cfg_attr(miri, ignore = "FFI mmap syscalls are not supported by Miri")]
 #[test]
 fn anonymous_drop_releases_without_panic() {
     // Smoke test: drop a sizeable anon mapping and verify it doesn't
@@ -138,6 +151,7 @@ fn anonymous_drop_releases_without_panic() {
     }
 }
 
+#[cfg_attr(miri, ignore = "FFI mmap syscalls are not supported by Miri")]
 #[test]
 fn anonymous_debug_renders_len() {
     let mmap = AnonymousMmap::new(4096).expect("anon");
@@ -146,6 +160,7 @@ fn anonymous_debug_renders_len() {
     assert!(dbg.contains("AnonymousMmap"));
 }
 
+#[cfg_attr(miri, ignore = "FFI mmap syscalls are not supported by Miri")]
 #[test]
 fn anonymous_raw_pointer_reads_match_slice() {
     let mmap = AnonymousMmap::new(4096).expect("anon");
@@ -164,6 +179,7 @@ fn anonymous_raw_pointer_reads_match_slice() {
 // F4: is_hugepage_backed
 // ---------------------------------------------------------------------
 
+#[cfg_attr(miri, ignore = "FFI mmap syscalls are not supported by Miri")]
 #[test]
 fn is_hugepage_backed_returns_some_on_linux_none_elsewhere() {
     let dir = tempfile::tempdir().expect("tempdir");
@@ -192,6 +208,7 @@ fn is_hugepage_backed_returns_some_on_linux_none_elsewhere() {
     }
 }
 
+#[cfg_attr(miri, ignore = "FFI mmap syscalls are not supported by Miri")]
 #[test]
 fn is_hugepage_backed_works_for_each_mode() {
     let dir = tempfile::tempdir().expect("tempdir");

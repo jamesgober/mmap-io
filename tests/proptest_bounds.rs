@@ -83,6 +83,7 @@ proptest! {
     /// and return a slice of the requested length, OR reject with
     /// OutOfBounds for any range that exceeds the file. No other error
     /// variant is reachable on the RO path.
+    #[cfg_attr(miri, ignore = "FFI mmap syscalls are not supported by Miri")]
     #[test]
     fn as_slice_ro_bounds(
         size in MIN_FILE..MAX_FILE,
@@ -127,6 +128,7 @@ proptest! {
     /// in-bounds request yields a `MappedSlice` of the right length;
     /// every OOB request yields `OutOfBounds`. No `InvalidMode` reaches
     /// the RW path anymore.
+    #[cfg_attr(miri, ignore = "FFI mmap syscalls are not supported by Miri")]
     #[test]
     fn as_slice_rw_returns_mapped_slice(
         size in MIN_FILE..MAX_FILE,
@@ -163,6 +165,7 @@ proptest! {
     /// `as_slice_mut` on an RW mapping mirrors `as_slice` on RO: it
     /// accepts every in-bounds request and rejects every OOB one with
     /// OutOfBounds.
+    #[cfg_attr(miri, ignore = "FFI mmap syscalls are not supported by Miri")]
     #[test]
     fn as_slice_mut_bounds(
         size in MIN_FILE..MAX_FILE,
@@ -211,6 +214,7 @@ proptest! {
     /// is fully written for in-bounds reads; OOB returns OutOfBounds.
     /// We also verify that a one-byte sentinel placed past the read
     /// region is NOT modified (no buffer overrun).
+    #[cfg_attr(miri, ignore = "FFI mmap syscalls are not supported by Miri")]
     #[test]
     fn read_into_bounds_and_no_overrun(
         size in MIN_FILE..MAX_FILE,
@@ -250,6 +254,7 @@ proptest! {
 
     /// `update_region` rejects out-of-bounds writes. For in-bounds
     /// writes, the data must round-trip through `read_into`.
+    #[cfg_attr(miri, ignore = "FFI mmap syscalls are not supported by Miri")]
     #[test]
     fn update_region_round_trip(
         size in MIN_FILE..MAX_FILE,
@@ -283,6 +288,7 @@ proptest! {
     /// `flush_range` bounds: in-bounds ranges succeed (assuming
     /// FlushPolicy doesn't introduce additional errors, which it
     /// doesn't), OOB returns OutOfBounds. Zero-length is always OK.
+    #[cfg_attr(miri, ignore = "FFI mmap syscalls are not supported by Miri")]
     #[test]
     fn flush_range_bounds(
         size in MIN_FILE..MAX_FILE,
@@ -316,6 +322,7 @@ proptest! {
     /// Boundary-condition focus: tests with offset/len picked to land
     /// exactly at file boundaries. This is where overflow bugs (e.g.,
     /// `offset + len` wrapping) historically lurked.
+    #[cfg_attr(miri, ignore = "FFI mmap syscalls are not supported by Miri")]
     #[test]
     fn boundary_conditions(
         size in MIN_FILE..MAX_FILE,

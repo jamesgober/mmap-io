@@ -374,6 +374,17 @@ fn bounds_helpers_reject_overflow_at_u64_max_total() {
         u64::MAX,
         u64::MAX,
     );
+    // Minimized from a `bounds_checks` fuzz crash.
+    assert_oob(
+        ensure_in_bounds(
+            10_706_345_580_035_347_604,
+            18_446_744_073_692_774_400,
+            u64::MAX,
+        ),
+        10_706_345_580_035_347_604,
+        18_446_744_073_692_774_400,
+        u64::MAX,
+    );
     let r = std::panic::catch_unwind(|| slice_range(2, u64::MAX - 1, u64::MAX));
     let r = r.expect("slice_range must not panic on caller input");
     assert_oob(r, 2, u64::MAX - 1, u64::MAX);

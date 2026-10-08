@@ -132,6 +132,7 @@ fn churn(file: &std::fs::File, rounds: usize) {
     }
 }
 
+#[cfg_attr(miri, ignore = "FFI mmap syscalls are not supported by Miri")]
 #[test]
 fn map_drop_cycles_do_not_leak_mappings_or_handles() {
     let dir = tempfile::tempdir().expect("tempdir");

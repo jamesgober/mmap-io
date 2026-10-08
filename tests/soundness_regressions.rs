@@ -47,6 +47,7 @@ fn resize_in_background(
 }
 
 #[cfg(feature = "iterator")]
+#[cfg_attr(miri, ignore = "FFI mmap syscalls are not supported by Miri")]
 #[test]
 fn yielded_chunk_pins_mapping_after_iterator_drops() {
     let path = tmp_path("chunk_pins");
@@ -76,6 +77,7 @@ fn yielded_chunk_pins_mapping_after_iterator_drops() {
 }
 
 #[cfg(feature = "iterator")]
+#[cfg_attr(miri, ignore = "FFI mmap syscalls are not supported by Miri")]
 #[test]
 fn yielded_page_pins_mapping_after_iterator_drops() {
     let path = tmp_path("page_pins");
@@ -101,6 +103,7 @@ fn yielded_page_pins_mapping_after_iterator_drops() {
 }
 
 #[cfg(feature = "atomic")]
+#[cfg_attr(miri, ignore = "FFI mmap syscalls are not supported by Miri")]
 #[test]
 fn atomic_views_reject_read_only_mapping() {
     let path = tmp_path("atomic_ro");
@@ -132,6 +135,7 @@ fn atomic_views_reject_read_only_mapping() {
 }
 
 #[cfg(all(feature = "atomic", feature = "cow"))]
+#[cfg_attr(miri, ignore = "FFI mmap syscalls are not supported by Miri")]
 #[test]
 fn atomic_views_reject_copy_on_write_mapping() {
     let path = tmp_path("atomic_cow");
@@ -153,6 +157,7 @@ fn atomic_views_reject_copy_on_write_mapping() {
     let _ = fs::remove_file(&path);
 }
 
+#[cfg_attr(miri, ignore = "FFI mmap syscalls are not supported by Miri")]
 #[test]
 fn shrink_does_not_truncate_file_under_live_view() {
     let path = tmp_path("shrink_live_view");
@@ -190,6 +195,7 @@ fn shrink_does_not_truncate_file_under_live_view() {
 /// must either succeed or fail with `OutOfBounds`; a stale cached
 /// length used to make the guarded slice index past the new mapping
 /// and panic.
+#[cfg_attr(miri, ignore = "FFI mmap syscalls are not supported by Miri")]
 #[test]
 fn concurrent_resize_never_panics_readers() {
     let path = tmp_path("resize_race");
@@ -258,6 +264,7 @@ fn finishes_within<F: FnOnce() + Send + 'static>(timeout: Duration, f: F) -> boo
     rx.recv_timeout(timeout).is_ok()
 }
 
+#[cfg_attr(miri, ignore = "FFI mmap syscalls are not supported by Miri")]
 #[test]
 fn second_read_view_on_same_thread_does_not_deadlock_behind_writer() {
     let path = tmp_path("recursive_read");
@@ -292,6 +299,7 @@ fn second_read_view_on_same_thread_does_not_deadlock_behind_writer() {
     let _ = fs::remove_file(&path);
 }
 
+#[cfg_attr(miri, ignore = "FFI mmap syscalls are not supported by Miri")]
 #[test]
 fn resize_blocks_until_slice_drops_then_completes() {
     let path = tmp_path("resize_waits");

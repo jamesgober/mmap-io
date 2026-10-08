@@ -17,6 +17,7 @@ fn with_policy(policy: FlushPolicy, size: u64) -> (TmpPath, MemoryMappedFile) {
     (path, m)
 }
 
+#[cfg_attr(miri, ignore = "FFI mmap syscalls are not supported by Miri")]
 #[test]
 fn every_write_path_adds_to_pending_bytes() {
     let (_p, m) = with_policy(FlushPolicy::Manual, 64 * 1024);
@@ -58,6 +59,7 @@ fn every_write_path_adds_to_pending_bytes() {
 }
 
 #[cfg(feature = "iterator")]
+#[cfg_attr(miri, ignore = "FFI mmap syscalls are not supported by Miri")]
 #[test]
 fn chunks_mut_counts_the_bytes_it_handed_out() {
     let (_p, m) = with_policy(FlushPolicy::Manual, 10_000);
@@ -82,6 +84,7 @@ fn chunks_mut_counts_the_bytes_it_handed_out() {
 }
 
 #[cfg(feature = "atomic")]
+#[cfg_attr(miri, ignore = "FFI mmap syscalls are not supported by Miri")]
 #[test]
 fn atomic_views_count_their_size_on_drop() {
     let (_p, m) = with_policy(FlushPolicy::Manual, 4096);
@@ -97,6 +100,7 @@ fn atomic_views_count_their_size_on_drop() {
     assert_eq!(m.pending_bytes(), 92);
 }
 
+#[cfg_attr(miri, ignore = "FFI mmap syscalls are not supported by Miri")]
 #[test]
 fn flush_range_resets_pending_only_for_the_whole_mapping() {
     let (_p, m) = with_policy(FlushPolicy::Manual, 8192);
@@ -116,6 +120,7 @@ fn flush_range_resets_pending_only_for_the_whole_mapping() {
     m.flush().unwrap();
 }
 
+#[cfg_attr(miri, ignore = "FFI mmap syscalls are not supported by Miri")]
 #[test]
 fn read_only_mappings_never_have_pending_bytes() {
     let path = tmp_path("ro.bin");
@@ -133,6 +138,7 @@ fn read_only_mappings_never_have_pending_bytes() {
     assert_eq!(ro.pending_bytes(), 0);
 }
 
+#[cfg_attr(miri, ignore = "FFI mmap syscalls are not supported by Miri")]
 #[test]
 fn manual_and_never_policies_do_not_flush_on_their_own() {
     for policy in [
@@ -148,6 +154,7 @@ fn manual_and_never_policies_do_not_flush_on_their_own() {
     }
 }
 
+#[cfg_attr(miri, ignore = "FFI mmap syscalls are not supported by Miri")]
 #[test]
 fn always_flushes_after_every_update_region() {
     let (_p, m) = with_policy(FlushPolicy::Always, 4096);
@@ -167,6 +174,7 @@ fn always_flushes_after_every_update_region() {
     assert_eq!(m.pending_bytes(), 7);
 }
 
+#[cfg_attr(miri, ignore = "FFI mmap syscalls are not supported by Miri")]
 #[test]
 fn every_bytes_flushes_when_the_threshold_is_reached() {
     // (threshold, write sizes, pending after each write)
@@ -191,6 +199,7 @@ fn every_bytes_flushes_when_the_threshold_is_reached() {
     }
 }
 
+#[cfg_attr(miri, ignore = "FFI mmap syscalls are not supported by Miri")]
 #[test]
 fn every_bytes_counts_bytes_from_other_paths_at_the_next_update() {
     let (_p, m) = with_policy(FlushPolicy::EveryBytes(100), 4096);
@@ -200,6 +209,7 @@ fn every_bytes_counts_bytes_from_other_paths_at_the_next_update() {
     assert_eq!(m.pending_bytes(), 0);
 }
 
+#[cfg_attr(miri, ignore = "FFI mmap syscalls are not supported by Miri")]
 #[test]
 fn every_writes_flushes_on_the_nth_update_region() {
     for (w, writes, expect_zero_at) in [
@@ -222,6 +232,7 @@ fn every_writes_flushes_on_the_nth_update_region() {
     }
 }
 
+#[cfg_attr(miri, ignore = "FFI mmap syscalls are not supported by Miri")]
 #[test]
 fn every_writes_does_not_count_empty_or_rejected_writes() {
     let (_p, m) = with_policy(FlushPolicy::EveryWrites(2), 4096);
@@ -233,6 +244,7 @@ fn every_writes_does_not_count_empty_or_rejected_writes() {
     assert_eq!(m.pending_bytes(), 0);
 }
 
+#[cfg_attr(miri, ignore = "FFI mmap syscalls are not supported by Miri")]
 #[test]
 fn every_millis_flushes_in_the_background() {
     let (path, m) = with_policy(FlushPolicy::EveryMillis(5), 8192);
@@ -246,6 +258,7 @@ fn every_millis_flushes_in_the_background() {
     wait_for_background_flush(&m);
 }
 
+#[cfg_attr(miri, ignore = "FFI mmap syscalls are not supported by Miri")]
 #[test]
 fn every_millis_flusher_stops_when_the_last_clone_drops() {
     let (_p, m) = with_policy(FlushPolicy::EveryMillis(1), 4096);

@@ -56,22 +56,26 @@ fn run_child(role: &str, ulimit_args: &str) -> Option<String> {
     Some(stdout)
 }
 
+#[cfg_attr(miri, ignore = "spawns child processes, which Miri does not support")]
 #[test]
 fn grow_failure_restores_the_file_and_keeps_the_mapping() {
     run_child("grow", &format!("-v {AS_LIMIT_KIB}"));
 }
 
+#[cfg_attr(miri, ignore = "spawns child processes, which Miri does not support")]
 #[test]
 fn create_and_anonymous_failures_are_io_errors() {
     run_child("create", &format!("-v {AS_LIMIT_KIB}"));
 }
 
+#[cfg_attr(miri, ignore = "spawns child processes, which Miri does not support")]
 #[test]
 fn raw_layer_failures_are_io_errors() {
     run_child("raw", &format!("-v {AS_LIMIT_KIB}"));
 }
 
 #[cfg(feature = "locking")]
+#[cfg_attr(miri, ignore = "spawns child processes, which Miri does not support")]
 #[test]
 fn lock_failure_is_lock_failed() {
     if let Some(out) = run_child("lock", "-l 0") {
@@ -82,6 +86,7 @@ fn lock_failure_is_lock_failed() {
 }
 
 /// Entry point for the child process. A no-op in a normal test run.
+#[cfg_attr(miri, ignore = "spawns child processes, which Miri does not support")]
 #[test]
 fn child() {
     let Ok(role) = std::env::var(ROLE) else {

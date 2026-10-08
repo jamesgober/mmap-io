@@ -24,6 +24,7 @@ fn read_disk(path: &std::path::Path, offset: u64, len: usize) -> Vec<u8> {
     buf
 }
 
+#[cfg_attr(miri, ignore = "FFI mmap syscalls are not supported by Miri")]
 #[test]
 fn time_based_flush_actually_flushes() {
     // C2 regression: with EveryMillis(100), a write followed by a
@@ -74,6 +75,7 @@ fn time_based_flush_actually_flushes() {
     let _ = fs::remove_file(&path);
 }
 
+#[cfg_attr(miri, ignore = "FFI mmap syscalls are not supported by Miri")]
 #[test]
 fn time_based_flusher_terminates_on_drop() {
     // Companion check: dropping the mapping must terminate the

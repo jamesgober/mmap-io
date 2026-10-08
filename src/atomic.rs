@@ -361,6 +361,7 @@ mod tests {
         (dir, path)
     }
 
+    #[cfg_attr(miri, ignore = "FFI mmap syscalls are not supported by Miri")]
     #[test]
     #[cfg(feature = "atomic")]
     fn test_atomic_u64_operations() {
@@ -407,6 +408,7 @@ mod tests {
         fs::remove_file(&path).expect("cleanup");
     }
 
+    #[cfg_attr(miri, ignore = "FFI mmap syscalls are not supported by Miri")]
     #[test]
     #[cfg(feature = "atomic")]
     fn test_atomic_u32_operations() {
@@ -446,6 +448,7 @@ mod tests {
         fs::remove_file(&path).expect("cleanup");
     }
 
+    #[cfg_attr(miri, ignore = "FFI mmap syscalls are not supported by Miri")]
     #[test]
     #[cfg(feature = "atomic")]
     fn test_atomic_slices() {
@@ -489,6 +492,7 @@ mod tests {
         fs::remove_file(&path).expect("cleanup");
     }
 
+    #[cfg_attr(miri, ignore = "FFI mmap syscalls are not supported by Miri")]
     #[test]
     #[cfg(feature = "atomic")]
     fn test_atomic_with_different_modes() {
@@ -538,6 +542,7 @@ mod tests {
         fs::remove_file(&path).expect("cleanup");
     }
 
+    #[cfg_attr(miri, ignore = "FFI mmap syscalls are not supported by Miri")]
     #[test]
     #[cfg(feature = "atomic")]
     fn test_concurrent_atomic_access() {

@@ -20,6 +20,7 @@ fn io_kind<T: std::fmt::Debug>(r: Result<T, MmapIoError>) -> ErrorKind {
     }
 }
 
+#[cfg_attr(miri, ignore = "FFI mmap syscalls are not supported by Miri")]
 #[test]
 fn create_and_load_in_every_mode() {
     let path = tmp_path("mgr.bin");
@@ -56,6 +57,7 @@ fn create_and_load_in_every_mode() {
     );
 }
 
+#[cfg_attr(miri, ignore = "FFI mmap syscalls are not supported by Miri")]
 #[test]
 fn free_update_and_flush_follow_the_method_contracts() {
     let path = tmp_path("free.bin");
@@ -79,6 +81,7 @@ fn free_update_and_flush_follow_the_method_contracts() {
     flush(&ro).unwrap();
 }
 
+#[cfg_attr(miri, ignore = "FFI mmap syscalls are not supported by Miri")]
 #[test]
 fn write_mmap_writes_through_the_page_cache() {
     let path = tmp_path("write.bin");
@@ -112,6 +115,7 @@ fn write_mmap_writes_through_the_page_cache() {
     ));
 }
 
+#[cfg_attr(miri, ignore = "FFI mmap syscalls are not supported by Miri")]
 #[test]
 fn copy_mmap_copies_bytes_including_unflushed_writes() {
     let path = tmp_path("src.bin");
@@ -141,6 +145,7 @@ fn copy_mmap_copies_bytes_including_unflushed_writes() {
     drop(m);
 }
 
+#[cfg_attr(miri, ignore = "FFI mmap syscalls are not supported by Miri")]
 #[test]
 fn delete_mmap_removes_the_file_and_reports_errors() {
     let path = tmp_path("del.bin");
@@ -156,6 +161,7 @@ fn delete_mmap_removes_the_file_and_reports_errors() {
 /// On Unix a mapped file can be unlinked; the mapping stays readable
 /// and writable until it is dropped.
 #[cfg(unix)]
+#[cfg_attr(miri, ignore = "FFI mmap syscalls are not supported by Miri")]
 #[test]
 fn delete_while_mapped_keeps_the_mapping_alive_on_unix() {
     let path = tmp_path("del_mapped.bin");
@@ -173,6 +179,7 @@ fn delete_while_mapped_keeps_the_mapping_alive_on_unix() {
 /// On Windows a file with a mapped view cannot be deleted. The call
 /// must fail cleanly and leave the mapping usable.
 #[cfg(windows)]
+#[cfg_attr(miri, ignore = "FFI mmap syscalls are not supported by Miri")]
 #[test]
 fn delete_while_mapped_fails_cleanly_on_windows() {
     let path = tmp_path("del_mapped.bin");
@@ -215,6 +222,7 @@ fn block_on<F: std::future::Future>(fut: F) -> F::Output {
 }
 
 #[cfg(feature = "async")]
+#[cfg_attr(miri, ignore = "FFI mmap syscalls are not supported by Miri")]
 #[test]
 fn async_methods_work_without_a_runtime() {
     use mmap_io::manager::r#async::{copy_mmap_async, create_mmap_async, delete_mmap_async};
@@ -232,6 +240,7 @@ fn async_methods_work_without_a_runtime() {
 }
 
 #[cfg(feature = "async")]
+#[cfg_attr(miri, ignore = "FFI mmap syscalls are not supported by Miri")]
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn async_error_paths() {
     use mmap_io::manager::r#async::{copy_mmap_async, create_mmap_async, delete_mmap_async};
@@ -293,6 +302,7 @@ async fn async_error_paths() {
 }
 
 #[cfg(feature = "async")]
+#[cfg_attr(miri, ignore = "FFI mmap syscalls are not supported by Miri")]
 #[test]
 fn many_concurrent_async_writes_land() {
     let path = tmp_path("async_many.bin");

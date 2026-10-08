@@ -335,6 +335,7 @@ mod tests {
         f.sync_all().expect("external sync");
     }
 
+    #[cfg_attr(miri, ignore = "FFI mmap syscalls are not supported by Miri")]
     #[test]
     #[cfg(feature = "watch")]
     fn test_watch_file_changes() {
@@ -380,6 +381,7 @@ mod tests {
         let _ = fs::remove_file(&path);
     }
 
+    #[cfg_attr(miri, ignore = "FFI mmap syscalls are not supported by Miri")]
     #[test]
     #[cfg(feature = "watch")]
     fn test_multiple_watchers() {
@@ -426,6 +428,7 @@ mod tests {
         let _ = fs::remove_file(&path);
     }
 
+    #[cfg_attr(miri, ignore = "FFI mmap syscalls are not supported by Miri")]
     #[test]
     #[cfg(feature = "watch")]
     fn test_watch_handle_drop_stops_watching() {

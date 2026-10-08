@@ -10,6 +10,7 @@ use std::fs;
 mod common;
 use common::tmp_path;
 
+#[cfg_attr(miri, ignore = "FFI mmap syscalls are not supported by Miri")]
 #[test]
 fn parity_flush_visibility_full_file() {
     let path = tmp_path("parity_flush_visibility_full_file");
@@ -36,6 +37,7 @@ fn parity_flush_visibility_full_file() {
     let _ = fs::remove_file(&path);
 }
 
+#[cfg_attr(miri, ignore = "FFI mmap syscalls are not supported by Miri")]
 #[test]
 fn parity_flush_visibility_range() {
     let path = tmp_path("parity_flush_visibility_range");

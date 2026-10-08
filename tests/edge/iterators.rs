@@ -53,6 +53,7 @@ fn check_chunks(m: &MemoryMappedFile, data: &[u8], cs: usize, ctx: &str) {
     assert_eq!(m.chunks_owned(cs).len(), expected);
 }
 
+#[cfg_attr(miri, ignore = "FFI mmap syscalls are not supported by Miri")]
 #[test]
 fn chunk_sizes_around_every_boundary() {
     let p = page() as usize;
@@ -97,6 +98,7 @@ fn chunk_sizes_around_every_boundary() {
     }
 }
 
+#[cfg_attr(miri, ignore = "FFI mmap syscalls are not supported by Miri")]
 #[test]
 fn pages_equal_page_sized_chunks() {
     let p = page() as usize;
@@ -116,6 +118,7 @@ fn pages_equal_page_sized_chunks() {
     }
 }
 
+#[cfg_attr(miri, ignore = "FFI mmap syscalls are not supported by Miri")]
 #[test]
 fn empty_read_only_mapping_yields_nothing() {
     let path = tmp_path("empty.bin");
@@ -130,6 +133,7 @@ fn empty_read_only_mapping_yields_nothing() {
     assert_eq!(ro.pages_owned().count(), 0);
 }
 
+#[cfg_attr(miri, ignore = "FFI mmap syscalls are not supported by Miri")]
 #[test]
 fn items_outlive_their_iterator_and_coexist() {
     let (_p, m, data) = rw(10_000, 3);
@@ -153,6 +157,7 @@ fn items_outlive_their_iterator_and_coexist() {
     assert_eq!(m.chunks(1000).count(), 20);
 }
 
+#[cfg_attr(miri, ignore = "FFI mmap syscalls are not supported by Miri")]
 #[test]
 fn iterators_reflect_the_length_at_creation_time() {
     let (_p, m, _) = rw(4096, 4);
@@ -163,6 +168,7 @@ fn iterators_reflect_the_length_at_creation_time() {
     assert_eq!(m.chunks(4096).last().unwrap().len(), 4096);
 }
 
+#[cfg_attr(miri, ignore = "FFI mmap syscalls are not supported by Miri")]
 #[test]
 fn chunks_mut_visits_every_offset_in_order() {
     for (size, cs) in [
@@ -197,6 +203,7 @@ fn chunks_mut_visits_every_offset_in_order() {
     }
 }
 
+#[cfg_attr(miri, ignore = "FFI mmap syscalls are not supported by Miri")]
 #[test]
 fn chunks_mut_stops_at_the_first_error() {
     let (_p, m, data) = rw(10, 6);
@@ -220,6 +227,7 @@ fn chunks_mut_stops_at_the_first_error() {
     );
 }
 
+#[cfg_attr(miri, ignore = "FFI mmap syscalls are not supported by Miri")]
 #[test]
 fn chunks_mut_legacy_returns_the_closure_error_inside_ok() {
     #[derive(Debug, PartialEq)]
@@ -251,6 +259,7 @@ fn chunks_mut_legacy_returns_the_closure_error_inside_ok() {
     assert_eq!(r.unwrap(), Ok(()));
 }
 
+#[cfg_attr(miri, ignore = "FFI mmap syscalls are not supported by Miri")]
 #[test]
 fn chunks_mut_is_refused_on_read_only_mappings() {
     let (path, m, data) = rw(100, 8);
@@ -284,6 +293,7 @@ fn chunks_mut_zero_chunk_size_still_checks_the_mode() {
     ));
 }
 
+#[cfg_attr(miri, ignore = "FFI mmap syscalls are not supported by Miri")]
 #[test]
 fn chunk_items_can_be_sent_to_other_threads() {
     let (_p, m, data) = rw(64 * 1024, 10);

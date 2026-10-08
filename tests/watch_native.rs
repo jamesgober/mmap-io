@@ -43,6 +43,7 @@ fn write_external(path: &Path, payload: &[u8]) {
     f.sync_all().expect("sync");
 }
 
+#[cfg_attr(miri, ignore = "FFI mmap syscalls are not supported by Miri")]
 #[test]
 fn watch_modify_detected() {
     let path = tmp_path("modify");
@@ -68,6 +69,7 @@ fn watch_modify_detected() {
     let _ = fs::remove_file(&path);
 }
 
+#[cfg_attr(miri, ignore = "FFI mmap syscalls are not supported by Miri")]
 #[test]
 fn watch_truncate_detected() {
     let path = tmp_path("truncate");
@@ -105,6 +107,7 @@ fn watch_truncate_detected() {
     let _ = fs::remove_file(&path);
 }
 
+#[cfg_attr(miri, ignore = "FFI mmap syscalls are not supported by Miri")]
 #[test]
 fn watch_extend_detected() {
     let path = tmp_path("extend");
@@ -144,6 +147,7 @@ fn watch_extend_detected() {
     let _ = fs::remove_file(&path);
 }
 
+#[cfg_attr(miri, ignore = "FFI mmap syscalls are not supported by Miri")]
 #[test]
 fn watch_rapid_sequence_coalesces_or_reports_each() {
     let path = tmp_path("rapid");
@@ -180,6 +184,7 @@ fn watch_rapid_sequence_coalesces_or_reports_each() {
     let _ = fs::remove_file(&path);
 }
 
+#[cfg_attr(miri, ignore = "FFI mmap syscalls are not supported by Miri")]
 #[test]
 fn watch_removed_event_terminates_dispatcher() {
     let path = tmp_path("removed");

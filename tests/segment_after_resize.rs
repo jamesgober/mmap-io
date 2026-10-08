@@ -13,6 +13,7 @@ use std::sync::Arc;
 mod common;
 use common::tmp_path;
 
+#[cfg_attr(miri, ignore = "FFI mmap syscalls are not supported by Miri")]
 #[test]
 fn segment_remains_valid_when_parent_grows() {
     let path = tmp_path("seg_grow");
@@ -38,6 +39,7 @@ fn segment_remains_valid_when_parent_grows() {
     let _ = fs::remove_file(&path);
 }
 
+#[cfg_attr(miri, ignore = "FFI mmap syscalls are not supported by Miri")]
 #[test]
 fn segment_returns_oob_after_parent_shrinks_past_range() {
     let path = tmp_path("seg_shrink_past");
@@ -68,6 +70,7 @@ fn segment_returns_oob_after_parent_shrinks_past_range() {
     let _ = fs::remove_file(&path);
 }
 
+#[cfg_attr(miri, ignore = "FFI mmap syscalls are not supported by Miri")]
 #[test]
 fn segment_mut_returns_oob_after_parent_shrinks_past_range() {
     let path = tmp_path("seg_mut_shrink_past");
@@ -99,6 +102,7 @@ fn segment_mut_returns_oob_after_parent_shrinks_past_range() {
     let _ = fs::remove_file(&path);
 }
 
+#[cfg_attr(miri, ignore = "FFI mmap syscalls are not supported by Miri")]
 #[test]
 fn segment_mut_write_succeeds_when_parent_still_covers_range() {
     let path = tmp_path("seg_mut_partial_shrink");

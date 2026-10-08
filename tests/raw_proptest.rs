@@ -81,6 +81,7 @@ fn expected(file_len: usize, offset: u64, len: Option<usize>) -> Option<(usize, 
 proptest! {
     #![proptest_config(ProptestConfig::with_cases(256))]
 
+    #[cfg_attr(miri, ignore = "FFI mmap syscalls are not supported by Miri")]
     #[test]
     fn map_matches_file_or_errors((file_len, offset, len, mode) in case_strategy()) {
         let data = pattern(file_len, 0x5A);
@@ -106,6 +107,7 @@ proptest! {
         }
     }
 
+    #[cfg_attr(miri, ignore = "FFI mmap syscalls are not supported by Miri")]
     #[test]
     fn flush_range_ok_iff_in_bounds(
         window_off in 0u64..70_000,

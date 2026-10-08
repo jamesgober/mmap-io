@@ -214,6 +214,7 @@ mod tests {
         (dir, path)
     }
 
+    #[cfg_attr(miri, ignore = "FFI mmap syscalls are not supported by Miri")]
     #[test]
     #[cfg(feature = "locking")]
     fn test_lock_unlock_operations() {
@@ -254,6 +255,7 @@ mod tests {
         fs::remove_file(&path).expect("cleanup");
     }
 
+    #[cfg_attr(miri, ignore = "FFI mmap syscalls are not supported by Miri")]
     #[test]
     #[cfg(feature = "locking")]
     fn test_lock_with_different_modes() {
@@ -279,6 +281,7 @@ mod tests {
         fs::remove_file(&path).expect("cleanup");
     }
 
+    #[cfg_attr(miri, ignore = "FFI mmap syscalls are not supported by Miri")]
     #[test]
     #[cfg(all(feature = "locking", unix))]
     fn test_multiple_lock_regions() {

@@ -45,6 +45,7 @@ fn write_file(path: &std::path::Path, bytes: &[u8]) {
     f.write_all(bytes).expect("write");
 }
 
+#[cfg_attr(miri, ignore = "FFI mmap syscalls are not supported by Miri")]
 #[test]
 fn create_rw_every_boundary_size_round_trips() {
     for size in boundary_sizes().into_iter().chain([1 << 20, (1 << 20) + 3]) {
@@ -72,6 +73,7 @@ fn create_rw_every_boundary_size_round_trips() {
     }
 }
 
+#[cfg_attr(miri, ignore = "FFI mmap syscalls are not supported by Miri")]
 #[test]
 fn invalid_sizes_are_rejected_before_the_file_is_touched() {
     for size in [0, MAX_SIZE + 1, u64::MAX] {
@@ -104,6 +106,7 @@ fn invalid_sizes_are_rejected_before_the_file_is_touched() {
     }
 }
 
+#[cfg_attr(miri, ignore = "FFI mmap syscalls are not supported by Miri")]
 #[test]
 fn builder_create_without_size_is_rejected() {
     let path = tmp_path("nosize.bin");
@@ -117,6 +120,7 @@ fn builder_create_without_size_is_rejected() {
     assert!(!path.exists());
 }
 
+#[cfg_attr(miri, ignore = "FFI mmap syscalls are not supported by Miri")]
 #[test]
 fn create_rw_truncates_an_existing_file() {
     let path = tmp_path("trunc.bin");
@@ -137,6 +141,7 @@ fn create_rw_truncates_an_existing_file() {
     assert_eq!(mmap.as_slice(0, 3).unwrap(), &[0u8; 3][..]);
 }
 
+#[cfg_attr(miri, ignore = "FFI mmap syscalls are not supported by Miri")]
 #[test]
 fn opening_a_missing_file_is_not_found_everywhere() {
     let path = tmp_path("missing.bin");
@@ -216,6 +221,7 @@ fn opening_a_missing_file_is_not_found_everywhere() {
     assert!(!path.exists());
 }
 
+#[cfg_attr(miri, ignore = "FFI mmap syscalls are not supported by Miri")]
 #[test]
 fn empty_file_maps_read_only_but_not_read_write() {
     let path = tmp_path("empty.bin");
@@ -302,6 +308,7 @@ fn empty_file_maps_read_only_but_not_read_write() {
     assert_eq!(fs::metadata(&path).unwrap().len(), 0);
 }
 
+#[cfg_attr(miri, ignore = "FFI mmap syscalls are not supported by Miri")]
 #[test]
 fn directories_are_rejected_with_io_errors() {
     let path = tmp_path("unused");
@@ -323,6 +330,7 @@ fn directories_are_rejected_with_io_errors() {
     assert!(dir.is_dir(), "the directory must survive");
 }
 
+#[cfg_attr(miri, ignore = "FFI mmap syscalls are not supported by Miri")]
 #[test]
 fn read_only_permission_allows_only_read_only_mappings() {
     let path = tmp_path("readonly.bin");
@@ -381,6 +389,7 @@ fn read_only_permission_allows_only_read_only_mappings() {
     set_readonly(&path, false);
 }
 
+#[cfg_attr(miri, ignore = "FFI mmap syscalls are not supported by Miri")]
 #[test]
 fn read_only_handle_cannot_be_mapped_read_write_even_if_file_is_writable() {
     let path = tmp_path("ro_handle.bin");
@@ -404,6 +413,7 @@ fn read_only_handle_cannot_be_mapped_read_write_even_if_file_is_writable() {
     ));
 }
 
+#[cfg_attr(miri, ignore = "FFI mmap syscalls are not supported by Miri")]
 #[test]
 fn from_file_path_is_informational_only() {
     let path = tmp_path("real.bin");
@@ -430,6 +440,7 @@ fn from_file_path_is_informational_only() {
 }
 
 #[cfg(not(feature = "cow"))]
+#[cfg_attr(miri, ignore = "FFI mmap syscalls are not supported by Miri")]
 #[test]
 fn copy_on_write_requires_the_cow_feature() {
     let path = tmp_path("nocow.bin");
@@ -461,6 +472,7 @@ fn copy_on_write_requires_the_cow_feature() {
 }
 
 #[cfg(feature = "cow")]
+#[cfg_attr(miri, ignore = "FFI mmap syscalls are not supported by Miri")]
 #[test]
 fn copy_on_write_paths_map_the_file_contents() {
     let path = tmp_path("cow.bin");
@@ -504,6 +516,7 @@ fn copy_on_write_paths_map_the_file_contents() {
     assert_eq!(read_file(&path), data);
 }
 
+#[cfg_attr(miri, ignore = "FFI mmap syscalls are not supported by Miri")]
 #[test]
 fn builder_default_modes() {
     let path = tmp_path("modes.bin");
@@ -537,6 +550,7 @@ fn builder_default_modes() {
     assert_eq!(fs::metadata(&path).unwrap().len(), 10);
 }
 
+#[cfg_attr(miri, ignore = "FFI mmap syscalls are not supported by Miri")]
 #[test]
 fn open_or_create_never_truncates_and_validates_size_only_when_needed() {
     let path = tmp_path("ooc.bin");
@@ -586,6 +600,7 @@ fn open_or_create_never_truncates_and_validates_size_only_when_needed() {
     assert_eq!(fs::metadata(&empty).unwrap().len(), 123);
 }
 
+#[cfg_attr(miri, ignore = "FFI mmap syscalls are not supported by Miri")]
 #[test]
 fn builder_options_apply_on_every_read_write_path() {
     let policies = [
@@ -631,6 +646,7 @@ fn builder_options_apply_on_every_read_write_path() {
     }
 }
 
+#[cfg_attr(miri, ignore = "FFI mmap syscalls are not supported by Miri")]
 #[test]
 fn convenience_constructors_use_the_manual_policy() {
     let path = tmp_path("conv.bin");
@@ -653,6 +669,7 @@ fn convenience_constructors_use_the_manual_policy() {
     );
 }
 
+#[cfg_attr(miri, ignore = "FFI mmap syscalls are not supported by Miri")]
 #[test]
 fn unicode_and_space_paths_work() {
     for name in [
@@ -677,6 +694,7 @@ fn unicode_and_space_paths_work() {
     }
 }
 
+#[cfg_attr(miri, ignore = "FFI mmap syscalls are not supported by Miri")]
 #[test]
 fn debug_output_names_path_mode_and_length() {
     let path = tmp_path("dbg.bin");
@@ -695,6 +713,7 @@ fn debug_output_names_path_mode_and_length() {
     assert!(format!("{ro:?}").contains("ReadOnly"));
 }
 
+#[cfg_attr(miri, ignore = "FFI mmap syscalls are not supported by Miri")]
 #[test]
 fn unmap_returns_the_file_only_for_the_last_handle() {
     let path = tmp_path("unmap.bin");
@@ -727,6 +746,7 @@ fn unmap_returns_the_file_only_for_the_last_handle() {
     assert_eq!(bytes[10], b'!');
 }
 
+#[cfg_attr(miri, ignore = "FFI mmap syscalls are not supported by Miri")]
 #[test]
 fn unmap_works_for_every_mode_and_with_a_background_flusher() {
     let path = tmp_path("unmap_modes.bin");
@@ -751,6 +771,7 @@ fn unmap_works_for_every_mode_and_with_a_background_flusher() {
     }
 }
 
+#[cfg_attr(miri, ignore = "FFI mmap syscalls are not supported by Miri")]
 #[test]
 fn os_handle_refers_to_the_mapped_file() {
     let path = tmp_path("handle.bin");
@@ -770,6 +791,7 @@ fn os_handle_refers_to_the_mapped_file() {
     assert_eq!(file.metadata().unwrap().len(), 777);
 }
 
+#[cfg_attr(miri, ignore = "FFI mmap syscalls are not supported by Miri")]
 #[test]
 fn clones_share_one_mapping() {
     let path = tmp_path("clones.bin");
@@ -784,6 +806,7 @@ fn clones_share_one_mapping() {
     assert_eq!(b.pending_bytes(), 0);
 }
 
+#[cfg_attr(miri, ignore = "FFI mmap syscalls are not supported by Miri")]
 #[test]
 fn two_independent_mappings_of_one_file_see_each_others_writes() {
     let path = tmp_path("two.bin");

@@ -278,6 +278,7 @@ fn rw_with(size: u64, seed: u8) -> (TmpPath, MemoryMappedFile, Vec<u8>) {
     (path, m, model)
 }
 
+#[cfg_attr(miri, ignore = "FFI mmap syscalls are not supported by Miri")]
 #[test]
 fn read_write_mapping_follows_the_range_rule() {
     for size in boundary_sizes() {
@@ -286,6 +287,7 @@ fn read_write_mapping_follows_the_range_rule() {
     }
 }
 
+#[cfg_attr(miri, ignore = "FFI mmap syscalls are not supported by Miri")]
 #[test]
 fn read_only_mapping_follows_the_range_rule() {
     for size in boundary_sizes() {
@@ -298,6 +300,7 @@ fn read_only_mapping_follows_the_range_rule() {
 }
 
 #[cfg(feature = "cow")]
+#[cfg_attr(miri, ignore = "FFI mmap syscalls are not supported by Miri")]
 #[test]
 fn copy_on_write_mapping_follows_the_range_rule_for_reads() {
     // Only the read-side APIs are meaningful for COW here; the write
@@ -346,6 +349,7 @@ fn copy_on_write_mapping_follows_the_range_rule_for_reads() {
     }
 }
 
+#[cfg_attr(miri, ignore = "FFI mmap syscalls are not supported by Miri")]
 #[test]
 fn range_rule_holds_after_growing_and_shrinking() {
     let p = page();
@@ -369,12 +373,14 @@ fn range_rule_holds_after_growing_and_shrinking() {
     }
 }
 
+#[cfg_attr(miri, ignore = "FFI mmap syscalls are not supported by Miri")]
 #[test]
 fn a_multi_mebibyte_mapping_follows_the_range_rule() {
     let (_path, m, model) = rw_with((3 << 20) + 5, 5);
     check_all(&m, &model, "RW 3MiB+5");
 }
 
+#[cfg_attr(miri, ignore = "FFI mmap syscalls are not supported by Miri")]
 #[test]
 fn whole_mapping_operations_cover_every_byte() {
     for size in boundary_sizes() {

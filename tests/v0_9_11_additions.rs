@@ -16,6 +16,7 @@ use common::tmp_path;
 // as_slice_bytes: 0.9.6 compat shim
 // ---------------------------------------------------------------------
 
+#[cfg_attr(miri, ignore = "FFI mmap syscalls are not supported by Miri")]
 #[test]
 fn as_slice_bytes_works_on_read_only() {
     let path = tmp_path("asb_ro");
@@ -35,6 +36,7 @@ fn as_slice_bytes_works_on_read_only() {
     let _ = fs::remove_file(&path);
 }
 
+#[cfg_attr(miri, ignore = "FFI mmap syscalls are not supported by Miri")]
 #[test]
 fn as_slice_bytes_errors_on_read_write_like_0_9_6() {
     let path = tmp_path("asb_rw");
@@ -50,6 +52,7 @@ fn as_slice_bytes_errors_on_read_write_like_0_9_6() {
     let _ = fs::remove_file(&path);
 }
 
+#[cfg_attr(miri, ignore = "FFI mmap syscalls are not supported by Miri")]
 #[test]
 fn as_slice_bytes_out_of_bounds_errors() {
     let path = tmp_path("asb_oob");
@@ -71,6 +74,7 @@ fn as_slice_bytes_out_of_bounds_errors() {
 // ---------------------------------------------------------------------
 
 #[cfg(feature = "iterator")]
+#[cfg_attr(miri, ignore = "FFI mmap syscalls are not supported by Miri")]
 #[test]
 fn for_each_mut_legacy_clean_iteration_returns_ok_ok() {
     let path = tmp_path("femlcy_ok");
@@ -91,6 +95,7 @@ fn for_each_mut_legacy_clean_iteration_returns_ok_ok() {
 }
 
 #[cfg(feature = "iterator")]
+#[cfg_attr(miri, ignore = "FFI mmap syscalls are not supported by Miri")]
 #[test]
 fn for_each_mut_legacy_propagates_closure_error_as_inner_err() {
     let path = tmp_path("femlcy_err");
@@ -123,6 +128,7 @@ fn for_each_mut_legacy_propagates_closure_error_as_inner_err() {
 // ---------------------------------------------------------------------
 
 #[cfg(feature = "bytes")]
+#[cfg_attr(miri, ignore = "FFI mmap syscalls are not supported by Miri")]
 #[test]
 fn read_bytes_returns_owned_bytes() {
     let path = tmp_path("read_bytes");
@@ -143,6 +149,7 @@ fn read_bytes_returns_owned_bytes() {
 }
 
 #[cfg(feature = "bytes")]
+#[cfg_attr(miri, ignore = "FFI mmap syscalls are not supported by Miri")]
 #[test]
 fn mapped_slice_into_bytes_copies_data() {
     let path = tmp_path("ms_into_bytes");
@@ -167,6 +174,7 @@ fn mapped_slice_into_bytes_copies_data() {
 // MmapReader: io::Read + io::Seek
 // ---------------------------------------------------------------------
 
+#[cfg_attr(miri, ignore = "FFI mmap syscalls are not supported by Miri")]
 #[test]
 fn mmap_reader_reads_to_end() {
     let path = tmp_path("reader_full");
@@ -186,6 +194,7 @@ fn mmap_reader_reads_to_end() {
     let _ = fs::remove_file(&path);
 }
 
+#[cfg_attr(miri, ignore = "FFI mmap syscalls are not supported by Miri")]
 #[test]
 fn mmap_reader_seek_from_start_and_current() {
     let path = tmp_path("reader_seek");
@@ -218,6 +227,7 @@ fn mmap_reader_seek_from_start_and_current() {
     let _ = fs::remove_file(&path);
 }
 
+#[cfg_attr(miri, ignore = "FFI mmap syscalls are not supported by Miri")]
 #[test]
 fn mmap_reader_eof_returns_zero() {
     let path = tmp_path("reader_eof");
@@ -244,6 +254,7 @@ fn mmap_reader_eof_returns_zero() {
 // ---------------------------------------------------------------------
 
 #[cfg(unix)]
+#[cfg_attr(miri, ignore = "FFI mmap syscalls are not supported by Miri")]
 #[test]
 fn as_raw_fd_returns_valid_fd() {
     use std::os::fd::AsRawFd;
@@ -259,6 +270,7 @@ fn as_raw_fd_returns_valid_fd() {
 }
 
 #[cfg(unix)]
+#[cfg_attr(miri, ignore = "FFI mmap syscalls are not supported by Miri")]
 #[test]
 fn as_fd_returns_borrowed_fd() {
     use std::os::fd::AsFd;
@@ -273,6 +285,7 @@ fn as_fd_returns_borrowed_fd() {
 }
 
 #[cfg(windows)]
+#[cfg_attr(miri, ignore = "FFI mmap syscalls are not supported by Miri")]
 #[test]
 fn as_raw_handle_returns_valid_handle() {
     use std::os::windows::io::AsRawHandle;
@@ -288,6 +301,7 @@ fn as_raw_handle_returns_valid_handle() {
 }
 
 #[cfg(windows)]
+#[cfg_attr(miri, ignore = "FFI mmap syscalls are not supported by Miri")]
 #[test]
 fn as_handle_returns_borrowed_handle() {
     use std::os::windows::io::AsHandle;
@@ -308,6 +322,7 @@ fn as_handle_returns_borrowed_handle() {
 // ---------------------------------------------------------------------
 
 #[cfg(feature = "async")]
+#[cfg_attr(miri, ignore = "FFI mmap syscalls are not supported by Miri")]
 #[test]
 fn async_surface_runs_under_a_non_tokio_executor() {
     // Build a minimal block_on from std primitives. This proves the

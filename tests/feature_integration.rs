@@ -20,6 +20,7 @@ mod all_features {
     use std::thread;
     use std::time::Duration;
 
+    #[cfg_attr(miri, ignore = "FFI mmap syscalls are not supported by Miri")]
     #[test]
     fn test_all_features_integration() {
         let path = tmp_path("all_features");
@@ -118,6 +119,7 @@ mod all_features {
         fs::remove_file(&path).expect("cleanup");
     }
 
+    #[cfg_attr(miri, ignore = "FFI mmap syscalls are not supported by Miri")]
     #[test]
     fn test_cow_mode_integration() {
         let path = tmp_path("cow_integration");
@@ -156,6 +158,7 @@ mod all_features {
         fs::remove_file(&path).expect("cleanup");
     }
 
+    #[cfg_attr(miri, ignore = "FFI mmap syscalls are not supported by Miri")]
     #[test]
     fn test_concurrent_features() {
         let path = tmp_path("concurrent_features");
@@ -214,6 +217,7 @@ mod all_features {
         fs::remove_file(&path).expect("cleanup");
     }
 
+    #[cfg_attr(miri, ignore = "FFI mmap syscalls are not supported by Miri")]
     #[test]
     fn test_page_aligned_operations() {
         use mmap_io::utils::page_size;
@@ -270,6 +274,7 @@ fn single_feature_path(name: &str) -> common::TmpPath {
 
 // Test that features can be used independently
 #[cfg(feature = "advise")]
+#[cfg_attr(miri, ignore = "FFI mmap syscalls are not supported by Miri")]
 #[test]
 fn test_advise_only() {
     use mmap_io::{create_mmap, MmapAdvice};
@@ -284,6 +289,7 @@ fn test_advise_only() {
 }
 
 #[cfg(feature = "iterator")]
+#[cfg_attr(miri, ignore = "FFI mmap syscalls are not supported by Miri")]
 #[test]
 fn test_iterator_only() {
     use mmap_io::create_mmap;
@@ -299,6 +305,7 @@ fn test_iterator_only() {
 }
 
 #[cfg(feature = "atomic")]
+#[cfg_attr(miri, ignore = "FFI mmap syscalls are not supported by Miri")]
 #[test]
 fn test_atomic_only() {
     use mmap_io::create_mmap;

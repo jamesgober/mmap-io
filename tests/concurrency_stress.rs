@@ -364,6 +364,7 @@ fn run_mix(run: Duration, readers: usize) {
     }
 }
 
+#[cfg_attr(miri, ignore = "FFI mmap syscalls are not supported by Miri")]
 #[test]
 fn mixed_readers_writer_resizer_and_flushers() {
     run_mix(duration(1500), 4);
@@ -378,6 +379,7 @@ fn soak_mixed_readers_writer_resizer_and_flushers() {
 /// Many short-lived clones and drops of the handle while the
 /// `EveryMillis` thread keeps flushing: the last drop must stop the
 /// flusher without a hang or a use of freed state.
+#[cfg_attr(miri, ignore = "FFI mmap syscalls are not supported by Miri")]
 #[test]
 fn clone_and_drop_churn_with_background_flusher() {
     let path = common::tmp_path("churn.bin");
@@ -410,6 +412,7 @@ fn clone_and_drop_churn_with_background_flusher() {
 /// `AnonymousMmap` under concurrent writers of whole records and
 /// readers that validate them. (No nested read slices: see the ignored
 /// deadlock test in tests/edge/anonymous.rs.)
+#[cfg_attr(miri, ignore = "FFI mmap syscalls are not supported by Miri")]
 #[test]
 fn anonymous_mapping_records_are_never_torn() {
     let m = Arc::new(AnonymousMmap::new(PREFIX * RECORD).unwrap());
@@ -455,6 +458,7 @@ fn anonymous_mapping_records_are_never_torn() {
 /// resizes the mapping. Only atomic views touch the counter region and
 /// no plain read view is taken on this mapping while they run.
 #[cfg(feature = "atomic")]
+#[cfg_attr(miri, ignore = "FFI mmap syscalls are not supported by Miri")]
 #[test]
 fn atomic_counters_survive_concurrent_resizes() {
     let path = common::tmp_path("atomic_stress.bin");

@@ -95,6 +95,7 @@ fn expected_window(file_len: usize, offset: u64, len: Option<usize>) -> Option<(
     }
 }
 
+#[cfg_attr(miri, ignore = "FFI mmap syscalls are not supported by Miri")]
 #[test]
 fn ro_size_and_offset_matrix() {
     let dir = tempfile::tempdir().expect("tempdir");
@@ -141,6 +142,7 @@ fn ro_size_and_offset_matrix() {
     }
 }
 
+#[cfg_attr(miri, ignore = "FFI mmap syscalls are not supported by Miri")]
 #[test]
 fn rw_writes_reach_file_through_independent_read() {
     let dir = tempfile::tempdir().expect("tempdir");
@@ -181,6 +183,7 @@ fn rw_writes_reach_file_through_independent_read() {
     }
 }
 
+#[cfg_attr(miri, ignore = "FFI mmap syscalls are not supported by Miri")]
 #[test]
 fn cow_writes_never_reach_file() {
     let dir = tempfile::tempdir().expect("tempdir");
@@ -216,6 +219,7 @@ fn cow_writes_never_reach_file() {
     }
 }
 
+#[cfg_attr(miri, ignore = "FFI mmap syscalls are not supported by Miri")]
 #[test]
 fn flush_range_every_boundary_sub_range() {
     let dir = tempfile::tempdir().expect("tempdir");
@@ -289,6 +293,7 @@ fn flush_range_every_boundary_sub_range() {
     }
 }
 
+#[cfg_attr(miri, ignore = "FFI mmap syscalls are not supported by Miri")]
 #[test]
 fn ro_mapping_sees_writes_from_separate_rw_mapping() {
     let dir = tempfile::tempdir().expect("tempdir");
@@ -317,6 +322,7 @@ fn ro_mapping_sees_writes_from_separate_rw_mapping() {
     assert_eq!(ro[gran() + 5], 0xD4);
 }
 
+#[cfg_attr(miri, ignore = "FFI mmap syscalls are not supported by Miri")]
 #[test]
 fn mapping_outlives_file_handle() {
     let dir = tempfile::tempdir().expect("tempdir");
@@ -347,6 +353,7 @@ fn mapping_outlives_file_handle() {
     assert_eq!(on_disk[0], data[0]);
 }
 
+#[cfg_attr(miri, ignore = "FFI mmap syscalls are not supported by Miri")]
 #[test]
 fn flush_is_durable_across_reopen() {
     let dir = tempfile::tempdir().expect("tempdir");
@@ -369,6 +376,7 @@ fn flush_is_durable_across_reopen() {
     }
 }
 
+#[cfg_attr(miri, ignore = "FFI mmap syscalls are not supported by Miri")]
 #[test]
 fn async_flush_variants_succeed_and_data_lands() {
     let dir = tempfile::tempdir().expect("tempdir");
@@ -385,6 +393,7 @@ fn async_flush_variants_succeed_and_data_lands() {
     assert_eq!(std::fs::read(&path).expect("read")[9_999], 1);
 }
 
+#[cfg_attr(miri, ignore = "FFI mmap syscalls are not supported by Miri")]
 #[test]
 fn permission_errors_are_reported_not_panicked() {
     let dir = tempfile::tempdir().expect("tempdir");
@@ -402,6 +411,7 @@ fn permission_errors_are_reported_not_panicked() {
     assert!(unsafe { RawMmapMut::map_mut(&wo_handle) }.is_err());
 }
 
+#[cfg_attr(miri, ignore = "FFI mmap syscalls are not supported by Miri")]
 #[test]
 fn file_growth_after_mapping_is_not_visible_past_window() {
     let dir = tempfile::tempdir().expect("tempdir");
@@ -418,6 +428,7 @@ fn file_growth_after_mapping_is_not_visible_past_window() {
     assert_eq!(m2.len(), 10_000);
 }
 
+#[cfg_attr(miri, ignore = "FFI mmap syscalls are not supported by Miri")]
 #[test]
 fn anonymous_mappings_edge_sizes() {
     for len in [
@@ -492,6 +503,7 @@ fn make_sparse(_file: &File) {
 /// Offsets above 4 GiB exercise the high DWORD on Windows and the
 /// 64-bit `off_t` / `mmap64` path on 32-bit Linux. The file is sparse,
 /// so this uses almost no disk space.
+#[cfg_attr(miri, ignore = "FFI mmap syscalls are not supported by Miri")]
 #[test]
 fn offsets_above_4_gib() {
     let dir = tempfile::tempdir().expect("tempdir");

@@ -68,6 +68,7 @@ fn step(r: &mut mmap_io::mmap::MmapReader<'_>, c: &mut Cursor<&[u8]>, op: &Op, c
     assert_eq!(r.position(), c.position(), "{ctx}: position after {op:?}");
 }
 
+#[cfg_attr(miri, ignore = "FFI mmap syscalls are not supported by Miri")]
 #[test]
 fn reader_matches_cursor_on_a_table_of_edge_operations() {
     for len in [1usize, 2, 4095, 4096, 4097, 70_000] {
@@ -120,6 +121,7 @@ fn reader_matches_cursor_on_a_table_of_edge_operations() {
     }
 }
 
+#[cfg_attr(miri, ignore = "FFI mmap syscalls are not supported by Miri")]
 #[test]
 fn failed_seeks_leave_the_position_unchanged() {
     let (_p, m) = mapping(b"0123456789");
@@ -143,6 +145,7 @@ fn failed_seeks_leave_the_position_unchanged() {
     assert_eq!(r.read(&mut [0u8; 4]).unwrap(), 0);
 }
 
+#[cfg_attr(miri, ignore = "FFI mmap syscalls are not supported by Miri")]
 #[test]
 fn read_to_end_copy_and_bufreader_see_the_whole_file() {
     let data = pattern(3 * 4096 + 17, 9);
@@ -171,6 +174,7 @@ fn read_to_end_copy_and_bufreader_see_the_whole_file() {
     assert_eq!(a.position(), 100);
 }
 
+#[cfg_attr(miri, ignore = "FFI mmap syscalls are not supported by Miri")]
 #[test]
 fn reader_works_on_read_write_mappings_and_follows_resizes() {
     let path = tmp_path("rw_reader.bin");
@@ -196,6 +200,7 @@ fn reader_works_on_read_write_mappings_and_follows_resizes() {
 }
 
 #[cfg(feature = "cow")]
+#[cfg_attr(miri, ignore = "FFI mmap syscalls are not supported by Miri")]
 #[test]
 fn reader_works_on_copy_on_write_mappings() {
     let data = pattern(5000, 4);
@@ -223,6 +228,7 @@ proptest! {
     #![proptest_config(ProptestConfig { cases: 128, ..ProptestConfig::default() })]
 
     /// Random operation sequences behave exactly like `Cursor`.
+    #[cfg_attr(miri, ignore = "FFI mmap syscalls are not supported by Miri")]
     #[test]
     fn reader_is_equivalent_to_cursor(
         (len, ops) in (1usize..=5000).prop_flat_map(|len| {

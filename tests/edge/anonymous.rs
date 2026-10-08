@@ -25,6 +25,7 @@ fn expect_oob<T: std::fmt::Debug>(r: Result<T, MmapIoError>, ctx: &str, o: u64, 
     }
 }
 
+#[cfg_attr(miri, ignore = "FFI mmap syscalls are not supported by Miri")]
 #[test]
 fn sizes_and_zero_initialization() {
     let p = page();
@@ -44,6 +45,7 @@ fn sizes_and_zero_initialization() {
     }
 }
 
+#[cfg_attr(miri, ignore = "FFI mmap syscalls are not supported by Miri")]
 #[test]
 fn invalid_sizes_are_rejected() {
     for size in [0, MAX_SIZE + 1, u64::MAX] {
@@ -54,6 +56,7 @@ fn invalid_sizes_are_rejected() {
     }
 }
 
+#[cfg_attr(miri, ignore = "FFI mmap syscalls are not supported by Miri")]
 #[test]
 fn non_empty_ranges_follow_the_range_rule() {
     let p = page();
@@ -105,6 +108,7 @@ fn non_empty_ranges_follow_the_range_rule() {
     }
 }
 
+#[cfg_attr(miri, ignore = "FFI mmap syscalls are not supported by Miri")]
 #[test]
 fn zero_length_requests_within_bounds_are_empty() {
     let m = AnonymousMmap::new(100).unwrap();
@@ -136,6 +140,7 @@ fn zero_length_requests_past_the_end_are_accepted() {
     }
 }
 
+#[cfg_attr(miri, ignore = "FFI mmap syscalls are not supported by Miri")]
 #[test]
 fn slices_write_through_and_report_their_length() {
     let m = AnonymousMmap::new(4096).unwrap();
@@ -155,6 +160,7 @@ fn slices_write_through_and_report_their_length() {
     assert_eq!(&r2[10..15], b"Hello");
 }
 
+#[cfg_attr(miri, ignore = "FFI mmap syscalls are not supported by Miri")]
 #[test]
 fn raw_pointers_alias_the_mapping() {
     let m = AnonymousMmap::new(page() + 1).unwrap();
@@ -173,6 +179,7 @@ fn raw_pointers_alias_the_mapping() {
     assert_eq!(b[0], 0xCD);
 }
 
+#[cfg_attr(miri, ignore = "FFI mmap syscalls are not supported by Miri")]
 #[test]
 fn concurrent_disjoint_writers_and_readers() {
     let m = Arc::new(AnonymousMmap::new(64 * 1024).unwrap());

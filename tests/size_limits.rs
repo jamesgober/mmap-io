@@ -6,6 +6,7 @@ use std::fs;
 mod common;
 use common::tmp_path;
 
+#[cfg_attr(miri, ignore = "FFI mmap syscalls are not supported by Miri")]
 #[test]
 fn test_max_size_validation_create() {
     let path = tmp_path("max_size_create");
@@ -28,6 +29,7 @@ fn test_max_size_validation_create() {
     let _ = fs::remove_file(&path);
 }
 
+#[cfg_attr(miri, ignore = "FFI mmap syscalls are not supported by Miri")]
 #[test]
 fn test_max_size_validation_resize() {
     let path = tmp_path("max_size_resize");
@@ -53,6 +55,7 @@ fn test_max_size_validation_resize() {
     let _ = fs::remove_file(&path);
 }
 
+#[cfg_attr(miri, ignore = "FFI mmap syscalls are not supported by Miri")]
 #[test]
 fn test_max_size_validation_builder() {
     let path = tmp_path("max_size_builder");
@@ -77,6 +80,7 @@ fn test_max_size_validation_builder() {
     let _ = fs::remove_file(&path);
 }
 
+#[cfg_attr(miri, ignore = "FFI mmap syscalls are not supported by Miri")]
 #[test]
 fn test_normal_size_still_works() {
     let path = tmp_path("normal_size");
@@ -101,6 +105,7 @@ fn test_normal_size_still_works() {
     }
 }
 
+#[cfg_attr(miri, ignore = "FFI mmap syscalls are not supported by Miri")]
 #[test]
 fn test_zero_size_validation() {
     let path = tmp_path("zero_size");

@@ -2495,6 +2495,7 @@ mod smaps_tests {
 
     const FIELDS: &[&str] = &["AnonHugePages:", "Private_Hugetlb:", "Shared_Hugetlb:"];
 
+    #[cfg_attr(miri, ignore = "FFI mmap syscalls are not supported by Miri")]
     #[test]
     fn range_headers_parse_and_stat_lines_do_not() {
         assert_eq!(
@@ -2522,6 +2523,7 @@ mod smaps_tests {
         }
     }
 
+    #[cfg_attr(miri, ignore = "FFI mmap syscalls are not supported by Miri")]
     #[test]
     fn kb_fields_parse_only_for_requested_prefixes() {
         assert_eq!(
@@ -2550,6 +2552,7 @@ mod smaps_tests {
         assert_eq!(parse_smaps_kb_field("AnonHugePages: 1 kB", &[]), None);
     }
 
+    #[cfg_attr(miri, ignore = "FFI mmap syscalls are not supported by Miri")]
     #[test]
     fn lookup_of_an_unmapped_address_is_unknown() {
         // Page zero is never mapped (vm.mmap_min_addr).
@@ -2557,6 +2560,7 @@ mod smaps_tests {
         assert_eq!(smaps_hugepage_lookup(1), None);
     }
 
+    #[cfg_attr(miri, ignore = "FFI mmap syscalls are not supported by Miri")]
     #[test]
     fn lookup_of_live_mappings_is_known() {
         let heap = vec![1u8; 1 << 20];
@@ -2568,6 +2572,7 @@ mod smaps_tests {
         let _ = smaps_hugepage_lookup(usize::MAX - 4095);
     }
 
+    #[cfg_attr(miri, ignore = "FFI mmap syscalls are not supported by Miri")]
     #[test]
     fn transparent_huge_pages_are_detected_when_the_kernel_provides_them() {
         // Ask for THP on an anonymous region and fault it in. Whether
