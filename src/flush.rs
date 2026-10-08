@@ -2,12 +2,20 @@
 //!
 //! Controls when writes to a RW mapping should be flushed to disk.
 
-use std::sync::atomic::{AtomicBool, Ordering};
+use parking_lot::{Condvar, Mutex, MutexGuard};
 use std::sync::Arc;
 use std::thread;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 /// Policy controlling when to flush dirty pages to disk.
+///
+/// The policy only controls *automatic* flushes. An explicit
+/// [`MemoryMappedFile::flush`](crate::MemoryMappedFile::flush) always
+/// flushes, whatever the policy. Byte thresholds count every write
+/// path (see
+/// [`MemoryMappedFile::pending_bytes`](crate::MemoryMappedFile::pending_bytes));
+/// `Always`, `EveryBytes`, and `EveryWrites` are evaluated after each
+/// `update_region` call.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum FlushPolicy {
     /// Never flush implicitly; flush() must be called by the user.
@@ -30,33 +38,38 @@ pub enum FlushPolicy {
 ///
 /// Used internally when `FlushPolicy::EveryMillis` is configured. The
 /// flusher owns a background thread that calls a user-provided callback
-/// every `interval_ms` milliseconds (or shorter, when shutdown is
-/// requested).
+/// once per interval. The thread sleeps on a condition variable, so it
+/// wakes once per interval (not on a fixed polling tick) and is woken
+/// immediately on shutdown.
 ///
 /// # Shutdown
 ///
-/// Dropping the `TimeBasedFlusher` signals the background thread to
-/// exit via an `AtomicBool` flag. The thread checks the flag both
-/// before sleeping and after waking, so the longest it can outlive
-/// the `Drop` call is roughly `min(interval_ms, SHUTDOWN_POLL_MS)`.
+/// Dropping the `TimeBasedFlusher` signals the thread and joins it. If
+/// the callback is running at that moment, `Drop` waits for it to
+/// return. If `Drop` runs on the worker thread itself (the callback
+/// can end up releasing the last reference to the mapping), the thread
+/// is not joined, since a thread cannot join itself; it exits as soon
+/// as the callback returns. `Drop` never panics.
 pub(crate) struct TimeBasedFlusher {
-    /// Shutdown signal shared with the background thread.
-    running: Arc<AtomicBool>,
+    shared: Arc<Shared>,
     /// Worker thread handle. `Option` so Drop can take ownership.
     thread: Option<thread::JoinHandle<()>>,
 }
 
-/// Maximum delay between shutdown-flag checks. Lets the thread exit
-/// promptly even if `interval_ms` is much larger than this. Tuned for
-/// "fast enough to not block process teardown" without being so small
-/// that it wastes wakeups during normal operation.
-const SHUTDOWN_POLL_MS: u64 = 50;
+/// State shared between the owner and the worker thread.
+struct Shared {
+    /// Set to `true` to ask the worker to exit.
+    stop: Mutex<bool>,
+    /// Signalled when `stop` is set.
+    wake: Condvar,
+}
 
 impl TimeBasedFlusher {
     /// Create a new time-based flusher with the given interval and
     /// callback. Returns `None` if `interval_ms` is zero (flushing
     /// at every zero ms is meaningless; callers should pick a
-    /// different policy instead).
+    /// different policy instead) or if the OS refuses to start the
+    /// worker thread (logged as a warning).
     ///
     /// The callback is invoked from the background thread once per
     /// interval. It returns `true` if a flush was performed (used by
@@ -71,62 +84,122 @@ impl TimeBasedFlusher {
         }
 
         let interval = Duration::from_millis(interval_ms);
-        let running = Arc::new(AtomicBool::new(true));
-        let running_clone = Arc::clone(&running);
-        let shutdown_poll = Duration::from_millis(SHUTDOWN_POLL_MS.min(interval_ms));
-
-        let handle = thread::spawn(move || {
-            // Sleep in small slices so we observe shutdown promptly
-            // even when the configured interval is large.
-            let mut elapsed = Duration::ZERO;
-            while running_clone.load(Ordering::Acquire) {
-                // Sleep one slice, then check the shutdown flag.
-                // `saturating_sub` guards against the case where a
-                // previous `thread::sleep` overshot and pushed
-                // `elapsed` past `interval`: the next slice clamps to
-                // zero (yielding immediately) rather than panicking
-                // on a Duration underflow.
-                let remaining = interval.saturating_sub(elapsed);
-                let slice = shutdown_poll.min(remaining);
-                thread::sleep(slice);
-                elapsed += slice;
-
-                if !running_clone.load(Ordering::Acquire) {
-                    break;
-                }
-
-                if elapsed >= interval {
-                    let _ = flush_callback();
-                    elapsed = Duration::ZERO;
-                }
-            }
+        let shared = Arc::new(Shared {
+            stop: Mutex::new(false),
+            wake: Condvar::new(),
         });
+        let worker = Arc::clone(&shared);
 
-        Some(Self {
-            running,
-            thread: Some(handle),
-        })
+        let spawned = thread::Builder::new()
+            .name("mmap-io-flusher".into())
+            .spawn(move || {
+                let mut stop = worker.stop.lock();
+                loop {
+                    // Sleep one interval; wake early only for shutdown.
+                    let deadline = Instant::now() + interval;
+                    while !*stop && !worker.wake.wait_until(&mut stop, deadline).timed_out() {}
+                    if *stop {
+                        break;
+                    }
+                    // Run the callback without holding the lock, so a
+                    // concurrent Drop can set `stop` without waiting.
+                    MutexGuard::unlocked(&mut stop, || {
+                        let _ = flush_callback();
+                    });
+                }
+            });
+
+        match spawned {
+            Ok(handle) => Some(Self {
+                shared,
+                thread: Some(handle),
+            }),
+            Err(e) => {
+                log::warn!("could not start the EveryMillis flusher thread: {e}");
+                None
+            }
+        }
     }
 }
 
 impl Drop for TimeBasedFlusher {
     fn drop(&mut self) {
-        // Signal shutdown.
-        self.running.store(false, Ordering::Release);
-        // Detach the thread without blocking; it will observe the
-        // shutdown flag on its next slice boundary. We do not join
-        // synchronously to keep Drop predictable in latency-
-        // sensitive contexts. If the caller needs to guarantee the
-        // worker has exited (e.g., for test isolation), they should
-        // sleep for ~2 * SHUTDOWN_POLL_MS after dropping.
+        *self.shared.stop.lock() = true;
+        self.shared.wake.notify_all();
         if let Some(handle) = self.thread.take() {
-            // Move the join into a detached helper thread so Drop
-            // returns immediately. The OS reaps the thread either
-            // way; this just keeps the JoinHandle from leaking its
-            // OS-level state.
-            let _ = thread::spawn(move || {
+            // Joining from the worker itself would deadlock (std panics
+            // instead); in that case the worker exits on its own once
+            // the callback returns.
+            if handle.thread().id() != thread::current().id() {
+                // `Err` only means the callback panicked; nothing to do.
                 let _ = handle.join();
-            });
+            }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+
+    #[test]
+    fn drop_stops_and_joins_the_worker() {
+        let calls = Arc::new(AtomicUsize::new(0));
+        let c = Arc::clone(&calls);
+        let flusher = TimeBasedFlusher::new(5, move || {
+            c.fetch_add(1, Ordering::SeqCst);
+            true
+        })
+        .expect("flusher");
+        thread::sleep(Duration::from_millis(50));
+        drop(flusher);
+        let after_drop = calls.load(Ordering::SeqCst);
+        assert!(after_drop > 0, "callback never ran");
+        thread::sleep(Duration::from_millis(50));
+        assert_eq!(
+            calls.load(Ordering::SeqCst),
+            after_drop,
+            "callback ran after Drop returned"
+        );
+    }
+
+    #[test]
+    fn drop_with_long_interval_returns_promptly() {
+        let flusher = TimeBasedFlusher::new(60_000, || false).expect("flusher");
+        let start = Instant::now();
+        drop(flusher);
+        assert!(start.elapsed() < Duration::from_secs(5));
+    }
+
+    #[test]
+    fn drop_on_the_worker_thread_does_not_panic() {
+        // The callback drops the flusher itself, so Drop runs on the
+        // worker thread and must not try to join it.
+        let slot: Arc<Mutex<Option<TimeBasedFlusher>>> = Arc::new(Mutex::new(None));
+        let done = Arc::new(AtomicBool::new(false));
+        let (s, d) = (Arc::clone(&slot), Arc::clone(&done));
+        let flusher = TimeBasedFlusher::new(5, move || {
+            if let Some(f) = s.lock().take() {
+                drop(f);
+                d.store(true, Ordering::SeqCst);
+            }
+            false
+        })
+        .expect("flusher");
+        *slot.lock() = Some(flusher);
+        let deadline = Instant::now() + Duration::from_secs(5);
+        while !done.load(Ordering::SeqCst) && Instant::now() < deadline {
+            thread::sleep(Duration::from_millis(5));
+        }
+        assert!(
+            done.load(Ordering::SeqCst),
+            "worker never dropped the flusher"
+        );
+    }
+
+    #[test]
+    fn zero_interval_is_rejected() {
+        assert!(TimeBasedFlusher::new(0, || false).is_none());
     }
 }

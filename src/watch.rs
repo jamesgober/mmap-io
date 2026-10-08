@@ -9,7 +9,8 @@
 //!
 //! The public surface is unchanged: [`MemoryMappedFile::watch`] takes
 //! a callback and returns a [`WatchHandle`]; dropping the handle
-//! stops the watcher and joins its internal thread. The
+//! stops the watcher and joins its dispatcher thread, so no callback
+//! runs after the drop returns. The
 //! [`ChangeEvent`] / [`ChangeKind`] shape stays the same as 0.9.8 so
 //! existing callers continue to compile and behave identically at
 //! the API level.
@@ -20,14 +21,14 @@ use notify::event::EventKind as NotifyKind;
 use notify::{Event, RecommendedWatcher, RecursiveMode, Watcher};
 use std::sync::mpsc;
 use std::thread;
-use std::time::Duration;
 
-/// How long to wait for the background dispatcher thread to join
-/// when the `WatchHandle` is dropped. The thread exits as soon as
-/// the channel is closed; this timeout is a safety net so a
-/// uncooperative thread cannot block the dropping thread
-/// indefinitely.
-const SHUTDOWN_JOIN_TIMEOUT: Duration = Duration::from_millis(500);
+/// Message delivered to the dispatcher thread.
+enum Msg {
+    /// An event (or error) from the `notify` backend.
+    Event(notify::Result<Event>),
+    /// Sent by `WatchHandle::drop`: exit the dispatch loop.
+    Shutdown,
+}
 
 /// Type of change detected in a watched file.
 ///
@@ -69,47 +70,46 @@ pub struct ChangeEvent {
 ///
 /// Dropping the handle:
 ///   1. Drops the underlying `notify::RecommendedWatcher`, which
-///      tears down the OS-level event subscription synchronously.
-///   2. Closes the channel the dispatcher thread reads from, which
-///      causes the thread to exit its loop.
-///   3. Joins the dispatcher thread with a 500ms timeout.
+///      tears down the OS-level event subscription.
+///   2. Sends a shutdown message to the dispatcher thread.
+///   3. Joins the dispatcher thread. If a callback is running, the
+///      drop waits for it to return; afterwards no further callback
+///      runs. Dropping the handle from inside its own callback does
+///      not deadlock: the join is skipped and the thread exits when
+///      the callback returns.
 pub struct WatchHandle {
     /// Held to keep the OS subscription alive. Dropped first.
     watcher: Option<RecommendedWatcher>,
-    /// Dispatcher thread join handle. The thread exits when the
-    /// internal channel is closed (which happens when `watcher` is
-    /// dropped).
+    /// Used by `Drop` to tell the dispatcher to exit, independent of
+    /// when the backend releases its own sender.
+    shutdown: mpsc::Sender<Msg>,
+    /// Dispatcher thread join handle.
     thread: Option<thread::JoinHandle<()>>,
 }
 
 impl Drop for WatchHandle {
     fn drop(&mut self) {
-        // Drop the watcher first; this tears down the OS subscription
-        // and closes the channel the dispatcher reads from. The
-        // dispatcher's `recv()` then returns an error and the thread
-        // exits its loop.
+        // Stop the OS subscription first so no new events are queued
+        // behind the shutdown message.
         self.watcher.take();
+        // Fails only if the dispatcher already exited (it stops after
+        // a `Removed` event); nothing to do then.
+        let _ = self.shutdown.send(Msg::Shutdown);
         if let Some(handle) = self.thread.take() {
-            // Spawn a join wrapper so we don't block the dropping
-            // thread past SHUTDOWN_JOIN_TIMEOUT. If the dispatcher
-            // is mid-callback the OS will eventually reap the
-            // thread; we just don't wait for it.
-            let _ = thread::spawn(move || {
+            if handle.thread().id() != thread::current().id() {
+                // `Err` only means the user callback panicked.
                 let _ = handle.join();
-            });
+            }
         }
-        // SHUTDOWN_JOIN_TIMEOUT is referenced for documentation;
-        // the actual join is detached because std::thread::join has
-        // no timeout API. The Drop pattern matches `TimeBasedFlusher`.
-        let _ = SHUTDOWN_JOIN_TIMEOUT;
     }
 }
 
 impl WatchHandle {
-    /// Returns `true` while the dispatcher thread has not yet
-    /// observed shutdown and exited. After `Drop` triggers, this
-    /// may briefly return `true` until the OS reaps the thread.
-    #[allow(dead_code)]
+    /// Returns `true` while the dispatcher thread is running. It
+    /// returns `false` once the thread has exited, which happens
+    /// after a `Removed` event (the watch cannot see the path any
+    /// more).
+    #[must_use]
     pub fn is_active(&self) -> bool {
         self.thread.as_ref().is_some_and(|h| !h.is_finished())
     }
@@ -207,17 +207,18 @@ impl MemoryMappedFile {
         F: Fn(ChangeEvent) + Send + 'static,
     {
         let path = self.path().to_path_buf();
-        let (tx, rx) = mpsc::channel::<notify::Result<Event>>();
+        let (tx, rx) = mpsc::channel::<Msg>();
+        let event_tx = tx.clone();
 
         // `notify::recommended_watcher` picks the best backend for
         // the platform: inotify on Linux, FSEvents on macOS,
         // ReadDirectoryChangesW on Windows.
         let mut watcher: RecommendedWatcher =
             notify::recommended_watcher(move |res: notify::Result<Event>| {
-                // The send fails only if the receiver has been
-                // dropped, which happens during `WatchHandle::Drop`.
-                // Ignoring the error in that case is correct.
-                let _ = tx.send(res);
+                // The send fails only if the dispatcher has exited
+                // (handle dropped, or the path was removed). Ignoring
+                // the error in that case is correct.
+                let _ = event_tx.send(Msg::Event(res));
             })
             .map_err(|e| MmapIoError::WatchFailed(format!("watcher init failed: {e}")))?;
 
@@ -229,13 +230,17 @@ impl MemoryMappedFile {
             .map_err(|e| MmapIoError::WatchFailed(format!("watch({:?}) failed: {e}", path)))?;
 
         // Dispatcher thread: drain the channel and translate each
-        // event into a `ChangeEvent` for the user callback. Exits
-        // when the channel is closed (i.e., when the watcher is
-        // dropped in `WatchHandle::Drop`).
+        // event into a `ChangeEvent` for the user callback. Exits on
+        // `Msg::Shutdown` (sent by `WatchHandle::Drop`), after a
+        // `Removed` event, or if every sender is gone.
         let thread = thread::Builder::new()
             .name(format!("mmap-io-watch:{}", path.display()))
             .spawn(move || {
-                while let Ok(res) = rx.recv() {
+                while let Ok(msg) = rx.recv() {
+                    let res = match msg {
+                        Msg::Shutdown => break,
+                        Msg::Event(res) => res,
+                    };
                     let event = match res {
                         Ok(ev) => ev,
                         // notify reports errors via the same channel
@@ -273,6 +278,7 @@ impl MemoryMappedFile {
 
         Ok(WatchHandle {
             watcher: Some(watcher),
+            shutdown: tx,
             thread: Some(thread),
         })
     }
