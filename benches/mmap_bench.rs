@@ -565,6 +565,20 @@ fn bench_cow_open(b: &mut Criterion) {
         });
         let _ = fs::remove_file(&path);
     });
+    group.bench_function("open_cow_writable_4MB", |ben| {
+        let path = tmp_path("cow_open_writable");
+        let _ = fs::remove_file(&path);
+        {
+            let rw = MemoryMappedFile::create_rw(&path, 4 * 1024 * 1024).expect("create_rw");
+            rw.update_region(0, &vec![5u8; 4096]).expect("seed");
+            rw.flush().expect("flush");
+        }
+        ben.iter(|| {
+            let cow = MemoryMappedFile::open_cow_writable(&path).expect("open_cow_writable");
+            criterion::black_box(cow);
+        });
+        let _ = fs::remove_file(&path);
+    });
     group.finish();
 }
 #[cfg(not(feature = "cow"))]

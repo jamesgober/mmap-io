@@ -170,7 +170,13 @@ fn segment_and_cow_and_anonymous_follow_the_same_rule() {
 
     #[cfg(feature = "cow")]
     {
-        let cow = MemoryMappedFile::open_cow(dir.path().join("x.bin")).expect("cow");
+        // Default COW is read-only: no atomics at all.
+        let ro_cow = MemoryMappedFile::open_cow(dir.path().join("x.bin")).expect("cow");
+        assert!(is_invalid_mode(ro_cow.atomic_u64(0)));
+        drop(ro_cow.as_slice(0, 8).expect("ro cow slice"));
+        drop(ro_cow);
+
+        let cow = MemoryMappedFile::open_cow_writable(dir.path().join("x.bin")).expect("cow");
         let a = cow.atomic_u64(0).expect("cow atomic");
         assert!(is_invalid_mode(cow.as_slice(0, 8)));
         drop(a);

@@ -2,17 +2,17 @@
 //!
 //! [`ChunkIterator`] and [`PageIterator`] yield [`MappedSlice<'a>`]
 //! items that borrow directly from the underlying mapping (no
-//! allocation, no copy). On RW and COW mappings the iterator holds a
-//! read guard for its entire lifetime, which blocks any concurrent
-//! `resize()` and write until iteration completes, and every yielded
-//! item keeps that guard alive as well, so an item kept after the
-//! iterator is dropped still blocks writers until the item itself is
-//! dropped.
+//! allocation, no copy). On RW and writable COW mappings the iterator
+//! holds a read guard for its entire lifetime, which blocks any
+//! concurrent `resize()` and write until iteration completes, and every
+//! yielded item keeps that guard alive as well, so an item kept after
+//! the iterator is dropped still blocks writers until the item itself
+//! is dropped.
 //!
 //! # Atomic views
 //!
-//! Plain byte views and atomic views of the same bytes must not
-//! coexist (see `crate::atomic`). Every item of a RW or COW mapping is
+//! Plain byte views and atomic views of the same bytes must not coexist
+//! (see `crate::atomic`). Every item of a RW or writable COW mapping is
 //! registered as a plain view of its own range while it lives, so an
 //! atomic view over that range cannot be created meanwhile (it returns
 //! `InvalidMode`); other ranges are unaffected. An item whose range
@@ -40,7 +40,7 @@ enum ChunkSource<'a> {
     /// RO mapping: the underlying `RawMmap` is never remapped or
     /// written, so a plain borrow is valid for `'a`.
     Shared(&'a [u8]),
-    /// RW or COW mapping. `pin` keeps the length stable for the
+    /// RW or writable COW mapping. `pin` keeps the length stable for the
     /// iterator's lifetime (so `ExactSizeIterator` stays accurate);
     /// each item takes its own recursive read guard from `lock` and a
     /// plain registration in `views` (or becomes a snapshot).
@@ -54,11 +54,11 @@ enum ChunkSource<'a> {
 /// Iterator over fixed-size chunks of a memory-mapped file.
 ///
 /// Yields [`MappedSlice<'a>`] items that borrow directly from the
-/// mapped region. On RW and COW mappings the iterator holds the read
-/// lock for its lifetime and every yielded item keeps a read guard, so
-/// `resize()` and writes from another thread block until the iterator
-/// AND every item it produced have been dropped. See the module docs
-/// for how the iterator interacts with atomic views.
+/// mapped region. On RW and writable COW mappings the iterator holds
+/// the read lock for its lifetime and every yielded item keeps a read
+/// guard, so `resize()` and writes from another thread block until the
+/// iterator AND every item it produced have been dropped. See the
+/// module docs for how the iterator interacts with atomic views.
 ///
 /// Calling a write method (`update_region`, `as_slice_mut`, `resize`,
 /// `chunks_mut`) on the same thread while the iterator or one of its
@@ -83,8 +83,8 @@ enum ChunkSource<'a> {
 /// ```
 pub struct ChunkIterator<'a> {
     source: ChunkSource<'a>,
-    /// Total bytes in the mapping, read under the pin guard (RW/COW)
-    /// or from the immutable mapping (RO).
+    /// Total bytes in the mapping, read under the pin guard (RW,
+    /// writable COW) or from the immutable mapping (read-only).
     total_len: usize,
     /// Bytes per yielded chunk. The final chunk may be shorter.
     chunk_size: usize,
@@ -324,7 +324,7 @@ impl<'a> ChunkIteratorMut<'a> {
         // nothing to iterate.
         let lock = self
             .mmap
-            .write_lock("chunks_mut requires a ReadWrite or CopyOnWrite mapping")?;
+            .write_lock("chunks_mut requires a ReadWrite or writable CopyOnWrite mapping")?;
         if self.chunk_size == 0 {
             return Ok(Ok(()));
         }
@@ -365,8 +365,9 @@ impl<'a> ChunkIteratorMut<'a> {
     /// # Errors
     ///
     /// Returns [`MmapIoError::InvalidMode`](crate::MmapIoError::InvalidMode) on read-only mappings.
-    /// Copy-on-write mappings are accepted since 1.1.0 (the writes stay
-    /// private). Returns any error propagated from the user closure.
+    /// Copy-on-write mappings opened writable are accepted since 1.1.0
+    /// (the writes stay private); default, read-only ones are refused.
+    /// Returns any error propagated from the user closure.
     pub fn for_each_mut<F>(self, f: F) -> Result<()>
     where
         F: FnMut(u64, &mut [u8]) -> Result<()>,
@@ -407,9 +408,9 @@ impl MemoryMappedFile {
     /// `chunk_size` (final chunk may be shorter). A `chunk_size` of
     /// zero yields nothing.
     ///
-    /// For RW and COW mappings, the iterator and every item it yields
-    /// hold a read guard; concurrent `resize()` and writes block until
-    /// all of them are dropped.
+    /// For RW and writable COW mappings, the iterator and every item it
+    /// yields hold a read guard; concurrent `resize()` and writes block
+    /// until all of them are dropped.
     ///
     /// Atomic views (since 1.1.0): while an item is alive, an atomic
     /// view over its bytes cannot be created (`InvalidMode`). An item
@@ -460,8 +461,8 @@ impl MemoryMappedFile {
     /// Callback-driven mutable iterator. Acquires a single write
     /// guard for the entire iteration (in
     /// [`ChunkIteratorMut::for_each_mut`]). Available on `ReadWrite`
-    /// and `CopyOnWrite` mappings; the mode is checked when iteration
-    /// runs.
+    /// and writable `CopyOnWrite` mappings; the mode is checked when
+    /// iteration runs.
     ///
     /// # Examples
     ///

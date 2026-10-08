@@ -1,9 +1,11 @@
 //! Atomic memory views for lock-free concurrent access to specific data types.
 //!
-//! Atomic views are available on `ReadWrite` and (since 1.1.0)
-//! `CopyOnWrite` mappings. On a copy-on-write mapping the stores land
-//! in private pages, are shared by every thread using this mapping, and
-//! never reach the file. Read-only mappings are backed by pages the
+//! Atomic views are available on `ReadWrite` mappings and (since 1.1.0)
+//! on copy-on-write mappings opened writable
+//! ([`MemoryMappedFile::is_cow_writable`]). On those the stores land in
+//! private pages, are shared by every thread using this mapping, and
+//! never reach the file. Read-only mappings (`ReadOnly`, and
+//! `CopyOnWrite` without the writable opt-in) are backed by pages the
 //! process may not write, and an atomic view hands out `&AtomicU64` /
 //! `&AtomicU32`, whose safe `store` / `fetch_add` methods would fault
 //! on those pages, so requesting a view on one returns
@@ -234,9 +236,10 @@ pub(crate) fn view_parts<'a, T: AtomicCell>(
     //      trait), which have the same size and layout as `u32`/`u64`
     //      and accept every bit pattern; `size == align` for both, so
     //      every element of a `count`-long run is also aligned.
-    //   3. The bytes are writable: only writable mappings (RW and COW
-    //      file mappings, anonymous mappings, all PROT_READ|PROT_WRITE)
-    //      reach this point.
+    //   3. The bytes are writable: only writable mappings (RW and
+    //      writable COW file mappings, anonymous mappings, all
+    //      PROT_READ|PROT_WRITE) reach this point; read-only COW
+    //      mappings are `MapVariant::Ro` and have no lock to pass in.
     //   4. No plain `&[u8]` over these bytes is alive, and none can be
     //      created while the view lives: `reg` registered the range in
     //      `views`, which refused it if a plain view overlapped.
@@ -281,7 +284,8 @@ impl MemoryMappedFile {
     /// Lock and view registry for an atomic view; `InvalidMode` on a
     /// read-only mapping.
     fn atomic_parts<T: AtomicCell>(&self, offset: u64, count: usize) -> Result<ViewParts<'_, T>> {
-        let lock = self.write_lock("atomic views require a ReadWrite or CopyOnWrite mapping")?;
+        let lock =
+            self.write_lock("atomic views require a ReadWrite or writable CopyOnWrite mapping")?;
         view_parts(lock, &self.inner.views, offset, count)
     }
 }
@@ -289,8 +293,9 @@ impl MemoryMappedFile {
 impl MemoryMappedFile {
     /// Get an atomic view of a `u64` value at the specified offset.
     ///
-    /// The mapping must be `ReadWrite` or `CopyOnWrite` and the offset
-    /// must be 8-byte aligned (the alignment of [`AtomicU64`]). The returned view
+    /// The mapping must be `ReadWrite` or a writable `CopyOnWrite`
+    /// mapping, and the offset must be 8-byte aligned (the alignment of
+    /// [`AtomicU64`]). The returned view
     /// implements [`Deref<Target = AtomicU64>`], so atomic operations
     /// (`load`, `store`, `fetch_add`, `compare_exchange`, etc.) can be
     /// called directly:
@@ -316,7 +321,8 @@ impl MemoryMappedFile {
     /// # Errors
     ///
     /// Returns [`MmapIoError::InvalidMode`] if the mapping is
-    /// `ReadOnly`, or (since 1.1.0) if the range overlaps a live
+    /// `ReadOnly` or a read-only `CopyOnWrite` mapping, or (since
+    /// 1.1.0) if the range overlaps a live
     /// `MappedSlice` / iterator item, or a live atomic view of the other
     /// element size (see the module docs).
     /// Returns [`MmapIoError::Misaligned`] if the offset is not
@@ -340,7 +346,8 @@ impl MemoryMappedFile {
     /// # Errors
     ///
     /// Returns [`MmapIoError::InvalidMode`] if the mapping is
-    /// `ReadOnly`, or (since 1.1.0) if the range overlaps a live
+    /// `ReadOnly` or a read-only `CopyOnWrite` mapping, or (since
+    /// 1.1.0) if the range overlaps a live
     /// `MappedSlice` / iterator item, or a live atomic view of the other
     /// element size (see the module docs).
     /// Returns [`MmapIoError::Misaligned`] if the offset is not
@@ -366,7 +373,8 @@ impl MemoryMappedFile {
     /// # Errors
     ///
     /// Returns [`MmapIoError::InvalidMode`] if the mapping is
-    /// `ReadOnly`, or (since 1.1.0) if the range overlaps a live
+    /// `ReadOnly` or a read-only `CopyOnWrite` mapping, or (since
+    /// 1.1.0) if the range overlaps a live
     /// `MappedSlice` / iterator item, or a live atomic view of the other
     /// element size (see the module docs).
     /// Returns [`MmapIoError::Misaligned`] if the offset is not
@@ -393,7 +401,8 @@ impl MemoryMappedFile {
     /// # Errors
     ///
     /// Returns [`MmapIoError::InvalidMode`] if the mapping is
-    /// `ReadOnly`, or (since 1.1.0) if the range overlaps a live
+    /// `ReadOnly` or a read-only `CopyOnWrite` mapping, or (since
+    /// 1.1.0) if the range overlaps a live
     /// `MappedSlice` / iterator item, or a live atomic view of the other
     /// element size (see the module docs).
     /// Returns [`MmapIoError::Misaligned`] if the offset is not
@@ -735,9 +744,17 @@ mod tests {
 
         #[cfg(feature = "cow")]
         {
-            // COW mode: atomics work on the private pages and never
-            // reach the file.
+            // Default COW is read-only at the API: refused like RO.
             let mmap = MemoryMappedFile::open_cow(&path).expect("open cow");
+            assert!(matches!(
+                mmap.atomic_u64(0),
+                Err(MmapIoError::InvalidMode(_))
+            ));
+            drop(mmap);
+
+            // Writable COW: atomics work on the private pages and
+            // never reach the file.
+            let mmap = MemoryMappedFile::open_cow_writable(&path).expect("open cow writable");
             {
                 let atomic = mmap.atomic_u64(0).expect("atomic cow");
                 assert_eq!(atomic.load(Ordering::SeqCst), 42);

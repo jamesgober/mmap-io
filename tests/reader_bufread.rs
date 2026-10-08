@@ -139,7 +139,14 @@ fn copy_on_write_lines_include_private_edits() {
     let dir = tempfile::tempdir().expect("tempdir");
     let path = dir.path().join("c.txt");
     std::fs::write(&path, b"one\ntwo\nthree\n").expect("write");
-    let cow = MemoryMappedFile::open_cow(&path).expect("open_cow");
+
+    // Default COW is read-only, so fill_buf lends the mapping itself.
+    let ro_cow = MemoryMappedFile::open_cow(&path).expect("open_cow");
+    let mut r = ro_cow.reader();
+    assert_eq!(r.fill_buf().expect("fill_buf").len(), 14);
+    drop(ro_cow);
+
+    let cow = MemoryMappedFile::open_cow_writable(&path).expect("open_cow_writable");
     cow.update_region(4, b"TWO").expect("private edit");
     let lines: Vec<String> = cow
         .reader()

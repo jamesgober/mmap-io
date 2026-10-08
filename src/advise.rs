@@ -34,18 +34,20 @@ impl MemoryMappedFile {
     ///   `offset`. The end is not widened past the mapping.
     /// - **Windows**: Uses `PrefetchVirtualMemory` for `WillNeed`, no-op for others
     ///
-    /// # `DontNeed` on copy-on-write mappings
+    /// # `DontNeed` on writable copy-on-write mappings
     ///
-    /// On a `CopyOnWrite` mapping, `MADV_DONTNEED` throws the private
-    /// copies of the pages away: on Linux the next access reads the
-    /// file again, so private changes in the (page-widened) range are
-    /// lost. Because that changes the mapped bytes, `DontNeed` on a
-    /// copy-on-write mapping takes the write lock like a write method:
-    /// it waits for every live view of the mapping, and calling it on a
-    /// thread that holds one deadlocks. Every other hint, and
-    /// `DontNeed` on read-only and read-write mappings (where dirty data
-    /// stays in the page cache and the bytes do not change), only takes
-    /// a read guard.
+    /// On a `CopyOnWrite` mapping opened writable (see
+    /// [`is_cow_writable`](MemoryMappedFile::is_cow_writable)),
+    /// `MADV_DONTNEED` throws the private copies of the pages away: on
+    /// Linux the next access reads the file again, so private changes in
+    /// the (page-widened) range are lost. Because that changes the
+    /// mapped bytes, `DontNeed` there takes the write lock like a write
+    /// method: it waits for every live view of the mapping, and calling
+    /// it on a thread that holds one deadlocks. Every other hint, and
+    /// `DontNeed` on read-only mappings (including default copy-on-write
+    /// ones, which have no private copies) and on read-write mappings
+    /// (where dirty data stays in the page cache and the bytes do not
+    /// change), only takes a read guard.
     ///
     /// A zero-length range is accepted at any offset and does nothing.
     ///
@@ -78,7 +80,7 @@ impl MemoryMappedFile {
                 return advise_mapped(guard.as_ptr(), guard.len(), offset, len, advice);
             }
         }
-        // Hold read access (a read guard for RW/COW mappings) until the
+        // Hold read access (a read guard for RW / writable COW) until the
         // syscall returns, so `resize()` cannot unmap the range while
         // the kernel is working on it.
         let map = self.map_read();
@@ -182,10 +184,15 @@ mod tests {
 
         #[cfg(feature = "cow")]
         {
-            // Test with COW mode
+            // Default (read-only) and writable COW.
             let mmap = MemoryMappedFile::open_cow(&path).expect("open cow");
             mmap.advise(0, 4096, MmapAdvice::WillNeed)
                 .expect("cow advise");
+            mmap.advise(0, 4096, MmapAdvice::DontNeed)
+                .expect("cow dontneed");
+            let mmap = MemoryMappedFile::open_cow_writable(&path).expect("open cow writable");
+            mmap.advise(0, 4096, MmapAdvice::WillNeed)
+                .expect("writable cow advise");
         }
 
         fs::remove_file(&path).expect("cleanup");

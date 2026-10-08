@@ -63,7 +63,7 @@ impl MemoryMappedFile {
         if len == 0 {
             return Ok(());
         }
-        // Hold read access (a read guard for RW/COW mappings) until the
+        // Hold read access (a read guard for RW / writable COW) until the
         // syscall returns, so `resize()` cannot unmap the range while
         // the kernel is working on it.
         let map = self.map_read();

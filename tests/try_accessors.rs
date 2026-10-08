@@ -185,7 +185,22 @@ fn copy_on_write_mappings() {
     let dir = tempfile::tempdir().expect("tempdir");
     let path = dir.path().join("c.bin");
     std::fs::write(&path, vec![1u8; 4096]).expect("write");
-    let cow = MemoryMappedFile::open_cow(&path).expect("cow");
+    // Default COW is read-only: refused before the lock, as on RO.
+    let ro_cow = MemoryMappedFile::open_cow(&path).expect("cow");
+    let held = ro_cow.as_slice(0, 4).expect("view");
+    assert!(matches!(
+        ro_cow.try_update_region(10, b"x"),
+        Err(MmapIoError::InvalidMode(_))
+    ));
+    assert!(matches!(
+        ro_cow.try_as_slice_mut(10, 1),
+        Err(MmapIoError::InvalidMode(_))
+    ));
+    assert!(ro_cow.try_as_slice(0, 4).expect("try view").is_some());
+    drop(held);
+    drop(ro_cow);
+
+    let cow = MemoryMappedFile::open_cow_writable(&path).expect("cow");
     let view = cow.as_slice(0, 4).expect("view");
     assert!(!cow.try_update_region(10, b"x").expect("would block"));
     drop(view);

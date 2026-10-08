@@ -148,11 +148,19 @@ mod all_features {
         let page_count = cow_mmap.pages().count();
         assert!(page_count > 0);
 
-        // Since 1.1 COW mappings are writable in private pages: atomic
-        // views work, and nothing reaches the file.
+        // Atomic views are refused on COW: the mapping is read-only.
+        assert!(matches!(
+            cow_mmap.atomic_u64(16),
+            Err(mmap_io::MmapIoError::InvalidMode(_))
+        ));
+        drop(cow_mmap);
+
+        // Opted-in writable COW (1.1): atomic views work on the private
+        // pages, and nothing reaches the file.
+        let cow_mmap = MemoryMappedFile::open_cow_writable(&path).expect("open cow writable");
         cow_mmap
             .atomic_u64(16)
-            .expect("atomic on cow")
+            .expect("atomic on writable cow")
             .store(5, std::sync::atomic::Ordering::SeqCst);
         drop(cow_mmap);
         assert_eq!(&fs::read(&path).expect("read")[..13], b"original data");

@@ -134,14 +134,39 @@ fn atomic_views_reject_read_only_mapping() {
     let _ = fs::remove_file(&path);
 }
 
-// Since 1.1 copy-on-write mappings are mapped writable (private pages),
-// so atomic views on them are sound and allowed; the stores never reach
-// the file. (Before 1.1 the COW mapping was read-only and the views were
-// refused, which this test used to pin.)
+// A default copy-on-write mapping is read-only (as in 1.0), so its pages
+// may not be writable and an atomic view, whose safe `store` would write
+// them, is refused.
 #[cfg(all(feature = "atomic", feature = "cow"))]
 #[cfg_attr(miri, ignore = "FFI mmap syscalls are not supported by Miri")]
 #[test]
-fn atomic_views_on_copy_on_write_mapping_stay_private() {
+fn atomic_views_reject_copy_on_write_mapping() {
+    let path = tmp_path("atomic_cow_ro");
+    let _ = fs::remove_file(&path);
+    {
+        let rw = MemoryMappedFile::create_rw(&path, 64).expect("create");
+        rw.flush().expect("flush");
+    }
+    let cow = MemoryMappedFile::open_cow(&path).expect("open_cow");
+    assert!(matches!(
+        cow.atomic_u64(0),
+        Err(mmap_io::MmapIoError::InvalidMode(_))
+    ));
+    assert!(matches!(
+        cow.atomic_u32_slice(0, 1),
+        Err(mmap_io::MmapIoError::InvalidMode(_))
+    ));
+    drop(cow);
+    let _ = fs::remove_file(&path);
+}
+
+// A copy-on-write mapping opened writable (1.1 opt-in) is mapped with
+// private writable pages, so atomic views on it are sound and allowed;
+// the stores never reach the file.
+#[cfg(all(feature = "atomic", feature = "cow"))]
+#[cfg_attr(miri, ignore = "FFI mmap syscalls are not supported by Miri")]
+#[test]
+fn atomic_views_on_writable_copy_on_write_mapping_stay_private() {
     use std::sync::atomic::Ordering;
     let path = tmp_path("atomic_cow");
     let _ = fs::remove_file(&path);
@@ -149,7 +174,7 @@ fn atomic_views_on_copy_on_write_mapping_stay_private() {
         let rw = MemoryMappedFile::create_rw(&path, 64).expect("create");
         rw.flush().expect("flush");
     }
-    let cow = MemoryMappedFile::open_cow(&path).expect("open_cow");
+    let cow = MemoryMappedFile::open_cow_writable(&path).expect("open_cow_writable");
     cow.atomic_u64(0)
         .expect("u64 view")
         .store(u64::MAX, Ordering::SeqCst);

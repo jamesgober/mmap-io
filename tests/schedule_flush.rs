@@ -74,6 +74,13 @@ fn read_only_and_copy_on_write_are_validated_no_ops() {
     #[cfg(feature = "cow")]
     {
         let cow = MemoryMappedFile::open_cow(&path).expect("open_cow");
+        cow.schedule_flush().expect("read-only cow no-op");
+        cow.schedule_flush_range(0, 7)
+            .expect("read-only cow range no-op");
+        assert!(cow.schedule_flush_range(4096, 1).is_err());
+        drop(cow);
+
+        let cow = MemoryMappedFile::open_cow_writable(&path).expect("open_cow_writable");
         cow.update_region(0, b"private").expect("cow write");
         cow.schedule_flush().expect("cow no-op");
         cow.schedule_flush_range(0, 7).expect("cow range no-op");
