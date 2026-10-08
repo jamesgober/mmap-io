@@ -178,3 +178,28 @@ fn shrink_truncates_file_and_regrow_reads_zeros() {
     drop(mmap);
     let _ = fs::remove_file(&path);
 }
+
+// ---------------------------------------------------------------------
+// advise alignment
+// ---------------------------------------------------------------------
+
+#[cfg(feature = "advise")]
+#[test]
+fn advise_accepts_unaligned_offsets() {
+    use mmap_io::MmapAdvice;
+    let path = tmp_path("advise_unaligned");
+    let _ = fs::remove_file(&path);
+    let mmap = MemoryMappedFile::create_rw(&path, 64 * 1024).expect("create");
+    for advice in [
+        MmapAdvice::Normal,
+        MmapAdvice::Random,
+        MmapAdvice::Sequential,
+        MmapAdvice::WillNeed,
+    ] {
+        mmap.advise(1, 100, advice).expect("unaligned offset");
+        mmap.advise(4097, 5000, advice).expect("unaligned span");
+        mmap.advise(64 * 1024 - 1, 1, advice).expect("last byte");
+    }
+    drop(mmap);
+    let _ = fs::remove_file(&path);
+}

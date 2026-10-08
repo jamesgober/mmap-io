@@ -2,7 +2,7 @@
 
 use crate::errors::{MmapIoError, Result};
 use crate::mmap::MemoryMappedFile;
-use crate::utils::slice_range;
+use crate::utils::{page_size, slice_range};
 
 /// Memory access pattern advice for the OS.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -27,8 +27,14 @@ impl MemoryMappedFile {
     ///
     /// # Platform-specific behavior
     ///
-    /// - **Unix**: Uses `madvise` system call
+    /// - **Unix**: Uses `madvise` system call. `madvise` requires a
+    ///   page-aligned start address, so the range is widened down to
+    ///   the start of the page containing `offset`; the hint can
+    ///   therefore cover up to one page minus one byte before
+    ///   `offset`. The end is not widened past the mapping.
     /// - **Windows**: Uses `PrefetchVirtualMemory` for `WillNeed`, no-op for others
+    ///
+    /// A zero-length range is accepted at any offset and does nothing.
     ///
     /// # Errors
     ///
@@ -45,7 +51,12 @@ impl MemoryMappedFile {
         // while the kernel is working on it.
         let map = self.map_read();
         let (start, end) = slice_range(offset, len, map.len() as u64)?;
-        let region = &map[start..end];
+        // Widen down to a page boundary: `madvise` rejects unaligned
+        // addresses with EINVAL. The mapping base is page-aligned
+        // (every mapping starts at file offset 0), so a page-aligned
+        // offset gives a page-aligned address.
+        let aligned_start = start - start % page_size();
+        let region = &map[aligned_start..end];
         let addr = region.as_ptr();
         let length = region.len();
 
@@ -64,10 +75,9 @@ impl MemoryMappedFile {
             };
 
             // SAFETY: POSIX `madvise` (and Linux's extension) requires:
-            //   1. `addr` is page-aligned, OR the kernel will return
-            //      EINVAL and we surface that as `AdviceFailed` instead
-            //      of triggering UB. (We do not pre-align here; the
-            //      caller's offset/len is honored as-is.)
+            //   1. `addr` is page-aligned: `aligned_start` is a
+            //      multiple of the page size and the mapping base is
+            //      page-aligned by `mmap(2)`.
             //   2. The range `[addr, addr + length)` lies within a
             //      mapped region of the process: it is `region`, a
             //      subslice of the mapping that `map` keeps mapped
@@ -181,31 +191,25 @@ mod tests {
     #[test]
     #[cfg(feature = "advise")]
     fn test_advise_operations() {
-        // Skip test on unsupported platforms
-        if cfg!(target_os = "macos") || cfg!(target_os = "windows") {
-            eprintln!("Skipping madvise test on unsupported platform");
-            return;
-        }
+        let path = tmp_path("advise_ops");
+        let _ = fs::remove_file(&path);
+        let file = create_mmap(&path, 3 * 4096).expect("create");
 
-        use crate::mmap::MemoryMappedFile;
-
-        let file_path = "test_advise_ops.tmp";
-        std::fs::write(file_path, [0u8; 4096]).unwrap();
-
-        // Use create_rw to open the file in read-write mode
-        let file = MemoryMappedFile::create_rw(file_path, 4096).unwrap();
-
-        // Validate alignment without borrowing a slice from RW mapping.
-        // The mapping base offset is 0 which is page-aligned by construction.
-        let page = crate::utils::page_size();
-        assert_eq!(0 % page, 0, "Mapping base offset must be page-aligned");
-
-        // Call advise on full region
+        // Full region, then offsets that are not page-aligned (EINVAL
+        // from madvise before the range was widened).
         let len = file.len();
         file.advise(0, len, MmapAdvice::Sequential)
-            .expect("memory advice sequential failed");
+            .expect("advise full range");
+        file.advise(1, 10, MmapAdvice::WillNeed)
+            .expect("advise unaligned offset");
+        file.advise(4097, 4096, MmapAdvice::Random)
+            .expect("advise range spanning a page boundary");
+        file.advise(len - 1, 1, MmapAdvice::Normal)
+            .expect("advise last byte");
+        assert!(file.advise(len, 1, MmapAdvice::Normal).is_err());
 
-        std::fs::remove_file(file_path).unwrap();
+        drop(file);
+        fs::remove_file(&path).expect("cleanup");
     }
 
     #[test]
