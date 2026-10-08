@@ -87,12 +87,18 @@ fn test_normal_size_still_works() {
     let _ = fs::remove_file(&path);
 
     // Test that normal sizes still work fine
-    let normal_sizes = vec![
-        1024,                    // 1 KB
-        1024 * 1024,             // 1 MB
-        1024 * 1024 * 1024,      // 1 GB
-        10 * 1024 * 1024 * 1024, // 10 GB
+    let mut normal_sizes = vec![
+        1024,        // 1 KB
+        1024 * 1024, // 1 MB
     ];
+    if cfg!(target_pointer_width = "64") {
+        normal_sizes.push(1024 * 1024 * 1024); // 1 GB
+        normal_sizes.push(10 * 1024 * 1024 * 1024); // 10 GB
+    } else {
+        // 32-bit targets cap mappings at 2 GiB and have a few GiB of
+        // address space in total.
+        normal_sizes.push(256 * 1024 * 1024);
+    }
 
     for size in normal_sizes {
         // Create with normal size should work
