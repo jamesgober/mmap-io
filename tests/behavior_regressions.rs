@@ -297,6 +297,30 @@ async fn create_mmap_async_validates_before_truncating() {
 }
 
 // ---------------------------------------------------------------------
+// SegmentMut bounds
+// ---------------------------------------------------------------------
+
+#[test]
+fn segment_mut_write_rejects_data_longer_than_segment() {
+    let path = tmp_path("segment_write_bounds");
+    let _ = fs::remove_file(&path);
+    let mmap = Arc::new(MemoryMappedFile::create_rw(&path, 1024).expect("create"));
+    let seg = SegmentMut::new(Arc::clone(&mmap), 0, 4).expect("segment");
+    match seg.write(b"too long") {
+        Err(MmapIoError::OutOfBounds { offset, len, total }) => {
+            assert_eq!((offset, len, total), (0, 8, 4));
+        }
+        other => panic!("expected OutOfBounds, got {other:?}"),
+    }
+    // The bytes past the segment must be untouched.
+    assert_eq!(mmap.as_slice(4, 4).expect("slice"), &[0u8; 4]);
+    seg.write(b"ok").expect("short write fits");
+    drop(seg);
+    drop(mmap);
+    let _ = fs::remove_file(&path);
+}
+
+// ---------------------------------------------------------------------
 // advise alignment
 // ---------------------------------------------------------------------
 

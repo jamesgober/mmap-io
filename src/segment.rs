@@ -2,7 +2,7 @@
 
 use std::sync::Arc;
 
-use crate::errors::Result;
+use crate::errors::{MmapIoError, Result};
 use crate::mmap::MemoryMappedFile;
 use crate::utils::slice_range;
 
@@ -196,19 +196,30 @@ impl SegmentMut {
         self.parent.as_slice_mut(self.offset, self.len)
     }
 
-    /// Write bytes into this segment from the provided slice.
+    /// Write bytes into the start of this segment.
     ///
-    /// Bounds are re-validated by the underlying `update_region` call.
+    /// `data` may be shorter than the segment (the rest of the segment
+    /// is left unchanged) but not longer. Bounds against the parent
+    /// are re-validated by the underlying `update_region` call.
     ///
     /// # Errors
     ///
-    /// Returns `MmapIoError::OutOfBounds` if the write range exceeds
-    /// the parent's current bounds.
+    /// Returns `MmapIoError::OutOfBounds` if `data` is longer than the
+    /// segment. The error fields are segment-relative: `offset` is 0,
+    /// `len` is `data.len()`, and `total` is the segment length.
+    /// Returns `MmapIoError::OutOfBounds` if the segment no longer fits
+    /// in the parent (e.g. after a shrinking resize).
     /// Returns `MmapIoError::InvalidMode` if the parent is not in
     /// `ReadWrite` mode.
     pub fn write(&self, data: &[u8]) -> Result<()> {
-        // Allow partial writes by delegating to update_region; the
-        // underlying call re-validates bounds.
+        let len = data.len() as u64;
+        if len > self.len {
+            return Err(MmapIoError::OutOfBounds {
+                offset: 0,
+                len,
+                total: self.len,
+            });
+        }
         self.parent.update_region(self.offset, data)
     }
 
