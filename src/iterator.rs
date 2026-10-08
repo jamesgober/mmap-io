@@ -2,34 +2,51 @@
 //!
 //! [`ChunkIterator`] and [`PageIterator`] yield [`MappedSlice<'a>`]
 //! items that borrow directly from the underlying mapping (no
-//! allocation, no copy). On RW mappings the iterator holds a read
-//! guard for its entire lifetime, which blocks any concurrent
-//! `resize()` until iteration completes, and every yielded item holds
-//! its own read guard as well, so an item kept after the iterator is
-//! dropped still blocks `resize()` until the item itself is dropped.
+//! allocation, no copy). On RW and COW mappings the iterator holds a
+//! read guard for its entire lifetime, which blocks any concurrent
+//! `resize()` and write until iteration completes, and every yielded
+//! item keeps that guard alive as well, so an item kept after the
+//! iterator is dropped still blocks writers until the item itself is
+//! dropped.
+//!
+//! # Atomic views
+//!
+//! Plain byte views and atomic views of the same bytes must not
+//! coexist (see `crate::atomic`). Every item of a RW or COW mapping is
+//! registered as a plain view of its own range while it lives, so an
+//! atomic view over that range cannot be created meanwhile (it returns
+//! `InvalidMode`); other ranges are unaffected. An item whose range
+//! overlaps a live atomic view when it is produced is an owned copy
+//! (one allocation) read with atomic loads for the atomic elements,
+//! instead of a zero-copy borrow.
 //!
 //! The owned variants ([`ChunkIteratorOwned`], [`PageIteratorOwned`])
 //! yield `Result<Vec<u8>>` for callers that genuinely need owned
 //! buffers (e.g. when handing data to a thread that outlives the
 //! mapping borrow). They allocate one `Vec<u8>` per item.
 
-use crate::errors::{MmapIoError, Result};
+use crate::errors::Result;
 use crate::mmap::{MapVariant, MappedSlice, MemoryMappedFile};
 use crate::raw::RawMmapMut;
 use crate::utils::page_size;
+#[cfg(not(feature = "atomic"))]
+use crate::views::PlainReg;
+use crate::views::ViewRegistry;
 use parking_lot::{RwLock, RwLockReadGuard};
 use std::marker::PhantomData;
 
 /// Where a [`ChunkIterator`] reads its bytes from.
 enum ChunkSource<'a> {
-    /// RO / COW mapping: the underlying `RawMmap` is never remapped, so a
-    /// plain borrow is valid for `'a`.
+    /// RO mapping: the underlying `RawMmap` is never remapped or
+    /// written, so a plain borrow is valid for `'a`.
     Shared(&'a [u8]),
-    /// RW mapping. `pin` keeps the length stable for the iterator's
-    /// lifetime (so `ExactSizeIterator` stays accurate); each yielded
-    /// item takes its own recursive read guard from `lock`.
+    /// RW or COW mapping. `pin` keeps the length stable for the
+    /// iterator's lifetime (so `ExactSizeIterator` stays accurate);
+    /// each item takes its own recursive read guard from `lock` and a
+    /// plain registration in `views` (or becomes a snapshot).
     Locked {
         lock: &'a RwLock<RawMmapMut>,
+        views: &'a ViewRegistry,
         pin: RwLockReadGuard<'a, RawMmapMut>,
     },
 }
@@ -37,10 +54,11 @@ enum ChunkSource<'a> {
 /// Iterator over fixed-size chunks of a memory-mapped file.
 ///
 /// Yields [`MappedSlice<'a>`] items that borrow directly from the
-/// mapped region. On RW mappings the iterator holds the read lock for
-/// its lifetime and every yielded item holds its own read guard, so
-/// `resize()` from another thread blocks until the iterator AND every
-/// item it produced have been dropped.
+/// mapped region. On RW and COW mappings the iterator holds the read
+/// lock for its lifetime and every yielded item keeps a read guard, so
+/// `resize()` and writes from another thread block until the iterator
+/// AND every item it produced have been dropped. See the module docs
+/// for how the iterator interacts with atomic views.
 ///
 /// Calling a write method (`update_region`, `as_slice_mut`, `resize`,
 /// `chunks_mut`) on the same thread while the iterator or one of its
@@ -65,8 +83,8 @@ enum ChunkSource<'a> {
 /// ```
 pub struct ChunkIterator<'a> {
     source: ChunkSource<'a>,
-    /// Total bytes in the mapping, read under the pin guard (RW) or
-    /// from the immutable mapping (RO/COW).
+    /// Total bytes in the mapping, read under the pin guard (RW/COW)
+    /// or from the immutable mapping (RO).
     total_len: usize,
     /// Bytes per yielded chunk. The final chunk may be shorter.
     chunk_size: usize,
@@ -77,9 +95,10 @@ pub struct ChunkIterator<'a> {
 impl<'a> ChunkIterator<'a> {
     pub(crate) fn new(mmap: &'a MemoryMappedFile, chunk_size: usize) -> Self {
         let source = match &mmap.inner.map {
-            MapVariant::Ro(m) | MapVariant::Cow(m) => ChunkSource::Shared(&m[..]),
-            MapVariant::Rw(lock) => ChunkSource::Locked {
+            MapVariant::Ro(m) => ChunkSource::Shared(&m[..]),
+            MapVariant::Rw(lock) | MapVariant::Cow(lock) => ChunkSource::Locked {
                 lock,
+                views: &mmap.inner.views,
                 // Recursive so a caller that already holds a view on
                 // this thread cannot deadlock behind a queued writer.
                 pin: lock.read_recursive(),
@@ -110,12 +129,40 @@ impl<'a> Iterator for ChunkIterator<'a> {
         self.current_offset = end;
         match &self.source {
             ChunkSource::Shared(s) => Some(MappedSlice::owned(&s[start..end])),
-            // The item gets its own guard: it may outlive the iterator
-            // (and the pin guard), and must keep `resize()` out for as
-            // long as it lives. `end <= total_len` was read under the
-            // pin guard, which is still held, so the range is valid.
-            ChunkSource::Locked { lock, .. } => {
-                Some(MappedSlice::guarded(lock.read_recursive(), start..end))
+            // The item gets its own guard and registration: it may
+            // outlive the iterator (and the pin guard), and must keep
+            // writers and atomic views of its bytes out for as long as
+            // it lives. `end <= total_len` was read under the pin guard,
+            // which is still held, so the range is valid.
+            ChunkSource::Locked { lock, views, .. } => {
+                let guard = lock.read_recursive();
+                // Without the `atomic` feature no atomic view exists, so
+                // there is nothing to register against.
+                #[cfg(not(feature = "atomic"))]
+                {
+                    let _ = views;
+                    Some(MappedSlice::guarded(
+                        guard,
+                        PlainReg::untracked(),
+                        start..end,
+                    ))
+                }
+                #[cfg(feature = "atomic")]
+                Some(match views.register_plain(start, end) {
+                    Ok(reg) => MappedSlice::guarded(guard, reg, start..end),
+                    Err(_) => {
+                        // Overlaps a live atomic view: copy instead of
+                        // lending `&[u8]` to bytes that may be stored to.
+                        let mut copy = vec![0u8; end - start].into_boxed_slice();
+                        // SAFETY: `[start, end)` lies within the mapping
+                        // `guard` holds a read guard on (checked against
+                        // `total_len` above), and every atomic view of
+                        // this mapping registers in `views`, which is
+                        // `copy_out`'s contract.
+                        unsafe { views.copy_out(RawMmapMut::as_ptr(&guard), start, &mut copy) };
+                        MappedSlice::snapshot(copy)
+                    }
+                })
             }
         }
     }
@@ -273,35 +320,31 @@ impl<'a> ChunkIteratorMut<'a> {
     where
         F: FnMut(u64, &mut [u8]) -> std::result::Result<(), E>,
     {
+        // Mode first: a read-only mapping is an error even when there is
+        // nothing to iterate.
+        let lock = self
+            .mmap
+            .write_lock("chunks_mut requires a ReadWrite or CopyOnWrite mapping")?;
         if self.chunk_size == 0 {
             return Ok(Ok(()));
         }
-        match &self.mmap.inner.map {
-            MapVariant::Ro(_) => Err(MmapIoError::InvalidMode(
-                "chunks_mut requires ReadWrite mode",
-            )),
-            MapVariant::Cow(_) => Err(MmapIoError::InvalidMode(
-                "chunks_mut is not supported on copy-on-write mappings (read-only)",
-            )),
-            MapVariant::Rw(lock) => {
-                let mut guard = lock.write();
-                let total = guard.len();
-                let mut offset = 0usize;
-                let mut result = Ok(());
-                while offset < total {
-                    let end = offset + (total - offset).min(self.chunk_size);
-                    let r = f(offset as u64, &mut guard[offset..end]);
-                    offset = end;
-                    if let Err(e) = r {
-                        result = Err(e);
-                        break;
-                    }
-                }
-                // Every byte handed to `f` may have been written.
-                self.mmap.record_write(offset as u64);
-                Ok(result)
+        let mut guard = lock.write();
+        let total = guard.len();
+        let mut offset = 0usize;
+        let mut result = Ok(());
+        while offset < total {
+            let end = offset + (total - offset).min(self.chunk_size);
+            let r = f(offset as u64, &mut guard[offset..end]);
+            offset = end;
+            if let Err(e) = r {
+                result = Err(e);
+                break;
             }
         }
+        // Every byte handed to `f` may have been written (not counted
+        // on copy-on-write mappings, which are never flushed).
+        self.mmap.record_write(offset as u64);
+        Ok(result)
     }
 
     /// Process each chunk under a single held write guard. The
@@ -309,7 +352,7 @@ impl<'a> ChunkIteratorMut<'a> {
     /// order. Returning `Err` aborts iteration and surfaces the
     /// error to the caller.
     ///
-    /// The closure's error type is the crate's [`MmapIoError`].
+    /// The closure's error type is the crate's [`MmapIoError`](crate::MmapIoError).
     /// Callers carrying a foreign error type should map into
     /// `MmapIoError` before returning (e.g. via `.map_err(|e|
     /// MmapIoError::Io(...))`).
@@ -321,9 +364,9 @@ impl<'a> ChunkIteratorMut<'a> {
     ///
     /// # Errors
     ///
-    /// Returns [`MmapIoError::InvalidMode`] on read-only or COW
-    /// mappings (mutable iteration requires `ReadWrite`). Returns any
-    /// error propagated from the user closure.
+    /// Returns [`MmapIoError::InvalidMode`](crate::MmapIoError::InvalidMode) on read-only mappings.
+    /// Copy-on-write mappings are accepted since 1.1.0 (the writes stay
+    /// private). Returns any error propagated from the user closure.
     pub fn for_each_mut<F>(self, f: F) -> Result<()>
     where
         F: FnMut(u64, &mut [u8]) -> Result<()>,
@@ -349,7 +392,7 @@ impl<'a> ChunkIteratorMut<'a> {
     /// # Errors
     ///
     /// Returns the outer `Err(MmapIoError::InvalidMode)` on read-only
-    /// or COW mappings. Returns `Ok(Err(E))` for closure errors.
+    /// mappings. Returns `Ok(Err(E))` for closure errors.
     /// Returns `Ok(Ok(()))` when iteration completes cleanly.
     pub fn for_each_mut_legacy<F, E>(self, f: F) -> Result<std::result::Result<(), E>>
     where
@@ -364,9 +407,14 @@ impl MemoryMappedFile {
     /// `chunk_size` (final chunk may be shorter). A `chunk_size` of
     /// zero yields nothing.
     ///
-    /// For RW mappings, the iterator and every item it yields hold a
-    /// read guard; concurrent `resize()` blocks until all of them are
-    /// dropped.
+    /// For RW and COW mappings, the iterator and every item it yields
+    /// hold a read guard; concurrent `resize()` and writes block until
+    /// all of them are dropped.
+    ///
+    /// Atomic views (since 1.1.0): while an item is alive, an atomic
+    /// view over its bytes cannot be created (`InvalidMode`). An item
+    /// that overlaps a live atomic view when it is produced is an owned
+    /// copy, read with atomic loads, instead of a zero-copy borrow.
     ///
     /// # Examples
     ///
@@ -411,8 +459,9 @@ impl MemoryMappedFile {
 
     /// Callback-driven mutable iterator. Acquires a single write
     /// guard for the entire iteration (in
-    /// [`ChunkIteratorMut::for_each_mut`]). Available only on
-    /// `ReadWrite` mappings; the mode is checked when iteration runs.
+    /// [`ChunkIteratorMut::for_each_mut`]). Available on `ReadWrite`
+    /// and `CopyOnWrite` mappings; the mode is checked when iteration
+    /// runs.
     ///
     /// # Examples
     ///

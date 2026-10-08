@@ -182,3 +182,230 @@ fn write_only_file_cannot_be_mapped_read_write() {
     drop(cow);
     assert_eq!(std::fs::read(&path).expect("read"), b"0123");
 }
+
+#[test]
+fn options_flags_builder() {
+    let mut o = RawMmapOptions::new();
+    assert_eq!(o.flags, MapFlags::default());
+    o.populate().huge();
+    assert!(o.flags.populate && o.flags.huge);
+    let c = o.clone();
+    assert_eq!(c.flags, o.flags);
+}
+
+#[test]
+#[cfg_attr(miri, ignore = "FFI mmap syscalls are not supported by Miri")]
+fn populate_maps_file_and_anon() {
+    let data = pattern(3 * 4096 + 7);
+    let f = file_with(&data);
+    // SAFETY: private temporary file.
+    let m = unsafe { RawMmapOptions::new().offset(5).populate().map(&f) }.expect("map");
+    assert_eq!(&m[..], &data[5..]);
+    let a = RawMmapOptions::new()
+        .len(64 * 1024)
+        .populate()
+        .map_anon()
+        .expect("anon");
+    assert!(a.iter().all(|&b| b == 0));
+    let z = RawMmapOptions::new().populate().map_anon().expect("empty");
+    assert!(z.is_empty());
+}
+
+#[test]
+#[cfg_attr(miri, ignore = "FFI mmap syscalls are not supported by Miri")]
+fn huge_anon_maps_or_reports_os_error() {
+    // Without reserved huge pages Linux refuses MAP_HUGETLB; elsewhere
+    // the flag is ignored. Either way nothing panics, and a successful
+    // mapping is usable and reports the requested length.
+    match RawMmapOptions::new().len(4096).huge().map_anon() {
+        Ok(mut m) => {
+            assert_eq!(m.len(), 4096);
+            m[4095] = 1;
+            assert_eq!(m[4095], 1);
+        }
+        Err(e) => {
+            // Only Linux / Android honour the flag and can refuse it.
+            let honours_huge = cfg!(any(target_os = "linux", target_os = "android"));
+            assert!(honours_huge, "unexpected error: {e}");
+        }
+    }
+    // Rounding up to the huge page size must not overflow.
+    assert!(RawMmapOptions::new()
+        .len(usize::MAX - 10)
+        .huge()
+        .map_anon()
+        .is_err());
+}
+
+#[test]
+#[cfg(feature = "advise")]
+#[cfg_attr(miri, ignore = "FFI mmap syscalls are not supported by Miri")]
+fn advise_validates_ranges_and_refuses_private_dontneed() {
+    use crate::advise::MmapAdvice;
+    let all = [
+        MmapAdvice::Normal,
+        MmapAdvice::Random,
+        MmapAdvice::Sequential,
+        MmapAdvice::WillNeed,
+    ];
+    let data = pattern(3 * 4096 + 11);
+    let f = file_with(&data);
+    // SAFETY: private temporary file.
+    let ro = unsafe { RawMmapOptions::new().offset(3).map(&f) }.expect("map");
+    for &a in &all {
+        ro.advise(a).expect("advise whole");
+        ro.advise_range(a, 1, 10).expect("unaligned start");
+        ro.advise_range(a, ro.len() - 1, 1).expect("last byte");
+        ro.advise_range(a, ro.len(), 0).expect("empty at end");
+    }
+    // Shared read-only file mapping: DontNeed keeps the bytes.
+    ro.advise(MmapAdvice::DontNeed).expect("dontneed shared");
+    assert_eq!(&ro[..], &data[3..]);
+    for &(off, len) in &[
+        (ro.len() + 1, 0),
+        (ro.len(), 1),
+        (0, ro.len() + 1),
+        (usize::MAX, 1),
+        (1, usize::MAX),
+    ] {
+        let e = ro
+            .advise_range(MmapAdvice::Normal, off, len)
+            .expect_err("out of range");
+        assert_eq!(e.kind(), io::ErrorKind::InvalidInput, "({off}, {len})");
+    }
+    // Private mappings refuse DontNeed, even for an empty range.
+    let mut anon = RawMmapMut::map_anon(8192).expect("anon");
+    anon[0] = 9;
+    let e = anon
+        .advise(MmapAdvice::DontNeed)
+        .expect_err("anon dontneed");
+    assert_eq!(e.kind(), io::ErrorKind::InvalidInput);
+    assert!(anon.advise_range(MmapAdvice::DontNeed, 0, 0).is_err());
+    assert_eq!(anon[0], 9, "private data must survive");
+    anon.advise(MmapAdvice::WillNeed).expect("anon willneed");
+    // SAFETY: private temporary file.
+    let mut cow = unsafe { RawMmapOptions::new().map_copy(&f) }.expect("cow");
+    cow[1] = 0xEE;
+    assert!(cow.advise(MmapAdvice::DontNeed).is_err());
+    assert_eq!(cow[1], 0xEE);
+    // Made read-only, a private mapping is still private.
+    let cow_ro = cow.make_read_only().expect("cow ro");
+    assert!(cow_ro.advise(MmapAdvice::DontNeed).is_err());
+    // Empty mappings accept the empty range.
+    let empty = RawMmapMut::map_anon(0).expect("empty");
+    empty.advise(MmapAdvice::Normal).expect("empty advise");
+}
+
+#[test]
+#[cfg(feature = "locking")]
+#[cfg_attr(miri, ignore = "FFI mmap syscalls are not supported by Miri")]
+fn lock_unlock_round_trip() {
+    let a = RawMmapMut::map_anon(4096).expect("anon");
+    // Locking may need privileges; unlocking must always succeed.
+    if a.lock().is_ok() {
+        a.unlock().expect("unlock after lock");
+    }
+    a.unlock().expect("unlock without lock");
+    let empty = RawMmapMut::map_anon(0).expect("empty");
+    empty.lock().expect("empty lock");
+    empty.unlock().expect("empty unlock");
+    let f = file_with(&pattern(100));
+    // SAFETY: private temporary file.
+    let ro = unsafe { RawMmap::map(&f) }.expect("map");
+    if ro.lock().is_ok() {
+        ro.unlock().expect("unlock ro");
+    }
+}
+
+#[test]
+#[cfg_attr(miri, ignore = "FFI mmap syscalls are not supported by Miri")]
+fn protection_round_trips_keep_contents_and_access() {
+    // Anonymous.
+    let mut a = RawMmapMut::map_anon(3 * 4096).expect("anon");
+    a[0] = 1;
+    a[3 * 4096 - 1] = 2;
+    let ro = a.make_read_only().expect("anon ro");
+    assert_eq!((ro[0], ro[3 * 4096 - 1]), (1, 2));
+    let mut a = ro.make_mut().expect("anon rw");
+    a[1] = 3;
+    assert_eq!(&a[..2], &[1, 3]);
+
+    // Copy-on-write: writes stay private across both transitions.
+    let dir = tempfile::tempdir().expect("tempdir");
+    let path = dir.path().join("cow.bin");
+    std::fs::write(&path, pattern(5000)).expect("write");
+    let file = File::open(&path).expect("open ro");
+    // SAFETY: private temporary file.
+    let mut cow = unsafe { RawMmapOptions::new().offset(10).map_copy(&file) }.expect("cow");
+    cow[0] = 0xAA;
+    let cow = cow.make_read_only().expect("cow ro");
+    assert_eq!(cow[0], 0xAA);
+    let mut cow = cow.make_mut().expect("cow rw");
+    cow[1] = 0xBB;
+    assert_eq!(&cow[..2], &[0xAA, 0xBB]);
+    cow.flush().expect("cow flush no-op");
+    drop(cow);
+    assert_eq!(std::fs::read(&path).expect("read"), pattern(5000));
+
+    // Shared writable file: make_mut restores write-back.
+    let path = dir.path().join("shared.bin");
+    std::fs::write(&path, vec![0u8; 8192]).expect("write");
+    let file = std::fs::OpenOptions::new()
+        .read(true)
+        .write(true)
+        .open(&path)
+        .expect("open rw");
+    // SAFETY: private temporary file.
+    let mut rw = unsafe { RawMmapOptions::new().offset(4096).map_mut(&file) }.expect("rw");
+    rw[0] = 7;
+    let ro = rw.make_read_only().expect("rw ro");
+    assert_eq!(ro[0], 7);
+    let mut rw = ro.make_mut().expect("rw again");
+    rw[1] = 8;
+    rw.flush().expect("flush");
+    drop(rw);
+    let on_disk = std::fs::read(&path).expect("read");
+    assert_eq!(&on_disk[4096..4098], &[7, 8]);
+
+    // Empty mappings convert without a syscall.
+    let e = RawMmapMut::map_anon(0).expect("empty");
+    let e = e.make_read_only().expect("empty ro");
+    let e = e.make_mut().expect("empty rw");
+    assert!(e.is_empty());
+}
+
+#[test]
+#[cfg_attr(miri, ignore = "FFI mmap syscalls are not supported by Miri")]
+fn make_mut_of_read_only_file_mapping() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let path = dir.path().join("ro.bin");
+    std::fs::write(&path, b"0123456789").expect("write");
+    let rw_file = std::fs::OpenOptions::new()
+        .read(true)
+        .write(true)
+        .open(&path)
+        .expect("open rw");
+    // SAFETY: private temporary file.
+    let ro = unsafe { RawMmap::map(&rw_file) }.expect("map");
+    let result = ro.make_mut();
+    if cfg!(windows) {
+        let e = result.expect_err("PAGE_READONLY views cannot become writable");
+        assert_eq!(e.kind(), io::ErrorKind::Unsupported);
+    } else {
+        let mut rw = result.expect("mprotect on a read-write fd");
+        rw[0] = b'X';
+        rw.flush().expect("flush now writes back");
+        drop(rw);
+        assert_eq!(std::fs::read(&path).expect("read"), b"X123456789");
+    }
+    // A file opened read-only can never be made writable.
+    let ro_file = File::open(&path).expect("open ro");
+    // SAFETY: private temporary file.
+    let ro = unsafe { RawMmap::map(&ro_file) }.expect("map");
+    assert!(ro.make_mut().is_err());
+    // An empty read-only mapping converts trivially everywhere.
+    let empty = file_with(b"");
+    // SAFETY: private temporary file.
+    let ro = unsafe { RawMmap::map(&empty) }.expect("map empty");
+    assert!(ro.make_mut().expect("empty make_mut").is_empty());
+}

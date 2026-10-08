@@ -19,10 +19,8 @@
 //! - No `flush` (volatile memory; nothing to persist).
 //! - No `path` (there is no path).
 //!
-//! - No atomic views (`atomic_u64` and friends exist only on
-//!   `MemoryMappedFile`).
-//!
-//! Reads, writes, and slice access work the same way.
+//! Reads, writes, slice access, the non-blocking `try_` methods, and
+//! (feature `atomic`, since 1.1.0) atomic views work the same way.
 //!
 //! [`MemoryMappedFile`]: crate::mmap::MemoryMappedFile
 
@@ -32,6 +30,7 @@ use parking_lot::RwLock;
 use crate::errors::{MmapIoError, Result};
 use crate::mmap::{MappedSlice, MappedSliceMut};
 use crate::utils::slice_range;
+use crate::views::ViewRegistry;
 
 // Mirrors the same constants used in `mmap.rs`. Kept module-local so a
 // future refactor of one does not silently drift the other.
@@ -43,7 +42,26 @@ const MAX_MMAP_SIZE: u64 = 128 * (1 << 40); // 128 TB
 #[cfg(target_pointer_width = "32")]
 const MAX_MMAP_SIZE: u64 = 2 * (1 << 30); // 2 GB
 
+/// Validate a requested anonymous mapping size and convert it to `usize`.
+fn validated_len(size: u64) -> Result<usize> {
+    if size == 0 {
+        return Err(MmapIoError::ResizeFailed(ERR_ZERO_SIZE.into()));
+    }
+    if size > MAX_MMAP_SIZE {
+        return Err(MmapIoError::ResizeFailed(format!(
+            "Size {size} exceeds maximum safe limit of {MAX_MMAP_SIZE} bytes"
+        )));
+    }
+    usize::try_from(size)
+        .map_err(|_| MmapIoError::ResizeFailed(format!("Size {size} does not fit in usize")))
+}
+
 /// Process-local anonymous memory mapping (no backing file).
+///
+/// Range rule (same as `MemoryMappedFile`, since 1.1.0): a zero-length
+/// request is accepted at any offset and does nothing; any other
+/// request must satisfy `offset + len <= len()` or it fails with
+/// [`MmapIoError::OutOfBounds`].
 ///
 /// Created via [`AnonymousMmap::new`]. The mapping is RW; pages are
 /// zero-initialized by the kernel on first touch. Memory is released
@@ -62,8 +80,10 @@ const MAX_MMAP_SIZE: u64 = 2 * (1 << 30); // 2 GB
 /// # Ok::<(), mmap_io::MmapIoError>(())
 /// ```
 pub struct AnonymousMmap {
-    map: RwLock<RawMmapMut>,
+    pub(crate) map: RwLock<RawMmapMut>,
     len: u64,
+    /// Live plain and atomic views; see `crate::views`.
+    pub(crate) views: ViewRegistry,
 }
 
 impl AnonymousMmap {
@@ -79,21 +99,109 @@ impl AnonymousMmap {
     /// - [`MmapIoError::Io`] if the kernel rejects the allocation
     ///   (out of address space, out of memory, etc.).
     pub fn new(size: u64) -> Result<Self> {
-        if size == 0 {
-            return Err(MmapIoError::ResizeFailed(ERR_ZERO_SIZE.into()));
+        let len = validated_len(size)?;
+        Ok(Self::from_raw(RawMmapMut::map_anon(len)?, size))
+    }
+
+    /// Allocate an anonymous RW mapping of `size` bytes backed by huge
+    /// pages where the platform allows it. Since 1.1.0, feature
+    /// `hugepages`.
+    ///
+    /// - **Linux**: first tries explicit huge pages (`MAP_HUGETLB`,
+    ///   default huge page size). That needs pages reserved by the
+    ///   administrator (`vm.nr_hugepages`, 0 on most systems); when the
+    ///   kernel refuses, it falls back to a normal mapping with the
+    ///   transparent huge page hint (`madvise(MADV_HUGEPAGE)`), which the
+    ///   kernel honors when THP is enabled (`always` or `madvise` in
+    ///   `/sys/kernel/mm/transparent_hugepage/enabled`) and 2 MiB-aligned
+    ///   runs are available. The fallback never fails the call.
+    /// - **Windows**: large pages need the `SeLockMemoryPrivilege`
+    ///   privilege, which ordinary processes do not hold; they are not
+    ///   attempted, and this is the same as [`new`](Self::new).
+    /// - **macOS and other platforms**: the same as `new`.
+    ///
+    /// The mapping behaves exactly like one from `new`; only its page
+    /// size differs. Use [`is_hugepage_backed`](Self::is_hugepage_backed)
+    /// to see what the kernel did (transparent huge pages appear only
+    /// after the memory is touched). With `MAP_HUGETLB` the OS mapping is
+    /// rounded up to whole huge pages; [`len`](Self::len) still reports
+    /// `size`.
+    ///
+    /// # Errors
+    ///
+    /// Same as [`new`](Self::new): [`MmapIoError::ResizeFailed`] for a
+    /// zero or oversized `size`, [`MmapIoError::Io`] if even the normal
+    /// fallback mapping cannot be created.
+    ///
+    /// # Example
+    ///
+    /// ```
+    /// use mmap_io::AnonymousMmap;
+    ///
+    /// let big = AnonymousMmap::with_huge_pages(4 * 1024 * 1024)?;
+    /// big.update_region(0, b"scratch")?;
+    /// assert_eq!(big.len(), 4 * 1024 * 1024);
+    /// // Some(true) / Some(false) on Linux, None elsewhere.
+    /// let _ = big.is_hugepage_backed();
+    /// # Ok::<(), mmap_io::MmapIoError>(())
+    /// ```
+    #[cfg(feature = "hugepages")]
+    pub fn with_huge_pages(size: u64) -> Result<Self> {
+        let len = validated_len(size)?;
+        let map = match crate::raw::RawMmapOptions::new().len(len).huge().map_anon() {
+            Ok(map) => map,
+            Err(e) => {
+                log::debug!(
+                    "MAP_HUGETLB refused for {len} bytes ({e}); using base pages with \
+                     MADV_HUGEPAGE"
+                );
+                let map = RawMmapMut::map_anon(len)?;
+                crate::mmap::advise_huge_pages(&map);
+                map
+            }
+        };
+        Ok(Self::from_raw(map, size))
+    }
+
+    /// Report whether the kernel currently backs this mapping with huge
+    /// pages. Since 1.1.0.
+    ///
+    /// Same contract as `MemoryMappedFile::is_hugepage_backed`:
+    /// `Some(true)` if any part of the mapping uses huge pages
+    /// (transparent or `MAP_HUGETLB`), `Some(false)` if none does, and
+    /// `None` on platforms without a queryable status (everything but
+    /// Linux) or if `/proc/self/smaps` cannot be read. Transparent huge
+    /// pages are only allocated when memory is first touched, and the
+    /// kernel may change the backing over time.
+    ///
+    /// # Example
+    ///
+    /// ```
+    /// let m = mmap_io::AnonymousMmap::new(4096)?;
+    /// if cfg!(not(target_os = "linux")) {
+    ///     assert_eq!(m.is_hugepage_backed(), None);
+    /// }
+    /// # Ok::<(), mmap_io::MmapIoError>(())
+    /// ```
+    #[must_use]
+    pub fn is_hugepage_backed(&self) -> Option<bool> {
+        #[cfg(target_os = "linux")]
+        {
+            let base = RawMmapMut::as_ptr(&self.map.read_recursive()) as usize;
+            crate::mmap::smaps_hugepage_lookup(base)
         }
-        if size > MAX_MMAP_SIZE {
-            return Err(MmapIoError::ResizeFailed(format!(
-                "Size {size} exceeds maximum safe limit of {MAX_MMAP_SIZE} bytes"
-            )));
+        #[cfg(not(target_os = "linux"))]
+        {
+            None
         }
-        let len_usize = usize::try_from(size)
-            .map_err(|_| MmapIoError::ResizeFailed(format!("Size {size} does not fit in usize")))?;
-        let mmap = RawMmapMut::map_anon(len_usize)?;
-        Ok(Self {
-            map: RwLock::new(mmap),
+    }
+
+    fn from_raw(map: RawMmapMut, size: u64) -> Self {
+        Self {
+            map: RwLock::new(map),
             len: size,
-        })
+            views: ViewRegistry::new(),
+        }
     }
 
     /// Length of the mapping in bytes.
@@ -114,24 +222,42 @@ impl AnonymousMmap {
     /// Copy `buf.len()` bytes from the mapping starting at `offset`
     /// into `buf`.
     ///
+    /// Bytes under a live atomic view are read with atomic loads, so
+    /// the copy never races with concurrent atomic stores.
+    ///
     /// # Errors
     ///
     /// Returns [`MmapIoError::OutOfBounds`] if the range exceeds the
     /// mapping length.
     pub fn read_into(&self, offset: u64, buf: &mut [u8]) -> Result<()> {
-        let (start, end) = slice_range(offset, buf.len() as u64, self.len)?;
-        let guard = self.map.read();
-        buf.copy_from_slice(&guard[start..end]);
+        if buf.is_empty() {
+            return Ok(());
+        }
+        let (start, _end) = slice_range(offset, buf.len() as u64, self.len)?;
+        // Recursive: a thread that already holds a view must not
+        // deadlock behind a queued writer.
+        let guard = self.map.read_recursive();
+        // SAFETY: `[start, end)` lies within the mapping (checked
+        // against `self.len`, which never changes), `guard` is a read
+        // guard held for the call, and every atomic view of this
+        // mapping registers in `self.views`: `copy_out`'s contract.
+        unsafe { self.views.copy_out(RawMmapMut::as_ptr(&guard), start, buf) };
         Ok(())
     }
 
     /// Write `data.len()` bytes into the mapping starting at `offset`.
+    ///
+    /// Takes the write lock, so it waits for every live view; calling
+    /// it on a thread that holds one deadlocks.
     ///
     /// # Errors
     ///
     /// Returns [`MmapIoError::OutOfBounds`] if the range exceeds the
     /// mapping length.
     pub fn update_region(&self, offset: u64, data: &[u8]) -> Result<()> {
+        if data.is_empty() {
+            return Ok(());
+        }
         let (start, end) = slice_range(offset, data.len() as u64, self.len)?;
         let mut guard = self.map.write();
         guard[start..end].copy_from_slice(data);
@@ -148,10 +274,16 @@ impl AnonymousMmap {
     ///
     /// Returns [`MmapIoError::OutOfBounds`] if the range exceeds the
     /// mapping length.
+    /// Returns [`MmapIoError::InvalidMode`] if the range overlaps a live
+    /// atomic view (see `MemoryMappedFile::as_slice`).
     pub fn as_slice(&self, offset: u64, len: u64) -> Result<MappedSlice<'_>> {
+        if len == 0 {
+            return Ok(MappedSlice::owned(&[]));
+        }
         let (start, end) = slice_range(offset, len, self.len)?;
-        let guard = self.map.read();
-        Ok(MappedSlice::guarded(guard, start..end))
+        let guard = self.map.read_recursive();
+        let reg = self.views.register_plain(start, end)?;
+        Ok(MappedSlice::guarded(guard, reg, start..end))
     }
 
     /// Borrow a mutable slice of the mapping.
@@ -165,9 +297,118 @@ impl AnonymousMmap {
     /// Returns [`MmapIoError::OutOfBounds`] if the range exceeds the
     /// mapping length.
     pub fn as_mut_slice(&self, offset: u64, len: u64) -> Result<MappedSliceMut<'_>> {
-        let (start, end) = slice_range(offset, len, self.len)?;
+        let (start, end) = if len == 0 {
+            (0, 0)
+        } else {
+            slice_range(offset, len, self.len)?
+        };
         let guard = self.map.write();
         Ok(MappedSliceMut::guarded(guard, start..end))
+    }
+
+    /// Non-blocking [`as_slice`](Self::as_slice): returns `Ok(None)`
+    /// instead of waiting while a writer ([`as_mut_slice`](Self::as_mut_slice)
+    /// guard or a running `update_region`) holds the lock. Same
+    /// validation as `as_slice` otherwise. Since 1.1.0.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`MmapIoError::OutOfBounds`] if the range exceeds the
+    /// mapping length.
+    /// Returns [`MmapIoError::InvalidMode`] if the range overlaps a live
+    /// atomic view.
+    ///
+    /// # Example
+    ///
+    /// ```
+    /// use mmap_io::AnonymousMmap;
+    ///
+    /// let mmap = AnonymousMmap::new(4096)?;
+    /// let w = mmap.as_mut_slice(0, 16)?;
+    /// assert!(mmap.try_as_slice(100, 4)?.is_none());
+    /// drop(w);
+    /// assert!(mmap.try_as_slice(100, 4)?.is_some());
+    /// # Ok::<(), mmap_io::MmapIoError>(())
+    /// ```
+    pub fn try_as_slice(&self, offset: u64, len: u64) -> Result<Option<MappedSlice<'_>>> {
+        if len == 0 {
+            return Ok(Some(MappedSlice::owned(&[])));
+        }
+        let (start, end) = slice_range(offset, len, self.len)?;
+        let Some(guard) = self.map.try_read_recursive() else {
+            return Ok(None);
+        };
+        let reg = self.views.register_plain(start, end)?;
+        Ok(Some(MappedSlice::guarded(guard, reg, start..end)))
+    }
+
+    /// Non-blocking [`as_mut_slice`](Self::as_mut_slice): returns
+    /// `Ok(None)` instead of waiting while any view or writer holds the
+    /// lock, which is also what it returns on a thread that holds a
+    /// view of this mapping (where `as_mut_slice` deadlocks). Since
+    /// 1.1.0.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`MmapIoError::OutOfBounds`] if the range exceeds the
+    /// mapping length (checked before the lock: the length of an
+    /// anonymous mapping never changes).
+    ///
+    /// # Example
+    ///
+    /// ```
+    /// use mmap_io::AnonymousMmap;
+    ///
+    /// let mmap = AnonymousMmap::new(4096)?;
+    /// let view = mmap.as_slice(0, 8)?;
+    /// assert!(mmap.try_as_mut_slice(8, 8)?.is_none());
+    /// drop(view);
+    /// mmap.try_as_mut_slice(8, 8)?.expect("free").fill(1);
+    /// # Ok::<(), mmap_io::MmapIoError>(())
+    /// ```
+    pub fn try_as_mut_slice(&self, offset: u64, len: u64) -> Result<Option<MappedSliceMut<'_>>> {
+        let (start, end) = if len == 0 {
+            (0, 0)
+        } else {
+            slice_range(offset, len, self.len)?
+        };
+        Ok(self
+            .map
+            .try_write()
+            .map(|guard| MappedSliceMut::guarded(guard, start..end)))
+    }
+
+    /// Non-blocking [`update_region`](Self::update_region): returns
+    /// `Ok(false)` instead of waiting while any view or writer holds
+    /// the lock, `Ok(true)` once the bytes are written. Since 1.1.0.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`MmapIoError::OutOfBounds`] if the range exceeds the
+    /// mapping length (checked before the lock).
+    ///
+    /// # Example
+    ///
+    /// ```
+    /// use mmap_io::AnonymousMmap;
+    ///
+    /// let mmap = AnonymousMmap::new(64)?;
+    /// let view = mmap.as_slice(0, 4)?;
+    /// assert!(!mmap.try_update_region(8, b"x")?);
+    /// drop(view);
+    /// assert!(mmap.try_update_region(8, b"x")?);
+    /// # Ok::<(), mmap_io::MmapIoError>(())
+    /// ```
+    pub fn try_update_region(&self, offset: u64, data: &[u8]) -> Result<bool> {
+        if data.is_empty() {
+            return Ok(true);
+        }
+        let (start, end) = slice_range(offset, data.len() as u64, self.len)?;
+        let Some(mut guard) = self.map.try_write() else {
+            return Ok(false);
+        };
+        guard[start..end].copy_from_slice(data);
+        Ok(true)
     }
 
     /// Raw pointer to the start of the mapping.
@@ -185,8 +426,8 @@ impl AnonymousMmap {
         // This expression itself only takes a read lock and reads the
         // mapping's base address; the read guard is dropped on return,
         // which is the entire point of marking the function unsafe.
-        let guard = self.map.read();
-        guard.as_ptr()
+        let guard = self.map.read_recursive();
+        RawMmapMut::as_ptr(&guard)
     }
 
     /// Raw mutable pointer to the start of the mapping.

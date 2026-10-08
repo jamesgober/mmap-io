@@ -25,11 +25,14 @@
 
 - **Zero-copy reads on every mode.** `as_slice` returns a `MappedSlice<'_>` borrowed directly from the mapping. No allocation. No memcpy. Works on read-only, read-write, and copy-on-write mappings uniformly.
 - **Zero-allocation iteration.** `mmap.chunks(N)` and `mmap.pages()` walk the file in fixed strides without ever heap-allocating. A 1 GiB scan at 4 KiB chunks skips 262,144 allocations and half the memory bandwidth of the naive approach.
-- **Aligned atomic views.** On read-write mappings, `atomic_u32` / `atomic_u64` return a wrapper that derefs to `&AtomicU64`. Multi-thread `fetch_add` over a memory-mapped counter is one cache-line ping; no cross-process locking required.
+- **Aligned atomic views.** On read-write, copy-on-write and anonymous mappings, `atomic_u32` / `atomic_u64` return a wrapper that derefs to `&AtomicU64`. Multi-thread `fetch_add` over a memory-mapped counter is one cache-line ping; no cross-process locking required. Since 1.1 the crate refuses a plain slice and an atomic view over the same bytes at run time, so the two cannot race.
 - **Configurable durability.** `flush()` is synchronous (`msync(MS_SYNC)` on Unix, `FlushViewOfFile` + `FlushFileBuffers` on Windows). `FlushPolicy::EveryBytes(N)`, `EveryWrites(N)`, `EveryMillis(N)`, `Always`, or `Manual` decide when the crate flushes for you; the millis policy runs a background flusher bound to the mapping's lifetime.
-- **Thread-safe.** Interior mutability via `parking_lot::RwLock`. Multiple concurrent readers, one writer at a time. Every live read view (slice, iterator item, atomic view) blocks writes and `resize()` until released, so memory under your reference cannot move.
-- **Anonymous mappings.** Process-local memory without a backing file via `AnonymousMmap::new(size)` for shared scratch buffers between threads, large temporary allocations, or as the kernel substrate for IPC patterns.
-- **Cross-platform.** Linux, macOS, Windows. Per-platform hooks where they exist (`MADV_HUGEPAGE` for the huge-page hint, `posix_fadvise` for OS-level prefetch on Linux).
+- **Thread-safe.** Interior mutability via `parking_lot::RwLock`. Multiple concurrent readers, one writer at a time. Every live read view (slice, iterator item, atomic view) blocks writes and `resize()` until released, so memory under your reference cannot move. The non-blocking `try_as_slice` / `try_as_slice_mut` / `try_update_region` report "would block" instead of waiting (and instead of deadlocking on the thread that holds a view).
+- **Writable copy-on-write.** `open_cow` maps a file privately: write to it freely, the file never changes (since 1.1).
+- **Write-back without waiting.** `schedule_flush()` starts write-back and returns (`sync_file_range` on Linux); `flush()` is the durable one.
+- **Anonymous mappings.** Process-local memory without a backing file via `AnonymousMmap::new(size)` for shared scratch buffers between threads, large temporary allocations, or as the kernel substrate for IPC patterns. Atomic views (feature `atomic`) and the non-blocking `try_` methods work on them too.
+- **Streaming readers.** `mmap.reader()` implements `Read`, `Seek` and `BufRead` (zero-copy `lines()` on read-only mappings).
+- **Cross-platform.** Linux, macOS, Windows. Per-platform hooks where they exist (`MADV_HUGEPAGE` / `MAP_HUGETLB` for huge pages, `posix_fadvise` for OS-level prefetch and `sync_file_range` for write-back on Linux).
 - **Opt-in surface.** Default features are `advise` + `iterator`. Everything else (`async`, `atomic`, `cow`, `locking`, `watch`, `hugepages`) is off by default to keep compile time tight.
 - **MSRV: 1.75.** Pinned and verified in CI.
 
@@ -78,8 +81,8 @@ fn main() -> Result<(), mmap_io::MmapIoError> {
 | `bytes`     | `bytes::Bytes` conversion for plugging into the hyper/tower/tonic/axum/reqwest ecosystem. |
 | `advise`    | Memory hinting via `madvise`/`posix_madvise` (Unix) or `PrefetchVirtualMemory` (Windows).            |
 | `iterator`  | Iterator-based access to memory chunks or pages with zero-copy reads.                                |
-| `hugepages` | Transparent huge page hint (`madvise(MADV_HUGEPAGE)`) on Linux RW mappings; no effect on other platforms. |
-| `cow`       | Copy-on-Write mapping mode using private per-process memory views.                                   |
+| `hugepages` | Transparent huge page hint (`madvise(MADV_HUGEPAGE)`) on Linux RW mappings, and `AnonymousMmap::with_huge_pages` (`MAP_HUGETLB` with a fallback to the hint); no effect on other platforms. |
+| `cow`       | Copy-on-Write mapping mode: writable private per-process views whose changes never reach the file.  |
 | `locking`   | Page-level memory locking via `mlock`/`munlock` (Unix) or `VirtualLock` (Windows).                   |
 | `atomic`    | Atomic views into memory as aligned `u32` / `u64` with strict alignment checks.                      |
 | `watch`     | Native file-change notifications: `inotify` (Linux), FSEvents (macOS), `ReadDirectoryChangesW` (Windows). |
@@ -334,7 +337,7 @@ Note: mmap-side writes (`update_region` + `flush`) are not a reliable trigger fo
 
 ## Copy-on-Write Mode (`feature = "cow"`)
 
-Private mapping of an existing file. Writable copy-on-write is not implemented: a COW mapping is read-only at the API (every write method returns `MmapIoError::InvalidMode`), so today it behaves like `open_ro`.
+Private, writable mapping of an existing file (since 1.1.0). Every write method works (`update_region`, `as_slice_mut`, `chunks_mut`, atomic views); written pages are copied on first write, the changes are visible through this mapping only, and they never reach the file. `flush()` is a no-op, `pending_bytes()` stays 0, and `resize()` is not supported. The file only needs read permission. Locking follows the `ReadWrite` rules: a live view blocks writers.
 
 ```rust
 #[cfg(feature = "cow")]
@@ -343,14 +346,15 @@ use mmap_io::MemoryMappedFile;
 fn main() -> Result<(), mmap_io::MmapIoError> {
     let cow_mmap = MemoryMappedFile::open_cow("shared.bin")?;
 
-    // Reads see the file content
-    let _data = cow_mmap.as_slice(0, 100)?;
-
-    // Writes are rejected with InvalidMode; the file is never modified.
-    assert!(cow_mmap.update_region(0, b"x").is_err());
+    // Patch the in-memory image; the file on disk is untouched.
+    cow_mmap.update_region(0, b"patched")?;
+    assert_eq!(&*cow_mmap.as_slice(0, 7)?, b"patched");
+    cow_mmap.flush()?; // no-op for copy-on-write
     Ok(())
 }
 ```
+
+Before 1.1.0 this mode was read-only (every write returned `InvalidMode`).
 
 ## Async Operations (`feature = "async"`)
 
@@ -425,20 +429,32 @@ let mmap = MemoryMappedFile::builder("hp.bin")
     .create()?;
 ```
 
+**Anonymous memory** (since 1.1.0): `AnonymousMmap::with_huge_pages(size)` asks Linux for explicit huge pages (`MAP_HUGETLB`). Those must be reserved by the administrator (`vm.nr_hugepages`), which most systems do not do; when the kernel refuses, the call falls back to normal pages with the `MADV_HUGEPAGE` hint instead of failing, so with Transparent Huge Pages enabled (`always` or `madvise`) the memory usually still ends up on huge pages. Windows large pages require `SeLockMemoryPrivilege` and are not attempted; on Windows and macOS it is the same as `AnonymousMmap::new`.
+
+```rust
+#[cfg(feature = "hugepages")]
+{
+    let scratch = mmap_io::AnonymousMmap::with_huge_pages(64 * 1024 * 1024)?;
+    scratch.update_region(0, b"hot data")?;
+    println!("huge pages: {:?}", scratch.is_hugepage_backed());
+}
+```
+
 ## Safety Notes
 
 - All operations perform bounds checks, under the mapping lock. A zero-length request is accepted at any offset.
 - Every `unsafe` block carries a SAFETY comment; [docs/SAFETY.md](./docs/SAFETY.md) explains the locking model.
 - Interior mutability uses `parking_lot::RwLock`.
-- A live `MappedSlice`, iterator item, or atomic view holds the read lock; a `MappedSliceMut` holds the write lock. Calling a method that needs the other kind of lock (for example `update_region` or `resize` while holding a slice, or `flush` while holding a `MappedSliceMut`) on the same thread deadlocks. Drop the guard first.
+- A live `MappedSlice`, iterator item, or atomic view holds the read lock; a `MappedSliceMut` holds the write lock. Calling a method that needs the other kind of lock (for example `update_region` or `resize` while holding a slice, or `flush` while holding a `MappedSliceMut`) on the same thread deadlocks. Drop the guard first, or use the non-blocking `try_update_region` / `try_as_slice_mut` / `try_as_slice`, which return "would block" (`Ok(false)` / `Ok(None)`) instead of waiting.
 
 ## ⚠️ Unsafe Code Disclaimer
 
-This crate uses `unsafe` internally to manage raw memory mappings (`mmap` on Unix, `MapViewOfFile` on Windows, through `memmap2`). Public APIs are memory-safe within one process. However:
+This crate uses `unsafe` internally to manage raw memory mappings (`mmap` on Unix, `MapViewOfFile` on Windows, through its own `mmap_io::raw` layer). Public APIs are memory-safe within one process. However:
 
-- **You must not modify or truncate the file from another process** while it is mapped here; readers can see torn data or crash with `SIGBUS`.
-- **Do not mix atomic and plain access to the same bytes**: reading bytes through a `MappedSlice` while another thread stores to them through an atomic view is a data race.
-- **Raw pointers** from `as_ptr` / `as_mut_ptr` are invalidated by `resize()`.
+- **You must not modify or truncate the file from another process** (or through a second, independent `MemoryMappedFile` of the same file) while it is mapped here; readers can see torn data or crash with `SIGBUS`.
+- **Raw pointers** from `as_ptr` / `as_mut_ptr` are invalidated by `resize()`, and must not be used to write bytes that a `MappedSlice` or an atomic view covers.
+
+Atomic and plain access to the same bytes is checked at run time since 1.1.0: a `MappedSlice` over bytes covered by a live atomic view (or the reverse) is refused with `InvalidMode`, and copying reads (`read_into`, `read_bytes`, `MmapReader`) read those bytes with atomic loads. Disjoint ranges, such as atomic counters in a header next to plain data, are unaffected.
 
 All unsafe logic is documented in the source and footguns are marked with caution.
 

@@ -30,10 +30,20 @@ pub fn mmap_io::anonymous::AnonymousMmap::as_mut_slice(&self, offset: u64, len: 
 pub unsafe fn mmap_io::anonymous::AnonymousMmap::as_ptr(&self) -> *const u8
 pub fn mmap_io::anonymous::AnonymousMmap::as_slice(&self, offset: u64, len: u64) -> mmap_io::errors::Result<mmap_io::mmap::MappedSlice<'_>>
 pub fn mmap_io::anonymous::AnonymousMmap::is_empty(&self) -> bool
+pub fn mmap_io::anonymous::AnonymousMmap::is_hugepage_backed(&self) -> core::option::Option<bool>
 pub fn mmap_io::anonymous::AnonymousMmap::len(&self) -> u64
 pub fn mmap_io::anonymous::AnonymousMmap::new(size: u64) -> mmap_io::errors::Result<Self>
 pub fn mmap_io::anonymous::AnonymousMmap::read_into(&self, offset: u64, buf: &mut [u8]) -> mmap_io::errors::Result<()>
+pub fn mmap_io::anonymous::AnonymousMmap::try_as_mut_slice(&self, offset: u64, len: u64) -> mmap_io::errors::Result<core::option::Option<mmap_io::mmap::MappedSliceMut<'_>>>
+pub fn mmap_io::anonymous::AnonymousMmap::try_as_slice(&self, offset: u64, len: u64) -> mmap_io::errors::Result<core::option::Option<mmap_io::mmap::MappedSlice<'_>>>
+pub fn mmap_io::anonymous::AnonymousMmap::try_update_region(&self, offset: u64, data: &[u8]) -> mmap_io::errors::Result<bool>
 pub fn mmap_io::anonymous::AnonymousMmap::update_region(&self, offset: u64, data: &[u8]) -> mmap_io::errors::Result<()>
+pub fn mmap_io::anonymous::AnonymousMmap::with_huge_pages(size: u64) -> mmap_io::errors::Result<Self>
+impl mmap_io::anonymous::AnonymousMmap
+pub fn mmap_io::anonymous::AnonymousMmap::atomic_u32(&self, offset: u64) -> mmap_io::errors::Result<mmap_io::atomic::AtomicView<'_, core::sync::atomic::AtomicU32>>
+pub fn mmap_io::anonymous::AnonymousMmap::atomic_u32_slice(&self, offset: u64, count: usize) -> mmap_io::errors::Result<mmap_io::atomic::AtomicSliceView<'_, core::sync::atomic::AtomicU32>>
+pub fn mmap_io::anonymous::AnonymousMmap::atomic_u64(&self, offset: u64) -> mmap_io::errors::Result<mmap_io::atomic::AtomicView<'_, core::sync::atomic::AtomicU64>>
+pub fn mmap_io::anonymous::AnonymousMmap::atomic_u64_slice(&self, offset: u64, count: usize) -> mmap_io::errors::Result<mmap_io::atomic::AtomicSliceView<'_, core::sync::atomic::AtomicU64>>
 impl core::fmt::Debug for mmap_io::anonymous::AnonymousMmap
 pub fn mmap_io::anonymous::AnonymousMmap::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
 impl !core::marker::Freeze for mmap_io::anonymous::AnonymousMmap
@@ -288,6 +298,8 @@ impl<'a> mmap_io::mmap::MappedSliceMut<'a>
 pub fn mmap_io::mmap::MappedSliceMut<'a>::as_mut(&mut self) -> &mut [u8]
 pub fn mmap_io::mmap::MappedSliceMut<'a>::is_empty(&self) -> bool
 pub fn mmap_io::mmap::MappedSliceMut<'a>::len(&self) -> usize
+impl core::fmt::Debug for mmap_io::mmap::MappedSliceMut<'_>
+pub fn mmap_io::mmap::MappedSliceMut<'_>::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
 impl core::ops::deref::Deref for mmap_io::mmap::MappedSliceMut<'_>
 pub type mmap_io::mmap::MappedSliceMut<'_>::Target = [u8]
 pub fn mmap_io::mmap::MappedSliceMut<'_>::deref(&self) -> &[u8]
@@ -333,8 +345,13 @@ pub fn mmap_io::mmap::MemoryMappedFile::path(&self) -> &std::path::Path
 pub fn mmap_io::mmap::MemoryMappedFile::read_bytes(&self, offset: u64, len: u64) -> mmap_io::errors::Result<bytes::bytes::Bytes>
 pub fn mmap_io::mmap::MemoryMappedFile::reader(&self) -> mmap_io::mmap::MmapReader<'_>
 pub fn mmap_io::mmap::MemoryMappedFile::resize(&self, new_size: u64) -> mmap_io::errors::Result<()>
+pub fn mmap_io::mmap::MemoryMappedFile::schedule_flush(&self) -> mmap_io::errors::Result<()>
+pub fn mmap_io::mmap::MemoryMappedFile::schedule_flush_range(&self, offset: u64, len: u64) -> mmap_io::errors::Result<()>
 pub fn mmap_io::mmap::MemoryMappedFile::touch_pages(&self) -> mmap_io::errors::Result<()>
 pub fn mmap_io::mmap::MemoryMappedFile::touch_pages_range(&self, offset: u64, len: u64) -> mmap_io::errors::Result<()>
+pub fn mmap_io::mmap::MemoryMappedFile::try_as_slice(&self, offset: u64, len: u64) -> mmap_io::errors::Result<core::option::Option<mmap_io::mmap::MappedSlice<'_>>>
+pub fn mmap_io::mmap::MemoryMappedFile::try_as_slice_mut(&self, offset: u64, len: u64) -> mmap_io::errors::Result<core::option::Option<mmap_io::mmap::MappedSliceMut<'_>>>
+pub fn mmap_io::mmap::MemoryMappedFile::try_update_region(&self, offset: u64, data: &[u8]) -> mmap_io::errors::Result<bool>
 pub fn mmap_io::mmap::MemoryMappedFile::update_region(&self, offset: u64, data: &[u8]) -> mmap_io::errors::Result<()>
 pub async fn mmap_io::mmap::MemoryMappedFile::update_region_async(&self, offset: u64, data: &[u8]) -> mmap_io::errors::Result<()>
 impl mmap_io::mmap::MemoryMappedFile
@@ -361,7 +378,7 @@ pub fn mmap_io::mmap::MemoryMappedFile::unlock_all(&self) -> mmap_io::errors::Re
 impl mmap_io::mmap::MemoryMappedFile
 pub fn mmap_io::mmap::MemoryMappedFile::open_cow<P: core::convert::AsRef<std::path::Path>>(path: P) -> mmap_io::errors::Result<Self>
 impl mmap_io::mmap::MemoryMappedFile
-pub fn mmap_io::mmap::MemoryMappedFile::watch<F>(&self, callback: F) -> mmap_io::errors::Result<mmap_io::watch::WatchHandle> where F: core::ops::function::Fn(mmap_io::watch::ChangeEvent) + core::marker::Send + 'static
+pub fn mmap_io::mmap::MemoryMappedFile::watch<F>(&self, callback: F) -> mmap_io::errors::Result<mmap_io::watch::WatchHandle> where F: core::ops::function::FnMut(mmap_io::watch::ChangeEvent) + core::marker::Send + 'static
 impl core::clone::Clone for mmap_io::mmap::MemoryMappedFile
 pub fn mmap_io::mmap::MemoryMappedFile::clone(&self) -> mmap_io::mmap::MemoryMappedFile
 impl core::fmt::Debug for mmap_io::mmap::MemoryMappedFile
@@ -380,6 +397,7 @@ impl !core::panic::unwind_safe::UnwindSafe for mmap_io::mmap::MemoryMappedFile
 pub struct mmap_io::mmap::MemoryMappedFileBuilder
 impl mmap_io::mmap::MemoryMappedFileBuilder
 pub fn mmap_io::mmap::MemoryMappedFileBuilder::create(self) -> mmap_io::errors::Result<mmap_io::mmap::MemoryMappedFile>
+pub fn mmap_io::mmap::MemoryMappedFileBuilder::create_new(self) -> mmap_io::errors::Result<mmap_io::mmap::MemoryMappedFile>
 pub fn mmap_io::mmap::MemoryMappedFileBuilder::flush_policy(self, policy: mmap_io::flush::FlushPolicy) -> Self
 pub fn mmap_io::mmap::MemoryMappedFileBuilder::huge_pages(self, enable: bool) -> Self
 pub fn mmap_io::mmap::MemoryMappedFileBuilder::mode(self, mode: mmap_io::mmap::MmapMode) -> Self
@@ -398,6 +416,9 @@ pub struct mmap_io::mmap::MmapReader<'a>
 impl<'a> mmap_io::mmap::MmapReader<'a>
 pub fn mmap_io::mmap::MmapReader<'a>::position(&self) -> u64
 pub fn mmap_io::mmap::MmapReader<'a>::set_position(&mut self, pos: u64)
+impl<'a> std::io::BufRead for mmap_io::mmap::MmapReader<'a>
+pub fn mmap_io::mmap::MmapReader<'a>::consume(&mut self, amt: usize)
+pub fn mmap_io::mmap::MmapReader<'a>::fill_buf(&mut self) -> std::io::error::Result<&[u8]>
 impl<'a> std::io::Read for mmap_io::mmap::MmapReader<'a>
 pub fn mmap_io::mmap::MmapReader<'a>::read(&mut self, buf: &mut [u8]) -> std::io::error::Result<usize>
 impl<'a> std::io::Seek for mmap_io::mmap::MmapReader<'a>
@@ -411,6 +432,12 @@ impl<'a> !core::panic::unwind_safe::RefUnwindSafe for mmap_io::mmap::MmapReader<
 impl<'a> !core::panic::unwind_safe::UnwindSafe for mmap_io::mmap::MmapReader<'a>
 pub mod mmap_io::raw
 pub struct mmap_io::raw::RawMmap
+impl mmap_io::raw::RawMmap
+pub fn mmap_io::raw::RawMmap::advise(&self, advice: mmap_io::advise::MmapAdvice) -> std::io::error::Result<()>
+pub fn mmap_io::raw::RawMmap::advise_range(&self, advice: mmap_io::advise::MmapAdvice, offset: usize, len: usize) -> std::io::error::Result<()>
+pub fn mmap_io::raw::RawMmap::lock(&self) -> std::io::error::Result<()>
+pub fn mmap_io::raw::RawMmap::make_mut(self) -> std::io::error::Result<mmap_io::raw::RawMmapMut>
+pub fn mmap_io::raw::RawMmap::unlock(&self) -> std::io::error::Result<()>
 impl mmap_io::raw::RawMmap
 pub fn mmap_io::raw::RawMmap::as_ptr(&self) -> *const u8
 pub fn mmap_io::raw::RawMmap::is_empty(&self) -> bool
@@ -431,6 +458,12 @@ impl core::marker::UnsafeUnpin for mmap_io::raw::RawMmap
 impl core::panic::unwind_safe::RefUnwindSafe for mmap_io::raw::RawMmap
 impl core::panic::unwind_safe::UnwindSafe for mmap_io::raw::RawMmap
 pub struct mmap_io::raw::RawMmapMut
+impl mmap_io::raw::RawMmapMut
+pub fn mmap_io::raw::RawMmapMut::advise(&self, advice: mmap_io::advise::MmapAdvice) -> std::io::error::Result<()>
+pub fn mmap_io::raw::RawMmapMut::advise_range(&self, advice: mmap_io::advise::MmapAdvice, offset: usize, len: usize) -> std::io::error::Result<()>
+pub fn mmap_io::raw::RawMmapMut::lock(&self) -> std::io::error::Result<()>
+pub fn mmap_io::raw::RawMmapMut::make_read_only(self) -> std::io::error::Result<mmap_io::raw::RawMmap>
+pub fn mmap_io::raw::RawMmapMut::unlock(&self) -> std::io::error::Result<()>
 impl mmap_io::raw::RawMmapMut
 pub fn mmap_io::raw::RawMmapMut::as_mut_ptr(&mut self) -> *mut u8
 pub fn mmap_io::raw::RawMmapMut::as_ptr(&self) -> *const u8
@@ -462,6 +495,7 @@ impl core::panic::unwind_safe::RefUnwindSafe for mmap_io::raw::RawMmapMut
 impl core::panic::unwind_safe::UnwindSafe for mmap_io::raw::RawMmapMut
 pub struct mmap_io::raw::RawMmapOptions
 impl mmap_io::raw::RawMmapOptions
+pub fn mmap_io::raw::RawMmapOptions::huge(&mut self) -> &mut Self
 pub fn mmap_io::raw::RawMmapOptions::len(&mut self, len: usize) -> &mut Self
 pub unsafe fn mmap_io::raw::RawMmapOptions::map(&self, file: &std::fs::File) -> std::io::error::Result<mmap_io::raw::RawMmap>
 pub fn mmap_io::raw::RawMmapOptions::map_anon(&self) -> std::io::error::Result<mmap_io::raw::RawMmapMut>
@@ -469,6 +503,7 @@ pub unsafe fn mmap_io::raw::RawMmapOptions::map_copy(&self, file: &std::fs::File
 pub unsafe fn mmap_io::raw::RawMmapOptions::map_mut(&self, file: &std::fs::File) -> std::io::error::Result<mmap_io::raw::RawMmapMut>
 pub const fn mmap_io::raw::RawMmapOptions::new() -> Self
 pub fn mmap_io::raw::RawMmapOptions::offset(&mut self, offset: u64) -> &mut Self
+pub fn mmap_io::raw::RawMmapOptions::populate(&mut self) -> &mut Self
 impl core::clone::Clone for mmap_io::raw::RawMmapOptions
 pub fn mmap_io::raw::RawMmapOptions::clone(&self) -> mmap_io::raw::RawMmapOptions
 impl core::default::Default for mmap_io::raw::RawMmapOptions
@@ -700,10 +735,20 @@ pub fn mmap_io::anonymous::AnonymousMmap::as_mut_slice(&self, offset: u64, len: 
 pub unsafe fn mmap_io::anonymous::AnonymousMmap::as_ptr(&self) -> *const u8
 pub fn mmap_io::anonymous::AnonymousMmap::as_slice(&self, offset: u64, len: u64) -> mmap_io::errors::Result<mmap_io::mmap::MappedSlice<'_>>
 pub fn mmap_io::anonymous::AnonymousMmap::is_empty(&self) -> bool
+pub fn mmap_io::anonymous::AnonymousMmap::is_hugepage_backed(&self) -> core::option::Option<bool>
 pub fn mmap_io::anonymous::AnonymousMmap::len(&self) -> u64
 pub fn mmap_io::anonymous::AnonymousMmap::new(size: u64) -> mmap_io::errors::Result<Self>
 pub fn mmap_io::anonymous::AnonymousMmap::read_into(&self, offset: u64, buf: &mut [u8]) -> mmap_io::errors::Result<()>
+pub fn mmap_io::anonymous::AnonymousMmap::try_as_mut_slice(&self, offset: u64, len: u64) -> mmap_io::errors::Result<core::option::Option<mmap_io::mmap::MappedSliceMut<'_>>>
+pub fn mmap_io::anonymous::AnonymousMmap::try_as_slice(&self, offset: u64, len: u64) -> mmap_io::errors::Result<core::option::Option<mmap_io::mmap::MappedSlice<'_>>>
+pub fn mmap_io::anonymous::AnonymousMmap::try_update_region(&self, offset: u64, data: &[u8]) -> mmap_io::errors::Result<bool>
 pub fn mmap_io::anonymous::AnonymousMmap::update_region(&self, offset: u64, data: &[u8]) -> mmap_io::errors::Result<()>
+pub fn mmap_io::anonymous::AnonymousMmap::with_huge_pages(size: u64) -> mmap_io::errors::Result<Self>
+impl mmap_io::anonymous::AnonymousMmap
+pub fn mmap_io::anonymous::AnonymousMmap::atomic_u32(&self, offset: u64) -> mmap_io::errors::Result<mmap_io::atomic::AtomicView<'_, core::sync::atomic::AtomicU32>>
+pub fn mmap_io::anonymous::AnonymousMmap::atomic_u32_slice(&self, offset: u64, count: usize) -> mmap_io::errors::Result<mmap_io::atomic::AtomicSliceView<'_, core::sync::atomic::AtomicU32>>
+pub fn mmap_io::anonymous::AnonymousMmap::atomic_u64(&self, offset: u64) -> mmap_io::errors::Result<mmap_io::atomic::AtomicView<'_, core::sync::atomic::AtomicU64>>
+pub fn mmap_io::anonymous::AnonymousMmap::atomic_u64_slice(&self, offset: u64, count: usize) -> mmap_io::errors::Result<mmap_io::atomic::AtomicSliceView<'_, core::sync::atomic::AtomicU64>>
 impl core::fmt::Debug for mmap_io::anonymous::AnonymousMmap
 pub fn mmap_io::anonymous::AnonymousMmap::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
 impl !core::marker::Freeze for mmap_io::anonymous::AnonymousMmap
@@ -780,6 +825,8 @@ impl<'a> mmap_io::mmap::MappedSliceMut<'a>
 pub fn mmap_io::mmap::MappedSliceMut<'a>::as_mut(&mut self) -> &mut [u8]
 pub fn mmap_io::mmap::MappedSliceMut<'a>::is_empty(&self) -> bool
 pub fn mmap_io::mmap::MappedSliceMut<'a>::len(&self) -> usize
+impl core::fmt::Debug for mmap_io::mmap::MappedSliceMut<'_>
+pub fn mmap_io::mmap::MappedSliceMut<'_>::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
 impl core::ops::deref::Deref for mmap_io::mmap::MappedSliceMut<'_>
 pub type mmap_io::mmap::MappedSliceMut<'_>::Target = [u8]
 pub fn mmap_io::mmap::MappedSliceMut<'_>::deref(&self) -> &[u8]
@@ -825,8 +872,13 @@ pub fn mmap_io::mmap::MemoryMappedFile::path(&self) -> &std::path::Path
 pub fn mmap_io::mmap::MemoryMappedFile::read_bytes(&self, offset: u64, len: u64) -> mmap_io::errors::Result<bytes::bytes::Bytes>
 pub fn mmap_io::mmap::MemoryMappedFile::reader(&self) -> mmap_io::mmap::MmapReader<'_>
 pub fn mmap_io::mmap::MemoryMappedFile::resize(&self, new_size: u64) -> mmap_io::errors::Result<()>
+pub fn mmap_io::mmap::MemoryMappedFile::schedule_flush(&self) -> mmap_io::errors::Result<()>
+pub fn mmap_io::mmap::MemoryMappedFile::schedule_flush_range(&self, offset: u64, len: u64) -> mmap_io::errors::Result<()>
 pub fn mmap_io::mmap::MemoryMappedFile::touch_pages(&self) -> mmap_io::errors::Result<()>
 pub fn mmap_io::mmap::MemoryMappedFile::touch_pages_range(&self, offset: u64, len: u64) -> mmap_io::errors::Result<()>
+pub fn mmap_io::mmap::MemoryMappedFile::try_as_slice(&self, offset: u64, len: u64) -> mmap_io::errors::Result<core::option::Option<mmap_io::mmap::MappedSlice<'_>>>
+pub fn mmap_io::mmap::MemoryMappedFile::try_as_slice_mut(&self, offset: u64, len: u64) -> mmap_io::errors::Result<core::option::Option<mmap_io::mmap::MappedSliceMut<'_>>>
+pub fn mmap_io::mmap::MemoryMappedFile::try_update_region(&self, offset: u64, data: &[u8]) -> mmap_io::errors::Result<bool>
 pub fn mmap_io::mmap::MemoryMappedFile::update_region(&self, offset: u64, data: &[u8]) -> mmap_io::errors::Result<()>
 pub async fn mmap_io::mmap::MemoryMappedFile::update_region_async(&self, offset: u64, data: &[u8]) -> mmap_io::errors::Result<()>
 impl mmap_io::mmap::MemoryMappedFile
@@ -853,7 +905,7 @@ pub fn mmap_io::mmap::MemoryMappedFile::unlock_all(&self) -> mmap_io::errors::Re
 impl mmap_io::mmap::MemoryMappedFile
 pub fn mmap_io::mmap::MemoryMappedFile::open_cow<P: core::convert::AsRef<std::path::Path>>(path: P) -> mmap_io::errors::Result<Self>
 impl mmap_io::mmap::MemoryMappedFile
-pub fn mmap_io::mmap::MemoryMappedFile::watch<F>(&self, callback: F) -> mmap_io::errors::Result<mmap_io::watch::WatchHandle> where F: core::ops::function::Fn(mmap_io::watch::ChangeEvent) + core::marker::Send + 'static
+pub fn mmap_io::mmap::MemoryMappedFile::watch<F>(&self, callback: F) -> mmap_io::errors::Result<mmap_io::watch::WatchHandle> where F: core::ops::function::FnMut(mmap_io::watch::ChangeEvent) + core::marker::Send + 'static
 impl core::clone::Clone for mmap_io::mmap::MemoryMappedFile
 pub fn mmap_io::mmap::MemoryMappedFile::clone(&self) -> mmap_io::mmap::MemoryMappedFile
 impl core::fmt::Debug for mmap_io::mmap::MemoryMappedFile

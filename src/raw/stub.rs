@@ -10,13 +10,20 @@ use std::io;
 use std::ptr::NonNull;
 
 use super::range::Layout;
-use super::{Access, FlushMode};
+use super::{Access, FlushMode, MapFlags, Protection};
 
 /// No mapping can exist on this target, so there is nothing to back.
 #[derive(Debug)]
 pub(crate) enum Backing {
     /// The only variant; never constructed for a real mapping.
     Private,
+}
+
+impl Backing {
+    /// Never reached: no mapping exists on this target.
+    pub(crate) fn mark_shared_writable(&mut self) -> io::Result<()> {
+        Err(unsupported())
+    }
 }
 
 fn unsupported() -> io::Error {
@@ -46,6 +53,7 @@ pub(crate) unsafe fn map_file(
     _file: &File,
     _access: Access,
     _layout: &Layout,
+    _extra: MapFlags,
 ) -> io::Result<(NonNull<u8>, Backing)> {
     Err(unsupported())
 }
@@ -55,7 +63,10 @@ pub(crate) unsafe fn map_file(
 /// # Safety
 ///
 /// Trivially safe; `unsafe` only to match the other backends.
-pub(crate) unsafe fn map_anon(_map_len: usize) -> io::Result<(NonNull<u8>, Backing)> {
+pub(crate) unsafe fn map_anon(
+    _map_len: usize,
+    _extra: MapFlags,
+) -> io::Result<(NonNull<u8>, Backing, usize)> {
     Err(unsupported())
 }
 
@@ -70,6 +81,39 @@ pub(crate) unsafe fn flush(
     _backing: &Backing,
     _mode: FlushMode,
 ) -> io::Result<()> {
+    Err(unsupported())
+}
+
+/// Never reached: no non-empty mapping exists on this target.
+///
+/// # Safety
+///
+/// Trivially safe; `unsafe` only to match the other backends.
+pub(crate) unsafe fn protect(_base: *mut u8, _os_len: usize, _prot: Protection) -> io::Result<()> {
+    Err(unsupported())
+}
+
+/// Never reached: no non-empty mapping exists on this target.
+///
+/// # Safety
+///
+/// Trivially safe; `unsafe` only to match the other backends.
+#[cfg(feature = "advise")]
+pub(crate) unsafe fn advise(
+    _addr: *mut u8,
+    _count: usize,
+    _advice: crate::advise::MmapAdvice,
+) -> io::Result<()> {
+    Err(unsupported())
+}
+
+/// Never reached: no non-empty mapping exists on this target.
+///
+/// # Safety
+///
+/// Trivially safe; `unsafe` only to match the other backends.
+#[cfg(feature = "locking")]
+pub(crate) unsafe fn lock(_addr: *mut u8, _count: usize, _lock: bool) -> io::Result<()> {
     Err(unsupported())
 }
 

@@ -77,8 +77,8 @@ pub struct MemoryMappedFile { /* private */ }
 pub enum MmapMode { ReadOnly, ReadWrite, CopyOnWrite }
 pub enum TouchHint { Never, Eager, Lazy }
 
-// Read-side wrapper. Holds the RW read guard for its lifetime (None
-// for RO/COW). Derefs to `[u8]`. Implements Debug + PartialEq with
+// Read-side wrapper. Holds the RW / COW read guard for its lifetime
+// (none for RO). Derefs to `[u8]`. Implements Debug + PartialEq with
 // byte slices for ergonomic test/assert use. Since 0.9.7.
 pub struct MappedSlice<'a> { /* private */ }
 
@@ -97,7 +97,7 @@ impl MemoryMappedFile {
     pub fn unmap(self) -> std::result::Result<File, Self>;
     // Since 0.9.7: as_slice works uniformly on RO, COW, AND RW.
     pub fn as_slice(&self, offset: u64, len: u64) -> Result<MappedSlice<'_>>;
-    // Since 0.9.11: 0.9.6 compat shim, RO/COW only.
+    // Since 0.9.11: 0.9.6 compat shim, RO only (RO/COW before 1.1.0).
     pub fn as_slice_bytes(&self, offset: u64, len: u64) -> Result<&[u8]>;
     pub fn as_slice_mut(&self, offset: u64, len: u64) -> Result<MappedSliceMut<'_>>;
     pub fn read_into(&self, offset: u64, dst: &mut [u8]) -> Result<()>;
@@ -131,6 +131,13 @@ impl MemoryMappedFile {
     pub fn read_bytes(&self, offset: u64, len: u64) -> Result<bytes::Bytes>;
     // Since 1.0.0: runtime hugepage introspection (Linux real, others None).
     pub fn is_hugepage_backed(&self) -> Option<bool>;
+    // Since 1.1.0: non-blocking accessors ("would block" = None / false).
+    pub fn try_as_slice(&self, offset: u64, len: u64) -> Result<Option<MappedSlice<'_>>>;
+    pub fn try_as_slice_mut(&self, offset: u64, len: u64) -> Result<Option<MappedSliceMut<'_>>>;
+    pub fn try_update_region(&self, offset: u64, data: &[u8]) -> Result<bool>;
+    // Since 1.1.0: start write-back without waiting. Not durable.
+    pub fn schedule_flush(&self) -> Result<()>;
+    pub fn schedule_flush_range(&self, offset: u64, len: u64) -> Result<()>;
 }
 
 // Since 1.0.0: process-local anonymous memory mapping (no backing file).
@@ -143,6 +150,15 @@ impl AnonymousMmap {
     pub fn update_region(&self, offset: u64, data: &[u8]) -> Result<()>;
     pub fn as_slice(&self, offset: u64, len: u64) -> Result<MappedSlice<'_>>;
     pub fn as_mut_slice(&self, offset: u64, len: u64) -> Result<MappedSliceMut<'_>>;
+    // Since 1.1.0.
+    pub fn try_as_slice(&self, offset: u64, len: u64) -> Result<Option<MappedSlice<'_>>>;
+    pub fn try_as_mut_slice(&self, offset: u64, len: u64) -> Result<Option<MappedSliceMut<'_>>>;
+    pub fn try_update_region(&self, offset: u64, data: &[u8]) -> Result<bool>;
+    pub fn is_hugepage_backed(&self) -> Option<bool>;
+    #[cfg(feature = "hugepages")]
+    pub fn with_huge_pages(size: u64) -> Result<Self>;
+    // atomic_u64 / atomic_u32 / atomic_u64_slice / atomic_u32_slice
+    // with feature = "atomic", same signatures as on MemoryMappedFile.
     pub unsafe fn as_ptr(&self) -> *const u8;
     pub unsafe fn as_mut_ptr(&self) -> *mut u8;
 }
@@ -150,6 +166,8 @@ impl AnonymousMmap {
 // Since 0.9.11: std::io traits on the mapping.
 impl std::io::Read for MmapReader<'_> { /* ... */ }
 impl std::io::Seek for MmapReader<'_> { /* ... */ }
+// Since 1.1.0: zero-copy on RO mappings, 4 KiB inline copy otherwise.
+impl std::io::BufRead for MmapReader<'_> { /* ... */ }
 
 // Since 0.9.11: OS-handle accessors (unix / windows split).
 #[cfg(unix)]
@@ -180,6 +198,8 @@ impl MemoryMappedFileBuilder {
     pub fn open(self) -> Result<MemoryMappedFile>;
     // Since 0.9.8.
     pub fn open_or_create(self) -> Result<MemoryMappedFile>;
+    // Since 1.1.0: exclusive create; AlreadyExists if the file exists.
+    pub fn create_new(self) -> Result<MemoryMappedFile>;
 }
 
 // segment
@@ -244,7 +264,8 @@ impl<'a> ChunkIteratorMut<'a> {
         where F: FnMut(u64, &mut [u8]) -> Result<()>;
 }
 
-// cow (feature = "cow")
+// cow (feature = "cow"). Writable since 1.1.0: private pages, never
+// written to the file; flush is a no-op, resize unsupported.
 impl MemoryMappedFile {
     pub fn open_cow<P: AsRef<Path>>(path: P) -> Result<Self>;
 }
@@ -282,7 +303,7 @@ pub struct ChangeEvent { /* private */ }
 pub struct WatchHandle { /* private */ }
 impl MemoryMappedFile {
     pub fn watch<F>(&self, callback: F) -> Result<WatchHandle>
-        where F: Fn(ChangeEvent) + Send + 'static;
+        where F: FnMut(ChangeEvent) + Send + 'static; // FnMut since 1.1.0
 }
 
 // async (feature = "async")
@@ -314,14 +335,19 @@ documented as a hint; `is_hugepage_backed()` reports the outcome.
 ### 5.1 Thread safety
 
 `MemoryMappedFile` MUST be `Send + Sync`. Concurrent reads MUST be
-safe. On `ReadWrite` mappings the crate serializes every write
-(`update_region`, `as_slice_mut`, `chunks_mut`, `resize`) behind the
-mapping's `parking_lot::RwLock` write lock, and every live read view
-(slice, iterator item, atomic view) holds the read lock, so writes
-wait for all views. The rustdoc MUST state that taking a write on a
-thread that holds a read view deadlocks. Stores through atomic views
-are the one write path that runs under the read lock; ordering them
-is the caller's job. Internal state (flush policy, watch handles,
+safe. On `ReadWrite` and `CopyOnWrite` mappings the crate serializes
+every write (`update_region`, `as_slice_mut`, `chunks_mut`, `resize`)
+behind the mapping's `parking_lot::RwLock` write lock, and every live
+read view (slice, iterator item, atomic view) holds the read lock, so
+writes wait for all views. The rustdoc MUST state that taking a write
+on a thread that holds a read view deadlocks, and point at the
+non-blocking `try_` methods. Stores through atomic views are the one
+write path that runs under the read lock; the crate MUST keep atomic
+views and plain views of the same bytes (and atomic views of
+different element sizes over the same bytes) from coexisting, and
+copying reads MUST read bytes under a live atomic view atomically
+(the view registry, `docs/SAFETY.md` category 9). Ordering atomic
+stores among themselves is the caller's job. Internal state (flush policy, watch handles,
 etc.) MUST be protected by `parking_lot` locks or atomic primitives.
 See `docs/SAFETY.md` for the full locking model.
 

@@ -159,6 +159,12 @@ impl MemoryMappedFile {
     /// dedicated dispatcher thread. Drop the returned [`WatchHandle`]
     /// to stop the watch and release the OS subscription.
     ///
+    /// Since 1.1.0 the callback may be `FnMut`: it runs only on the
+    /// dispatcher thread, one call at a time, so it can keep mutable
+    /// state (a counter, a debounce timestamp, a buffer) without a lock.
+    /// Every `Fn` closure is also `FnMut`, so existing callers compile
+    /// unchanged.
+    ///
     /// # Platform behavior
     ///
     /// | Platform | Backend                       | Typical latency  |
@@ -201,10 +207,29 @@ impl MemoryMappedFile {
     /// // ...handle dropped at end of scope stops the watch.
     /// # Ok::<(), mmap_io::MmapIoError>(())
     /// ```
+    ///
+    /// An `FnMut` callback keeping its own state (since 1.1.0):
+    ///
+    /// ```
+    /// use std::sync::mpsc;
+    /// use mmap_io::MemoryMappedFile;
+    ///
+    /// let dir = tempfile::tempdir()?;
+    /// let mmap = MemoryMappedFile::create_rw(dir.path().join("w.bin"), 64)?;
+    /// let (tx, rx) = mpsc::channel();
+    /// let mut seen = 0u64; // plain mutable state, no Arc or atomic
+    /// let handle = mmap.watch(move |event| {
+    ///     seen += 1;
+    ///     let _ = tx.send((seen, event.kind));
+    /// })?;
+    /// drop(handle); // stops the watch; no callback runs afterwards
+    /// drop(rx);
+    /// # Ok::<(), Box<dyn std::error::Error>>(())
+    /// ```
     #[cfg(feature = "watch")]
     pub fn watch<F>(&self, callback: F) -> Result<WatchHandle>
     where
-        F: Fn(ChangeEvent) + Send + 'static,
+        F: FnMut(ChangeEvent) + Send + 'static,
     {
         let path = self.path().to_path_buf();
         let (tx, rx) = mpsc::channel::<Msg>();
@@ -236,6 +261,9 @@ impl MemoryMappedFile {
         let thread = thread::Builder::new()
             .name(format!("mmap-io-watch:{}", path.display()))
             .spawn(move || {
+                // Only this thread ever calls the callback, so `FnMut`
+                // is enough.
+                let mut callback = callback;
                 while let Ok(msg) = rx.recv() {
                     let res = match msg {
                         Msg::Shutdown => break,
@@ -325,6 +353,37 @@ mod tests {
     /// for `watch` is "another process modified the file": this
     /// helper simulates that intra-process via a separate file
     /// handle.
+    #[test]
+    #[cfg(feature = "watch")]
+    fn test_watch_accepts_fnmut_with_owned_state() {
+        let path = tmp_path("watch_fnmut");
+        let _ = fs::remove_file(&path);
+        let mmap = create_mmap(&path, 64).expect("create");
+        let (tx, rx) = mpsc::channel();
+        // Mutable state owned by the closure: only valid with FnMut.
+        let mut history: Vec<ChangeKind> = Vec::new();
+        let handle = mmap
+            .watch(move |event| {
+                history.push(event.kind);
+                let _ = tx.send(history.len());
+            })
+            .expect("watch");
+        touch_file_externally(&path, b"one");
+        let first = rx.recv_timeout(Duration::from_secs(10));
+        assert!(matches!(first, Ok(1)), "first event: {first:?}");
+        touch_file_externally(&path, b"two");
+        // Counts keep growing: the state persists across calls.
+        let mut last = 1;
+        while let Ok(n) = rx.recv_timeout(Duration::from_millis(500)) {
+            assert_eq!(n, last + 1);
+            last = n;
+        }
+        assert!(last >= 2, "expected at least two events, got {last}");
+        drop(handle);
+        drop(mmap);
+        let _ = fs::remove_file(&path);
+    }
+
     fn touch_file_externally(path: &std::path::Path, payload: &[u8]) {
         use std::io::Write;
         let mut f = fs::OpenOptions::new()

@@ -20,13 +20,17 @@ The `mmap_io::raw` tier adds `unsafe fn` file-backed constructors
 
 ### Which mappings are locked
 
-- **ReadWrite** mappings live in `MapVariant::Rw(RwLock<MmapMut>)`
-  (a `parking_lot::RwLock`). `resize()` replaces the `MmapMut`, so
+- **ReadWrite** mappings live in `MapVariant::Rw(RwLock<RawMmapMut>)`
+  (a `parking_lot::RwLock`). `resize()` replaces the `RawMmapMut`, so
   any access to the mapped bytes must hold a guard on this lock.
-- **ReadOnly** and **CopyOnWrite** mappings live in an immutable
-  `memmap2::Mmap` that is never replaced (resize is rejected for both
-  modes, and COW is exposed read-only). A plain `&[u8]` borrow tied to
-  `&MemoryMappedFile` is enough.
+- **CopyOnWrite** mappings (writable since 1.1) live in
+  `MapVariant::Cow(RwLock<RawMmapMut>)`, a private `map_copy` mapping.
+  They are never resized, but they are written, so every access takes
+  the same guards as `ReadWrite`.
+- **ReadOnly** mappings live in an immutable `RawMmap` that is never
+  replaced or written. A plain `&[u8]` borrow tied to
+  `&MemoryMappedFile` is enough, and `as_slice_bytes` hands one out
+  only for this mode.
 
 ### Who holds which guard
 
@@ -43,7 +47,10 @@ Consequences callers must know:
   it covers, and `resize()`. Writes to "disjoint" regions are not
   exempt.
 - Calling a write method on a thread that holds a read view of the
-  same mapping deadlocks. Drop the view first.
+  same mapping deadlocks. Drop the view first, or use the non-blocking
+  `try_update_region` / `try_as_slice_mut` / `try_as_slice` (1.1),
+  which use `try_write` / `try_read_recursive` and return "would
+  block" instead of waiting.
 - Read paths take the lock with `read_recursive()`, so a thread that
   already holds a view can take another one even while a writer is
   queued (a fair `read()` would deadlock there).
@@ -81,23 +88,25 @@ view can observe a truncated file:
 
 ### 1. Mapping construction (`src/mmap.rs`)
 
-`memmap2::Mmap::map`, `MmapMut::map_mut`, and `MmapOptions::map` /
-`map_mut` are `unsafe` because the OS does not stop another process
-from modifying or truncating the file under the mapping. Inside the
+`raw::RawMmap::map`, `RawMmapMut::map_mut`, and `RawMmapOptions::map`
+/ `map_mut` / `map_copy` are `unsafe` because the OS does not stop
+another process from modifying or truncating the file under the
+mapping. Inside the
 process, all access to RW mappings goes through the lock described
-above, and RO/COW mappings are never written through Rust references.
+above (COW included), and RO mappings are never written.
 Cross-process modification is out of scope (REPS.md section 5.1).
 
-Sites: `create_rw`, `open_ro`, `open_rw`, `from_file`, `open_cow`,
-`MemoryMappedFileBuilder::open_existing` (RO and COW), and
-`map_file_rw`, which every builder RW path and `resize()` use. Callers
-of `map_file_rw` never pass a length beyond the file's current length.
+Sites: `create_rw`, `open_ro`, `open_rw`, `from_file`,
+`MemoryMappedFileBuilder::open_existing` (RO), `map_file_rw`, which
+every builder RW path and `resize()` use, and `map_file_cow` (`open_cow`,
+`from_file` and the builder with `CopyOnWrite`). Callers of both
+helpers never pass a length beyond the file's current length.
 
-Reference: [`memmap2::MmapMut::map_mut`](https://docs.rs/memmap2/latest/memmap2/struct.MmapMut.html#method.map_mut)
+Contract: `RawMmapOptions::map` (category 8 below).
 
 ### 2. Guarded slices (`MappedSlice`, `src/mmap.rs`)
 
-For RW mappings a `MappedSlice` stores the read guard plus a raw
+For RW and COW mappings a `MappedSlice` stores the read guard plus a raw
 `*const [u8]` computed once at construction, so `Deref` is a pointer
 dereference with no range arithmetic. Soundness: the slice was taken
 from the guarded mapping, the guard lives exactly as long as the
@@ -112,13 +121,23 @@ with its `deadlock_detection` feature at compile time.)
 Iterator items take their own recursive read guard, so a chunk kept
 after its iterator is dropped still pins the mapping.
 
+On RW and COW mappings the slice also holds a `PlainReg`, its entry in
+the mapping's view registry (category 9), so no atomic view of its
+bytes can exist while it lives. The slice pointer is computed with
+`RawMmapMut::as_ptr` plus an offset (`sub_slice_ptr`) rather than by
+indexing `&guard[..]`, so no `&[u8]` over the whole mapping (which
+could cover bytes under a live atomic view elsewhere) is ever formed.
+A fourth variant, `Snapshot(Box<[u8]>)`, is an owned copy used for
+iterator items that overlap a live atomic view.
+
 ### 3. Atomic views (`src/atomic.rs`)
 
 `view_parts` casts `guard.as_ptr().add(offset)` to `*const AtomicU32`
 or `*const AtomicU64`. It is sound because:
 
-1. Only `ReadWrite` mappings are accepted; RO and COW mappings return
-   `InvalidMode`, since a safe `store` on a read-only page faults.
+1. Only writable mappings are accepted (`ReadWrite`, `CopyOnWrite`
+   since 1.1, and `AnonymousMmap`); RO mappings return `InvalidMode`,
+   since a safe `store` on a read-only page faults.
 2. The offset is checked to be a multiple of the type's alignment, and
    the mapping base is page-aligned.
 3. `offset + count * size_of::<T>()` is checked against the guarded
@@ -126,6 +145,10 @@ or `*const AtomicU64`. It is sound because:
 4. `T` is restricted by a sealed trait to `AtomicU32` / `AtomicU64`,
    which have the layout of `u32` / `u64` and accept every bit
    pattern; `size == align`, so every element of a run is aligned.
+5. The range is registered in the mapping's view registry (category
+   9), which refuses it if a plain view of any of its bytes, or an
+   atomic view of the other element size, is alive, and keeps such
+   views from being created until the atomic view is dropped.
 
 The view keeps the read guard for its lifetime. `AtomicView` and
 `AtomicSliceView` are `Send + Sync` for `T: Sync`, on the same
@@ -183,10 +206,14 @@ split so that the arithmetic and the syscalls can be reviewed apart:
 
 - `range.rs`: pure, `unsafe`-free offset and length arithmetic. Runs
   under Miri.
-- `unix.rs`: `mmap` / `msync` / `munmap` via `libc`.
+- `unix.rs`: `mmap` / `msync` / `munmap` / `mprotect`, plus `madvise`
+  (feature `advise`), `mlock` / `munlock` (feature `locking`) and
+  `sync_file_range` (Linux), via `libc`.
 - `windows.rs`: `CreateFileMappingW` / `MapViewOfFile` /
-  `FlushViewOfFile` / `UnmapViewOfFile` / `GetSystemInfo`, declared by
-  hand with `extern "system"` (no `windows-sys`).
+  `FlushViewOfFile` / `UnmapViewOfFile` / `VirtualProtect` /
+  `GetSystemInfo`, plus `PrefetchVirtualMemory` and `VirtualLock` /
+  `VirtualUnlock`, declared by hand with `extern "system"` (no
+  `windows-sys`).
 - `stub.rs`: every constructor returns `Unsupported`.
 - `mod.rs`: the owning `Mapping` type, `Deref`, `Drop`, `Send`/`Sync`.
 
@@ -208,17 +235,44 @@ does. `map_anon` is safe: anonymous memory has no outside writer.
    `CreateFileMappingW` (fails on empty files). The pointer is then a
    non-null, granularity-aligned address used only for zero-length
    slices and never unmapped.
-2. Otherwise the OS mapping starts at `ptr - delta`, is `delta + len`
+2. Otherwise the OS mapping starts at `ptr - delta` and is `os_len`
    bytes long, with `delta` below the OS offset granularity (page size
    on Unix, allocation granularity on Windows) and
-   `delta + len <= isize::MAX`. The pair is computed by
-   `range::layout` with checked arithmetic.
+   `delta + len <= os_len <= isize::MAX`. `delta` and `delta + len` are
+   computed by `range::layout` with checked arithmetic; `os_len` is
+   larger only for `huge()` anonymous mappings, rounded up (checked) to
+   the huge page size because `munmap` of a `MAP_HUGETLB` mapping needs
+   a huge-page multiple. `Drop` unmaps `os_len` bytes.
 3. The window `[offset, offset + len)` lies inside the file at mapping
    time (`range::resolve_len`): mapping past end of file is rejected
    up front instead of producing a mapping that faults on access.
 4. The mapping is owned exclusively by one value, so `Drop` unmaps it
    exactly once and never panics (errors from `munmap` /
    `UnmapViewOfFile` are ignored, as there is no caller to report to).
+
+**Protection changes.** `make_read_only` and `make_mut` call
+`mprotect` / `VirtualProtect` on the whole OS mapping. Both take the
+mapping by value, so no `&[u8]` or `&mut [u8]` into it can be alive
+when the protection changes (a `&mut [u8]` to pages that just became
+read-only would fault on write; a `&[u8]` to pages that just became
+writable through another handle would break its immutability). The
+mapping records its kind at creation (shared read, shared write,
+copy-on-write, anonymous), so `make_mut` restores exactly the original
+access; on Windows a view of a `PAGE_READONLY` section is never made
+writable (the call fails before any OS call). On Unix, making a
+read-only shared file mapping writable switches its backing so `flush`
+calls `msync`. A failed call drops (unmaps) the mapping.
+
+**Advice and locking.** `advise_range` and `lock` validate the range
+with the same `range::flush_span` as `flush_range`, so the address is
+page aligned and inside the mapping before `madvise` / `mlock` /
+`PrefetchVirtualMemory` / `VirtualLock` sees it. None of these calls
+reads or writes the bytes, except `MADV_DONTNEED` on private memory,
+which replaces private pages with file contents (copy-on-write) or
+zeros (anonymous) and would change bytes behind live `&[u8]` borrows.
+The raw tier therefore refuses `DontNeed` on private mappings with
+`InvalidInput`. On shared file mappings it only drops page table
+entries.
 
 **Bounds before pointers.** `flush_range` passes the caller's
 `(offset, len)` through `range::flush_span`, which rejects
@@ -252,21 +306,82 @@ References:
 
 ## Flushing
 
-The crate has no `unsafe` on the flush path. `flush()` and
-`flush_range()` call memmap2, which issues `msync(MS_SYNC)` on Unix
-and `FlushViewOfFile` + `FlushFileBuffers` on Windows, while holding a
-read guard so the mapping cannot be replaced during the call.
+The managed layer has no `unsafe` on the flush path. `flush()` and
+`flush_range()` call the raw layer, which issues `msync(MS_SYNC)` on
+Unix and `FlushViewOfFile` + `FlushFileBuffers` on Windows over a range
+validated by `range::flush_span`, while holding a read guard so the
+mapping cannot be replaced during the call.
+
+`schedule_flush()` / `schedule_flush_range()` (1.1) hold the same read
+guard and validate the range the same way. On Linux they call
+`sync_file_range(SYNC_FILE_RANGE_WRITE)` on the backing file
+descriptor (`raw::unix::start_writeback`): the call takes an fd and two
+integers, touches no memory, and only queues already-dirty page-cache
+pages for write-out. Elsewhere they use the raw layer's
+`flush_async_range` (`msync(MS_ASYNC)` / `FlushViewOfFile`). Neither
+is durable.
+
+### 9. View registry (`src/views.rs`)
+
+An atomic view and a plain view (`MappedSlice`, iterator item) both
+hold read guards, so the lock alone would let them cover the same
+bytes. An atomic store would then race with the slice's non-atomic
+reads, and a `&[u8]` asserts that its bytes do not change at all while
+it lives: undefined behavior. Two atomic views of different element
+sizes over the same bytes are mixed-size atomic accesses, also
+undefined. Before 1.1 this was only documented; since 1.1 each
+writable mapping (RW, COW, `AnonymousMmap`) carries a `ViewRegistry`
+that records the byte range of every live plain and atomic view and
+refuses:
+
+- a plain view overlapping a live atomic view (`as_slice`,
+  `Segment::as_slice`, `try_as_slice` return `InvalidMode`; iterator
+  items become owned snapshots instead);
+- an atomic view overlapping a live plain view, or a live atomic view
+  of the other element size (`InvalidMode`).
+
+Disjoint ranges never conflict. Copying reads (`read_into`,
+`read_bytes`, `MmapReader`, snapshots) do not register; they hold the
+registry's atomic-set read lock for the copy, so no atomic view can
+appear under them, and read bytes under an existing atomic view with
+atomic loads of that view's element size (`copy_out`). `touch_pages`
+does the same per page.
+
+Registration protocol: plain views go into per-thread shards
+(`Mutex<Slab>`) and then load an `atomic_live` counter; only when it
+is non-zero do they read-lock the atomic set and check for overlap.
+Atomic views write-lock the atomic set, increment the counter, then
+lock and scan every shard. Because both sides take the plain view's
+shard mutex, one of them goes first: if the plain view does, the
+atomic scan sees it; if the atomic view does, its increment
+happens-before the plain view's counter load, which sends the plain
+view to the locked check. At most one of a conflicting pair succeeds
+(rarely both fail, which is a spurious `InvalidMode`, never an
+overlap). The module docs carry the full argument; unit tests race the
+two sides.
+
+Without the `atomic` feature no atomic view can exist and the registry
+compiles to nothing, so plain views cost exactly what they did in 1.0.
+With it, each RW / COW plain view costs one shard lock to register and
+one to deregister (see `docs/PERFORMANCE.md`).
+
+What it does not cover: raw pointers (`as_ptr` / `as_mut_ptr`), and
+other `MemoryMappedFile` values that map the same file independently
+(another `open_rw` of the same path, or another process). Those are
+separate mappings with separate registries, the same class as
+cross-process modification.
 
 ## What the crate cannot guarantee
 
 - **Other processes.** If another process writes to or truncates the
   file, readers here can see torn data or receive `SIGBUS`. Callers
   that share a file across processes must coordinate (REPS.md 5.1).
-- **Atomic and plain access to the same bytes.** An `AtomicView` and a
-  `MappedSlice` both hold read guards and can coexist. Reading bytes
-  through the slice while another thread stores to them through the
-  atomic view is a data race under the Rust memory model. Keep
-  atomic regions and plain-byte regions disjoint.
+- **Atomic and plain access through independent mappings.** Within
+  one mapping (and its clones) the view registry (category 9) keeps
+  atomic and plain views of the same bytes apart. Two independently
+  opened mappings of the same file, or a raw pointer, are not covered:
+  an atomic store through one and a plain read through the other is a
+  data race, like cross-process access.
 - **Raw pointers** from `as_ptr` / `as_mut_ptr` follow the caller's
   contract above; the crate cannot check it.
 
@@ -278,9 +393,14 @@ read guard so the mapping cannot be replaced during the call.
 - **S3** (guard released before using the pointer in `advise.rs`,
   `lock.rs`): 0.9.6 only documented it. Since 1.1 the guard is kept
   alive across the syscall, and ranges are validated under it.
-- **S4** (COW write semantics): COW mappings are read-only at the API;
-  every write method returns `InvalidMode`, and atomic views are
-  refused on them since 1.1.
+- **S4** (COW write semantics): until 1.1 COW mappings were read-only
+  at the API. Since 1.1 they are mapped writable and private
+  (`map_copy`) and locked like `ReadWrite`, so the write methods and
+  atomic views are sound on them; `as_slice_bytes` (an unguarded
+  `&[u8]`) is refused on them, and `advise(DontNeed)`, which discards
+  private pages, takes the write lock.
+- **Atomic vs plain views** (documented as a caller obligation
+  through 1.0): enforced at run time by the view registry since 1.1.
 - **1.1 review**: iterator items outliving their guard
   (use-after-free on `resize`), atomic views on read-only pages,
   validation against a length read before the lock, truncation before

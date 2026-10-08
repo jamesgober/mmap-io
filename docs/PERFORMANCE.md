@@ -98,6 +98,33 @@ The time is the storage round-trip, not the byte count: the kernel flushes whole
 
 `update_region` alone costs 34 ns / 0.6 µs / 16 µs for the same sizes. Batch writes and flush once per batch; every flush is a synchronous write-back.
 
+## Cost of the atomic / plain view check (1.1)
+
+Since 1.1 a plain view (`MappedSlice` from `as_slice`, an iterator item) and an atomic view of the same bytes cannot coexist (see `docs/SAFETY.md`, category 9). With the `atomic` feature enabled, every plain view of a `ReadWrite` / `CopyOnWrite` mapping registers its byte range for its lifetime, and copying reads (`read_into`) hold the registry's read lock during the copy. Without the `atomic` feature the check compiles to nothing. `ReadOnly` mappings are never affected.
+
+Per-operation cost on a 16 MiB `ReadWrite` mapping, hot cache (a tight loop of 5 million calls at 64 offsets, `--release`; the criterion group `rw_views` measures the same operations at random offsets, where cache misses dominate):
+
+| Operation (Windows / Linux WSL2) | before the check | 1.1, `atomic` off | 1.1, `atomic` on |
+|-----------|--------------------:|------------------:|-----------------:|
+| `as_slice(off, 64)` + drop | 9.3 / 9.2 ns | 9.0 / 9.0 ns | 37.8 / 40.3 ns |
+| `read_into` 64 B | 9.7 / 10.1 ns | 9.2 / 9.7 ns | 18.5 / 20.0 ns |
+| `chunks(4096)` per item | 9.6 / 9.4 ns | 9.4 / 9.8 ns | 34.3 / 37.5 ns |
+
+Each cell is Windows / Linux. "Before" is the 1.1 branch just before the check was added (same raw layer, same locking); with `atomic` on it measured 9.2 / 12.5 ns for `as_slice`. A 16 MiB scan with 4 KiB chunks therefore goes from about 40 µs to about 155 µs on a RW mapping when `atomic` is enabled (criterion `rw_views/chunks_4096`, Windows); RO mappings stay at 8-10 µs. The added time is one uncontended shard lock to register and one to deregister per view (the shards keep concurrent readers on different cache lines), plus a read lock of the registry's atomic set per copying read. REPS.md section 2 puts safety ahead of speed here: without the check, an atomic store racing a plain read of the same bytes is undefined behavior that safe code could reach.
+
+## Starting write-back without waiting
+
+`schedule_flush_range` (1.1) starts write-back and returns; it is not durable. `flush_range` waits for durability. Each iteration rewrites the range first (`update_region`), so there is always something dirty; the `write only` column is that write alone. Criterion medians, 1.1.
+
+| Range | `flush_range` Windows | `schedule_flush_range` Windows | write only Windows | `flush_range` Linux (WSL2) | `schedule_flush_range` Linux (WSL2) | write only Linux |
+|-------|----------------------:|-------------------------------:|-------------------:|---------------------------:|------------------------------------:|-----------------:|
+| 4 KiB | 6.0 ms | 297 µs | 66 ns | 4.68 ms | 282 ns | 80 ns |
+| 1 MiB | 4.8 ms | 2.06 ms | 178 µs | 6.77 ms | 34.3 µs | 22.7 µs |
+
+- **Linux**: `sync_file_range(SYNC_FILE_RANGE_WRITE)` queues the pages and returns: about 0.2 µs for one page, 12 µs for 256 pages, versus milliseconds for the durable flush. Unlike `msync(MS_ASYNC)` (a no-op on Linux), it really starts write-out: `tests/schedule_flush.rs` watches the mapping's dirty page count in `/proc/self/smaps` drop right after the call, while without it 16 MiB stayed dirty for the full 5 s observed.
+- **Windows**: `FlushViewOfFile` hands the pages to the cache manager and skips `FlushFileBuffers`, so it is about 2.5-20x cheaper than the durable flush here, but it still issues the writes synchronously to the file system cache and is not free.
+- These Windows flush numbers are higher than the `flush_range` table above (0.4-1.3 ms) because the machine was under other load during this run; compare columns within one table, not across tables.
+
 ## Atomic operations
 
 `atomic_u64::fetch_add` under N-thread contention, 10,000 ops per thread:

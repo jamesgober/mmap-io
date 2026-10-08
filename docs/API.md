@@ -38,14 +38,17 @@ Complete reference for public-facing APIs. Each item lists its signature, parame
   - [open_rw](#open_rw)
   - [open_cow](#open_cow) (feature = "cow")
   - [open_or_create](#open_or_create) (0.9.8)
+  - [builder create_new](#builder-create_new) (1.1.0)
   - [from_file](#from_file) (0.9.8)
   - [unmap](#unmap) (0.9.8)
   - [as_slice](#as_slice)
   - [as_slice_mut](#as_slice_mut)
   - [read_into](#read_into)
   - [update_region](#update_region-1)
+  - [try_as_slice / try_as_slice_mut / try_update_region](#try_as_slice--try_as_slice_mut--try_update_region) (1.1.0)
   - [flush](#flush-1)
   - [flush_range](#flush_range)
+  - [schedule_flush / schedule_flush_range](#schedule_flush--schedule_flush_range) (1.1.0)
   - [resize](#resize)
   - [len](#len)
   - [is_empty](#is_empty)
@@ -97,6 +100,7 @@ Complete reference for public-facing APIs. Each item lists its signature, parame
   - [RawMmapOptions](#rawmmapoptions)
   - [RawMmap](#rawmmap)
   - [RawMmapMut](#rawmmapmut)
+  - [Protection changes, advice and locking](#protection-changes-advice-and-locking) (1.1.0)
   - [offset_granularity](#offset_granularity)
   - [Behavior and platform notes](#behavior-and-platform-notes)
   - [Performance](#performance)
@@ -140,7 +144,7 @@ The following optional Cargo features enable extended functionality:
 | `bytes`    | `bytes::Bytes` conversions for the hyper/tower/tonic/axum/reqwest ecosystem.                        |
 | `advise`   | Memory hinting via **`madvise`/`posix_madvise` (Unix)** or **Prefetch (Windows)**.                  |
 | `iterator` | Iterator-based access to memory chunks or pages with zero-copy read access.                         |
-| `hugepages` | Transparent huge page hint (`madvise(MADV_HUGEPAGE)`) on Linux RW mappings; no effect elsewhere. Use `is_hugepage_backed()` to confirm at runtime.|
+| `hugepages` | Transparent huge page hint (`madvise(MADV_HUGEPAGE)`) on Linux RW mappings; `AnonymousMmap::with_huge_pages` (1.1.0: `MAP_HUGETLB`, falling back to the hint). No effect elsewhere. Use `is_hugepage_backed()` to confirm at runtime.|
 | `cow`      | Copy-on-Write mapping mode using private memory views (per-process isolation).                       |
 | `locking`  | Page-level memory locking via **`mlock`/`munlock` (Unix)** or **`VirtualLock` (Windows)**.           |
 | `atomic`   | Atomic views into memory as aligned `u32` / `u64`, with strict alignment checking.                  |
@@ -148,7 +152,7 @@ The following optional Cargo features enable extended functionality:
 
 <br>
 
-- **Huge Pages** (`feature = "hugepages"`): On Linux, `madvise(MADV_HUGEPAGE)` on `ReadWrite` mappings built with `.huge_pages(true)`. A hint the kernel may ignore (file-backed mappings on most disk filesystems stay on base pages); `MAP_HUGETLB` and Windows large pages are not used.
+- **Huge Pages** (`feature = "hugepages"`): On Linux, `madvise(MADV_HUGEPAGE)` on `ReadWrite` mappings built with `.huge_pages(true)`. A hint the kernel may ignore (file-backed mappings on most disk filesystems stay on base pages); `MAP_HUGETLB` is not used for files (it needs hugetlbfs). For anonymous memory, `AnonymousMmap::with_huge_pages` (1.1.0) tries `MAP_HUGETLB` and falls back to the hint. Windows large pages (which need `SeLockMemoryPrivilege`) are never used.
 
 - **Async-Only Flushing** (`feature = "async"`): Async write helpers auto-flush after each write to ensure post-await visibility across platforms.
 
@@ -258,7 +262,7 @@ pub struct AnonymousMmap { /* private fields */ }
 - No `flush` (volatile memory; nothing to persist).
 - No `path` (there is no path).
 
-Everything else (read, write, slice access) works identically.
+Everything else (read, write, slice access, the `try_` methods, and since 1.1.0 atomic views with feature `atomic`) works identically.
 
 **Example**:
 ```rust
@@ -277,12 +281,19 @@ assert_eq!(&buf, b"hello");
 | Method | Signature | Notes |
 |--------|-----------|-------|
 | `new` | `fn new(size: u64) -> Result<Self>` | Allocate `size` bytes. Errors on zero/oversized. |
+| `with_huge_pages` | `fn with_huge_pages(size: u64) -> Result<Self>` | 1.1.0, feature `hugepages`. Linux: `MAP_HUGETLB`, falling back to base pages + `MADV_HUGEPAGE` when no huge pages are reserved. Windows (needs `SeLockMemoryPrivilege`, not attempted) and macOS: same as `new`. |
+| `is_hugepage_backed` | `fn is_hugepage_backed(&self) -> Option<bool>` | 1.1.0. Linux: from `/proc/self/smaps`; `None` elsewhere. |
 | `len` | `fn len(&self) -> u64` | Length in bytes. |
 | `is_empty` | `fn is_empty(&self) -> bool` | Always `false` for a constructed mapping. |
 | `read_into` | `fn read_into(&self, offset: u64, buf: &mut [u8]) -> Result<()>` | Copy bytes out of the mapping. |
 | `update_region` | `fn update_region(&self, offset: u64, data: &[u8]) -> Result<()>` | Copy bytes into the mapping. |
 | `as_slice` | `fn as_slice(&self, offset: u64, len: u64) -> Result<MappedSlice<'_>>` | Borrow a read-only slice (holds a read lock). |
 | `as_mut_slice` | `fn as_mut_slice(&self, offset: u64, len: u64) -> Result<MappedSliceMut<'_>>` | Borrow a mutable slice (holds a write lock). |
+| `try_as_slice` | `fn try_as_slice(&self, offset: u64, len: u64) -> Result<Option<MappedSlice<'_>>>` | 1.1.0. `Ok(None)` instead of waiting for a writer. |
+| `try_as_mut_slice` | `fn try_as_mut_slice(&self, offset: u64, len: u64) -> Result<Option<MappedSliceMut<'_>>>` | 1.1.0. `Ok(None)` instead of waiting for views or writers. |
+| `try_update_region` | `fn try_update_region(&self, offset: u64, data: &[u8]) -> Result<bool>` | 1.1.0. `Ok(false)` instead of waiting. |
+| `atomic_u64` / `atomic_u32` | `fn atomic_u64(&self, offset: u64) -> Result<AtomicView<'_, AtomicU64>>` | 1.1.0, feature `atomic`. Same checks as on `MemoryMappedFile`. |
+| `atomic_u64_slice` / `atomic_u32_slice` | `fn atomic_u64_slice(&self, offset: u64, count: usize) -> Result<AtomicSliceView<'_, AtomicU64>>` | 1.1.0, feature `atomic`. |
 | `as_ptr` | `unsafe fn as_ptr(&self) -> *const u8` | Raw byte pointer for FFI. |
 | `as_mut_ptr` | `unsafe fn as_mut_ptr(&self) -> *mut u8` | Raw mutable byte pointer for FFI. |
 
@@ -290,7 +301,7 @@ assert_eq!(&buf, b"hello");
 
 ### MappedSlice
 
-Read-only slice into a memory-mapped region. For RW mappings it holds the read lock for its lifetime, so `resize` and every write method (`update_region`, `as_slice_mut`, `chunks_mut`) block until the slice is dropped. Calling one of those on the thread that holds the slice deadlocks. `Send + Sync`.
+Read-only slice into a memory-mapped region. For RW and COW mappings it holds the read lock for its lifetime, so `resize` and every write method (`update_region`, `as_slice_mut`, `chunks_mut`) block until the slice is dropped. Calling one of those on the thread that holds the slice deadlocks; the `try_` methods return "would block" instead. `Send + Sync`.
 
 ```rust
 pub struct MappedSlice<'a> { /* private fields */ }
@@ -345,6 +356,16 @@ impl<'a> MmapReader<'a> {
 
 impl std::io::Read for MmapReader<'_> { /* ... */ }
 impl std::io::Seek for MmapReader<'_> { /* ... */ }
+impl std::io::BufRead for MmapReader<'_> { /* ... */ } // since 1.1.0
+```
+
+**`BufRead`** (since 1.1.0): on `ReadOnly` mappings `fill_buf` returns the rest of the mapping zero-copy, so `lines()`, `read_until` and `split` read the mapped memory directly. On `ReadWrite` / `CopyOnWrite` mappings it copies up to 4 KiB into a buffer inside the reader (through `read_into`, so bytes under live atomic views are read atomically) and holds no lock between calls: lending writable mapped bytes would require a read guard held across calls, which would block writers and deadlock a write on the reader's thread. Buffered bytes are a snapshot from when the buffer was filled; `read`, `seek` and `set_position` discard them. The reader owns no heap memory and holds no lock.
+
+```rust
+use std::io::BufRead;
+let log = MemoryMappedFile::open_ro("app.log")?;
+let errors = log.reader().lines().filter(|l| l.as_ref().map_or(false, |l| l.contains("ERROR"))).count();
+# Ok::<(), Box<dyn std::error::Error>>(())
 ```
 
 Construct via [`MemoryMappedFile::reader`](#reader).
@@ -387,7 +408,7 @@ pub enum MmapMode {
 **Variants**:
 - `ReadOnly`: Read-only access to the file
 - `ReadWrite`: Read and write access to the file
-- `CopyOnWrite`: Private mapping of an existing file (feature `cow`). Writable copy-on-write is not implemented: every write method returns `InvalidMode`, so it currently behaves like `ReadOnly`.
+- `CopyOnWrite`: Private, writable mapping of an existing file (feature `cow`, writable since 1.1.0). Writes land in private pages, are visible through this mapping and its clones, and never reach the file. `flush` / `flush_range` are no-ops, `pending_bytes()` stays 0, `resize` returns `InvalidMode`.
 
 <br>
 
@@ -669,7 +690,9 @@ let mmap = MemoryMappedFile::open_rw("data.bin")?;
 pub fn open_cow<P: AsRef<Path>>(path: P) -> Result<Self>
 ```
 
-**Description**: Opens an existing file in copy-on-write mode. The mapping is private and exposed read-only: write methods return `InvalidMode`, so the file is never modified through it. Behaves like `open_ro` today.
+**Description**: Opens an existing file in copy-on-write mode (`MAP_PRIVATE` / `PAGE_WRITECOPY`). The file only needs read permission. Since 1.1.0 the mapping is writable: `update_region`, `as_slice_mut`, `chunks_mut`, `as_mut_ptr` and the atomic views all work; each written page is copied on first write, and the changes are visible through this mapping (and its clones) only. They never reach the file and are lost when the mapping is dropped. `flush` and `flush_range` are `Ok` no-ops (ranges are still validated), `pending_bytes()` stays 0, and `resize` returns `InvalidMode`. Locking is the same as for `ReadWrite`: a live view blocks the write methods, and a write on the thread that holds a view deadlocks (the `try_` methods avoid that). `advise(.., DontNeed)` discards private copies on Linux, so on this mode it takes the write lock (see [advise](#advise)). Pages not yet written may still reflect later changes others make to the file (POSIX leaves this unspecified; Windows shows them).
+
+**Behavior change in 1.1.0**: write methods returned `InvalidMode` on this mode before; `as_slice_bytes` now returns `InvalidMode` on it (it cannot hand out an unguarded `&[u8]` to writable memory).
 
 **Parameters**:
 - `path`: Path to the file to open
@@ -682,6 +705,8 @@ pub fn open_cow<P: AsRef<Path>>(path: P) -> Result<Self>
 use mmap_io::MemoryMappedFile;
 
 let mmap = MemoryMappedFile::open_cow("shared.bin")?;
+mmap.update_region(0, b"patched")?;           // private; the file is unchanged
+assert_eq!(&*mmap.as_slice(0, 7)?, b"patched");
 ```
 
 <br>
@@ -796,6 +821,48 @@ let mmap = MemoryMappedFile::create_rw("data.bin", 1024)?;
 mmap.update_region(100, b"Hello")?;
 ```
 
+On a thread that may hold a `MappedSlice`, iterator item, or atomic view of the same mapping, `update_region` deadlocks; use [`try_update_region`](#try_as_slice--try_as_slice_mut--try_update_region).
+
+<br>
+
+### try_as_slice / try_as_slice_mut / try_update_region
+
+*(Since 1.1.0)*
+
+```rust
+pub fn try_as_slice(&self, offset: u64, len: u64) -> Result<Option<MappedSlice<'_>>>
+pub fn try_as_slice_mut(&self, offset: u64, len: u64) -> Result<Option<MappedSliceMut<'_>>>
+pub fn try_update_region(&self, offset: u64, data: &[u8]) -> Result<bool>
+```
+
+**Description**: Non-blocking versions of `as_slice`, `as_slice_mut` and `update_region`. Instead of waiting for the mapping's lock they report "would block": `Ok(None)` for the slice methods, `Ok(false)` for `try_update_region` (a `bool` because "written or not" is the only information; `Ok(true)` means the bytes are written). They exist because a live read view (`MappedSlice`, iterator item, atomic view) blocks every writer, including a write on the same thread, which deadlocks with the blocking methods.
+
+| Method | Reports "would block" when |
+|--------|----------------------------|
+| `try_as_slice` | a writer holds the lock (`MappedSliceMut`, running `update_region` / `chunks_mut` / `resize`). Readers never block readers. `ReadOnly` mappings have no lock and always return `Some`. |
+| `try_as_slice_mut` | any view or writer holds the lock, on any thread |
+| `try_update_region` | any view or writer holds the lock, on any thread |
+
+Otherwise they behave like the blocking versions: same mode checks (`InvalidMode` on `ReadOnly` for the write methods, checked before the lock), the range is validated under the lock (not checked when "would block" is returned), zero-length requests are accepted at any offset, `try_as_slice` refuses ranges that overlap a live atomic view, and `try_update_region` counts `pending_bytes()` and runs the flush policy. A policy flush runs under the lock already held (downgraded to a read guard), so the call never waits for another lock holder; it does wait for the disk when the policy flushes. The crate's internal view-tracking locks may be taken for a few instructions.
+
+`AnonymousMmap` has the same three methods (`try_as_slice`, `try_as_mut_slice`, `try_update_region`); its length never changes, so ranges are validated before the lock.
+
+**Example**:
+```rust
+use mmap_io::MemoryMappedFile;
+
+let mmap = MemoryMappedFile::create_rw("data.bin", 1024)?;
+let header = mmap.as_slice(0, 16)?;          // this thread holds a read view
+// mmap.update_region(100, b"x")?;           // would deadlock
+if !mmap.try_update_region(100, b"x")? {
+    // Busy: retry after dropping our views, or hand the write to
+    // another thread.
+}
+drop(header);
+assert!(mmap.try_update_region(100, b"x")?);
+# Ok::<(), mmap_io::MmapIoError>(())
+```
+
 <br>
 
 ### flush
@@ -830,6 +897,44 @@ pub fn flush_range(&self, offset: u64, len: u64) -> Result<()>
 **Errors**:
 - `MmapIoError::OutOfBounds` if range exceeds file bounds
 - `MmapIoError::FlushFailed` if flush operation fails
+
+<br>
+
+### schedule_flush / schedule_flush_range
+
+*(Since 1.1.0)*
+
+```rust
+pub fn schedule_flush(&self) -> Result<()>
+pub fn schedule_flush_range(&self, offset: u64, len: u64) -> Result<()>
+```
+
+**Description**: Start writing dirty pages back to the file **without waiting** for the write to finish. **Not durable**: when these return, the data may still be only in memory, and a crash or power loss can lose it. Only `flush()` / `flush_range()` make data durable. Use them to get write-back going early (for example after each batch, with a durable `flush()` at a commit point), or to keep dirty memory from piling up without paying for a synchronous flush. `pending_bytes()` is not changed.
+
+| Platform | Call |
+|----------|------|
+| Linux | `sync_file_range(SYNC_FILE_RANGE_WRITE)` on the backing file: queues the dirty pages for write-out at once; no wait, no metadata, no device cache flush. (Linux treats `msync(MS_ASYNC)` as a no-op, so it is not used.) |
+| macOS, other Unix | `msync(MS_ASYNC)`: schedules write-back and returns. |
+| Windows | `FlushViewOfFile` without `FlushFileBuffers`: hands the pages to the file system cache and returns without waiting for the disk. |
+
+The range is validated like `flush_range` (under the read guard; zero-length accepted at any offset; widened to whole pages by the kernel). On `ReadOnly` and `CopyOnWrite` mappings there is nothing to write back: the range is validated and the call returns `Ok`.
+
+**Errors**:
+- `MmapIoError::OutOfBounds` if the range exceeds the mapping length
+- `MmapIoError::FlushFailed` if the OS rejects the request
+
+**Example**:
+```rust
+let mmap = MemoryMappedFile::create_rw("journal.bin", 1 << 20)?;
+for (i, record) in records.iter().enumerate() {
+    let off = (i * 64) as u64;
+    mmap.update_region(off, record)?;
+    mmap.schedule_flush_range(off, 64)?; // start write-back, keep going
+}
+mmap.flush()?; // commit point: durable
+```
+
+Measured cost: see `docs/PERFORMANCE.md` ("Starting write-back without waiting").
 
 <br>
 
@@ -928,6 +1033,49 @@ The file is never truncated. A non-empty existing file is mapped at its current 
 ```rust
 use mmap_io::MemoryMappedFile;
 let mmap = MemoryMappedFile::open_or_create("data.bin", 1024 * 1024)?;
+```
+
+<br>
+
+### builder create_new
+
+*(Since 1.1.0)*
+
+```rust
+impl MemoryMappedFileBuilder {
+    pub fn create_new(self) -> Result<MemoryMappedFile>;
+}
+```
+
+**Description**: Like the builder's `create()`, but never touches an existing file: the file is created exclusively (`O_CREAT | O_EXCL` on Unix, `CREATE_NEW` on Windows), sized to `size` (sparse) and mapped `ReadWrite` with every builder option applied (flush policy including the `EveryMillis` flusher, touch hint, huge pages). Of several threads or processes racing to create the same path, exactly one succeeds. Size and mode are validated before the filesystem is touched; if sizing or mapping the new file fails, the file is removed again (best effort).
+
+| `create()` | `create_new()` | `open_or_create()` |
+|------------|----------------|--------------------|
+| truncates an existing file to `size` | fails with `AlreadyExists` if the file exists | opens an existing file as-is |
+
+**Errors**:
+- `MmapIoError::Io` with `ErrorKind::AlreadyExists` if the path exists (the file is left untouched)
+- `MmapIoError::ResizeFailed` if `size` is missing, zero, or above the maximum
+- `MmapIoError::InvalidMode` if the mode is not `ReadWrite`
+- `MmapIoError::Io` for other create / size / map failures
+
+**Example**:
+```rust
+use mmap_io::{MemoryMappedFile, MmapIoError};
+use mmap_io::flush::FlushPolicy;
+
+match MemoryMappedFile::builder("journal.bin")
+    .size(64 * 1024 * 1024)
+    .flush_policy(FlushPolicy::EveryBytes(1 << 20))
+    .create_new()
+{
+    Ok(mmap) => { /* fresh journal: write the header */ }
+    Err(MmapIoError::Io(e)) if e.kind() == std::io::ErrorKind::AlreadyExists => {
+        /* someone else created it: open it instead */
+    }
+    Err(e) => return Err(e),
+}
+# Ok::<(), MmapIoError>(())
 ```
 
 <br>
@@ -1136,7 +1284,7 @@ mmap.touch_pages_range(0, 64 * 1024)?;
 pub fn as_slice_bytes(&self, offset: u64, len: u64) -> Result<&[u8]>
 ```
 
-**Description**: Returns a direct `&[u8]` borrow into the mapping. Mirrors the 0.9.6 `as_slice` signature for codebases that were broken by the 0.9.7 return-type change. Supported on `ReadOnly` and `CopyOnWrite` mappings; returns `MmapIoError::InvalidMode` on `ReadWrite` (use [`as_slice`](#as_slice) which returns `MappedSlice<'_>` for that path).
+**Description**: Returns a direct `&[u8]` borrow into the mapping. Mirrors the 0.9.6 `as_slice` signature for codebases that were broken by the 0.9.7 return-type change. Supported on `ReadOnly` mappings; returns `MmapIoError::InvalidMode` on `ReadWrite` and (since 1.1.0, when copy-on-write became writable) `CopyOnWrite` (use [`as_slice`](#as_slice), which returns `MappedSlice<'_>`, for those).
 
 **Errors**:
 - `MmapIoError::InvalidMode` on `ReadWrite` mappings.
@@ -1269,7 +1417,7 @@ Behavior:
 
 Notes:
 - `flush()` is synchronous: `msync(MS_SYNC)` on Unix, `FlushViewOfFile` + `FlushFileBuffers` on Windows. macOS `msync` does not issue `F_FULLFSYNC`.
-- ReadOnly and COW mappings treat flush() as a no-op.
+- ReadOnly and COW mappings treat flush() as a no-op (COW writes stay in private pages by design).
 
 <hr>
 <div align="right"><a href="#doc-top">&uarr; TOP</a></div>
@@ -1288,7 +1436,7 @@ Notes:
 pub fn advise(&self, offset: u64, len: u64, advice: MmapAdvice) -> Result<()>
 ```
 
-**Description**: Provides hints to the OS about expected access patterns for better performance.
+**Description**: Provides hints to the OS about expected access patterns for better performance. The start is widened down to a page boundary. Unix calls `madvise`; Windows calls `PrefetchVirtualMemory` for `WillNeed` and ignores the other hints. The call holds a read guard, except `DontNeed` on a `CopyOnWrite` mapping: there `MADV_DONTNEED` throws away the private copies (on Linux the range reads the file again and private changes are lost), which changes the mapped bytes, so it takes the write lock like a write method (it waits for live views; on the thread holding a view it deadlocks).
 
 **Parameters**:
 - `offset`: Starting byte offset
@@ -1443,14 +1591,47 @@ it into `MmapIoError::Io(...)` before returning.
 > wrapper holds the read lock for its lifetime, so a concurrent
 > `resize()` (and every write method) blocks while the view is alive.
 >
-> Since 1.1, atomic views require a **ReadWrite** mapping. On
-> ReadOnly and CopyOnWrite mappings the pages are not writable, so a
-> safe `store` would fault; these methods return
-> `MmapIoError::InvalidMode` there. Checks run in this order: mode,
+> Since 1.1, atomic views require a writable mapping: **ReadWrite**
+> or **CopyOnWrite** (whose stores stay in private pages). On
+> ReadOnly mappings the pages are not writable, so a safe `store`
+> would fault; these methods return `MmapIoError::InvalidMode` there. Checks run in this order: mode,
 > alignment, bounds. Dropping a view adds its size to
 > `pending_bytes()`. Do not read the same bytes through a
 > `MappedSlice` while another thread stores to them atomically; that
-> is a data race.
+> would be a data race, so since 1.1 the mapping refuses it at run
+> time (see "Atomic and plain views" below).
+
+#### Atomic and plain views
+
+Since 1.1.0 each writable mapping tracks the byte ranges of its live views. An atomic view and a plain byte view (`MappedSlice` from `as_slice` / `try_as_slice` / `Segment::as_slice`, or an iterator item) of the same bytes cannot be alive at the same time, because an atomic store racing with a plain read is undefined behavior:
+
+| Live view | New request over overlapping bytes | Result |
+|-----------|------------------------------------|--------|
+| atomic view | `as_slice`, `try_as_slice`, `Segment::as_slice` | `InvalidMode` |
+| atomic view | `chunks()` / `pages()` item | owned copy (atomic loads), not a borrow |
+| atomic view | `read_into`, `read_bytes`, `MmapReader`, `touch_pages` | allowed; atomic bytes read with atomic loads |
+| `MappedSlice` / iterator item | any atomic view | `InvalidMode` |
+| `AtomicU64` view | `AtomicU32` view (or the reverse) | `InvalidMode` (mixed-size access) |
+| `AtomicU64` view | `AtomicU64` view | allowed |
+
+Disjoint ranges never conflict: counters in a header next to plain data work as before. The check is about views that are alive at that moment, so a reader on another thread that briefly holds a slice or iterator item over the counters (for example while scanning the whole file with `chunks()`) makes atomic view creation return `InvalidMode` for that moment. Create long-lived atomic views up front, read the counters through them (or with `read_into`), or retry on `InvalidMode`. The checks cover one mapping and its clones; an independent `MemoryMappedFile` of the same file, another process, or raw pointers are not tracked. Without the `atomic` feature nothing is tracked and plain views cost what they did in 1.0. With it, each RW / COW plain view adds one small lock round trip (numbers in `docs/PERFORMANCE.md`).
+
+```rust
+use std::sync::atomic::Ordering;
+use mmap_io::MemoryMappedFile;
+
+let mmap = MemoryMappedFile::create_rw("state.bin", 4096)?;
+let counter = mmap.atomic_u64(0)?;          // header: bytes 0..8
+counter.fetch_add(1, Ordering::SeqCst);
+let body = mmap.as_slice(8, 64)?;           // disjoint: fine
+assert!(mmap.as_slice(0, 16).is_err());     // overlaps the counter
+let mut header = [0u8; 16];
+mmap.read_into(0, &mut header)?;            // copies, counter read atomically
+# drop(body);
+# Ok::<(), mmap_io::MmapIoError>(())
+```
+
+<br>
 
 #### atomic_u64
 
@@ -1631,13 +1812,13 @@ pub fn unlock_all(&self) -> Result<()>
 #[cfg(feature = "watch")]
 pub fn watch<F>(&self, callback: F) -> Result<WatchHandle>
 where
-    F: Fn(ChangeEvent) + Send + 'static
+    F: FnMut(ChangeEvent) + Send + 'static
 ```
 
 **Description**: Watch the backing file for changes using the OS-native event source. The callback runs on a dedicated dispatcher thread for each detected change. Drop the returned `WatchHandle` to stop watching and release the OS subscription.
 
 **Parameters**:
-- `callback`: `Fn(ChangeEvent) + Send + 'static` invoked once per detected change
+- `callback`: `FnMut(ChangeEvent) + Send + 'static` invoked once per detected change, always on the same dispatcher thread, one call at a time (`FnMut` since 1.1.0; it was `Fn`, and every `Fn` closure still works)
 
 **Returns**: `Result<WatchHandle>` - drop to stop watching
 
@@ -1914,12 +2095,14 @@ public API safe.
 
 ```rust
 #[derive(Debug, Clone, Default)]
-pub struct RawMmapOptions { /* offset: u64, len: Option<usize> */ }
+pub struct RawMmapOptions { /* offset, len, populate, huge */ }
 
 impl RawMmapOptions {
     pub const fn new() -> Self;
     pub fn offset(&mut self, offset: u64) -> &mut Self;
     pub fn len(&mut self, len: usize) -> &mut Self;
+    pub fn populate(&mut self) -> &mut Self; // 1.1.0
+    pub fn huge(&mut self) -> &mut Self;     // 1.1.0
     pub unsafe fn map(&self, file: &File) -> io::Result<RawMmap>;
     pub unsafe fn map_mut(&self, file: &File) -> io::Result<RawMmapMut>;
     pub unsafe fn map_copy(&self, file: &File) -> io::Result<RawMmapMut>;
@@ -1934,6 +2117,21 @@ granularity and the leading bytes are hidden. `map` is read-only and
 shared, `map_mut` is writable and shared with the file, `map_copy` is
 private copy-on-write (writes never reach the file), `map_anon` is
 zero-filled anonymous memory (offset ignored).
+
+Since 1.1.0:
+
+- `populate()` pre-faults the mapping at creation (`MAP_POPULATE` on
+  Linux and Android, for file and anonymous maps). First accesses then
+  do not page-fault; creation is slower and commits memory up front.
+  Accepted and ignored on other platforms.
+- `huge()` asks `map_anon` for explicit huge pages (`MAP_HUGETLB` on
+  Linux and Android, default size from `/proc/meminfo`). The OS
+  mapping is rounded up to whole huge pages; `len()` still reports the
+  requested length. Without reserved huge pages (`vm.nr_hugepages`,
+  0 on most systems) `map_anon` fails with the OS error, usually
+  `ENOMEM`; the raw tier does not fall back. `AnonymousMmap::with_huge_pages`
+  does. Ignored for file maps and on other platforms; Windows large
+  pages need `SeLockMemoryPrivilege` and are not used.
 
 **Errors**: `InvalidInput` when the offset is past the end of the
 file, when `offset + len` overflows or exceeds the file size, or when
@@ -2022,6 +2220,85 @@ map.flush_range(0, 4)?;
 
 <br>
 
+### Protection changes, advice and locking
+
+Since 1.1.0. Additive, following `memmap2`'s method names.
+
+```rust
+impl RawMmap {
+    pub fn make_mut(self) -> io::Result<RawMmapMut>;
+    #[cfg(feature = "advise")]
+    pub fn advise(&self, advice: MmapAdvice) -> io::Result<()>;
+    #[cfg(feature = "advise")]
+    pub fn advise_range(&self, advice: MmapAdvice, offset: usize, len: usize) -> io::Result<()>;
+    #[cfg(feature = "locking")]
+    pub fn lock(&self) -> io::Result<()>;
+    #[cfg(feature = "locking")]
+    pub fn unlock(&self) -> io::Result<()>;
+}
+
+impl RawMmapMut {
+    pub fn make_read_only(self) -> io::Result<RawMmap>;
+    #[cfg(feature = "advise")]
+    pub fn advise(&self, advice: MmapAdvice) -> io::Result<()>;
+    #[cfg(feature = "advise")]
+    pub fn advise_range(&self, advice: MmapAdvice, offset: usize, len: usize) -> io::Result<()>;
+    #[cfg(feature = "locking")]
+    pub fn lock(&self) -> io::Result<()>;
+    #[cfg(feature = "locking")]
+    pub fn unlock(&self) -> io::Result<()>;
+}
+```
+
+**`make_read_only` / `make_mut`** change the protection of the whole
+mapping (`mprotect` on Unix, `VirtualProtect` on Windows) and consume
+the value, so no borrow of the bytes can be alive across the change.
+A mapping that went through `make_read_only` gets its original access
+back from `make_mut`: shared writes reach the file, copy-on-write and
+anonymous mappings stay private. A mapping created read-only with
+`RawMmap::map`:
+
+| Platform | `make_mut` |
+|----------|------------|
+| Unix | `mprotect(PROT_READ \| PROT_WRITE)`; needs a file opened for writing (`EACCES` otherwise). `flush` then writes back with `msync`. |
+| Windows | Always `Unsupported`: the view belongs to a `PAGE_READONLY` section, which can never become writable. Map with `map_mut` and call `make_read_only` when a mapping must switch. |
+
+`make_read_only` does not flush; call `flush` first when the data must
+be durable. On error the mapping is released. Empty mappings convert
+without a syscall.
+
+**`advise` / `advise_range`** reuse `MmapAdvice` (feature `advise`).
+The range is validated (`offset <= len`, `len <= self.len() - offset`)
+before any syscall and its start is widened down to a page boundary.
+Unix calls `madvise`; Windows calls `PrefetchVirtualMemory` for
+`WillNeed` and ignores the other hints. `DontNeed` is refused with
+`InvalidInput` on private mappings (copy-on-write and anonymous, also
+after `make_read_only`): there it discards the private pages, which
+would change bytes that `&self` borrows can be reading. On shared file
+mappings it is allowed; the kernel drops page table entries and the
+bytes read back unchanged from the page cache.
+
+**`lock` / `unlock`** pin or unpin the whole window (`mlock` /
+`munlock`, `VirtualLock` / `VirtualUnlock`; feature `locking`).
+Locking usually needs privileges or a raised `RLIMIT_MEMLOCK`.
+Unlocking pages that are not locked succeeds on every platform.
+
+**Example**:
+```rust
+use mmap_io::{raw::RawMmapMut, MmapAdvice};
+
+let mut scratch = RawMmapMut::map_anon(1 << 20)?;
+scratch.advise(MmapAdvice::Sequential)?;
+scratch[..5].copy_from_slice(b"ready");
+let frozen = scratch.make_read_only()?;   // writes now fault
+assert_eq!(&frozen[..5], b"ready");
+let mut scratch = frozen.make_mut()?;     // writable again, still private
+scratch[0] = b'R';
+# Ok::<(), std::io::Error>(())
+```
+
+<br>
+
 ### offset_granularity
 
 ```rust
@@ -2048,6 +2325,11 @@ space.
 | Offsets above 2 GiB on 32-bit | `mmap64` (glibc, Android) or 64-bit `off_t` | high / low DWORD split |
 | `flush` | `msync(MS_SYNC)` | `FlushViewOfFile` + `FlushFileBuffers` |
 | `flush_async` | `msync(MS_ASYNC)` | `FlushViewOfFile` |
+| `make_read_only` / `make_mut` | `mprotect` | `VirtualProtect` (read-only sections stay read-only) |
+| `advise` | `madvise` | `PrefetchVirtualMemory` (`WillNeed` only) |
+| `lock` / `unlock` | `mlock` / `munlock` | `VirtualLock` / `VirtualUnlock` |
+| `populate()` | `MAP_POPULATE` (Linux, Android) | ignored |
+| `huge()` (anonymous) | `MAP_HUGETLB` (Linux, Android) | ignored |
 | Zero-length window | no syscall, empty slice | no syscall, empty slice |
 | Handles held per mapping | none | none (read-only, COW, anonymous); one duplicated file handle (read-write) |
 
@@ -2156,7 +2438,7 @@ We expose only safe public APIs, but the following safety considerations apply:
 - Another process must not truncate or modify the file while it is mapped here; readers can see torn data or receive `SIGBUS`.
 - `as_slice_mut()` is only allowed in `ReadWrite` mode.
 - Raw pointers from `as_ptr()` / `as_mut_ptr()` are invalidated by `resize()`.
-- Do not read bytes through a `MappedSlice` while another thread stores to the same bytes through an atomic view.
+- A `MappedSlice` and an atomic view of the same bytes cannot be alive together: since 1.1.0 the second one is refused with `InvalidMode` (see [Atomic and plain views](#atomic-and-plain-views)). Copying reads (`read_into`, `read_bytes`, `MmapReader`) are never refused and read atomic bytes with atomic loads.
 
 See [SAFETY.md](SAFETY.md) for the full locking model.
 
@@ -2171,13 +2453,15 @@ See [SAFETY.md](SAFETY.md) for the full locking model.
 <br>
 
 ### Copy-On-Write (COW) Mode
-- The mapping is private and exposed read-only; every write method returns `InvalidMode`, atomic views included.
-- The file is never modified through a COW mapping.
-- `flush()` is a no-op.
+- Writable since 1.1.0: every write method works, atomic views included, on private pages.
+- The file is never modified through a COW mapping; changes are lost when the mapping is dropped.
+- `flush()` / `flush_range()` are no-ops, `pending_bytes()` stays 0, `resize()` returns `InvalidMode`.
+- Locking matches `ReadWrite`: live views block writers.
 
 <br>
 
 ### Flushing Behavior
+- `schedule_flush()` / `schedule_flush_range()` (1.1) start write-back and return without waiting; they are not durable.
 - `flush()` / `flush_range()` are synchronous: `msync(MS_SYNC)` on Unix, `FlushViewOfFile` + `FlushFileBuffers` on Windows. On macOS, `msync` does not issue `F_FULLFSYNC`; call `File::sync_all` on a separate handle if you need the drive cache flushed too.
 - Visibility is not durability: other mappings and `std::fs` readers of the same file see writes at once through the page cache. Flushing is what makes them survive a crash.
 - Async helpers flush after each async write.
@@ -2318,6 +2602,7 @@ for handle in handles {
 <br><br>
 
 ## Version History
+- **1.1.0**: memmap2 replaced by the in-house `mmap_io::raw` layer (plus `populate`, `huge`, `advise`, `lock`, `make_read_only` / `make_mut`). Soundness: run-time exclusion of atomic and plain views of the same bytes; iterator items, stale-length validation, resize truncation, `Send` impls. New: `try_as_slice` / `try_as_slice_mut` / `try_update_region` (also on `AnonymousMmap`), writable `CopyOnWrite`, `schedule_flush` / `schedule_flush_range`, atomic views and `with_huge_pages` / `is_hugepage_backed` on `AnonymousMmap`, `BufRead` for `MmapReader`, builder `create_new`, `FnMut` watch callbacks. `flush()` always flushes durably. No API breaks vs 1.0.0.
 - **1.0.0**: Stable release. New surface: `AnonymousMmap` (process-local file-less mappings), `is_hugepage_backed()` runtime introspection, multi-process IPC integration test, sparse-file documentation. Doc-completeness pass: every `Result`-returning public method documents `# Errors`; every panicking method documents `# Panics`. `cargo public-api` snapshot committed and enforced via CI; `cargo-semver-checks` becomes a hard gate against unintended breaks. No API breaks vs 0.9.11.
 - **0.9.11**: Patch release. Compat shims for the 0.9.7 semver violation (`as_slice_bytes`, `for_each_mut_legacy`). Runtime-agnostic async via `blocking` crate (smol/tokio/async-std all work). New `bytes::Bytes` integration (`feature = "bytes"`), `io::Read`+`io::Seek` cursor (`mmap.reader()`), and `AsFd`/`AsRawFd` (Unix) + `AsHandle`/`AsRawHandle` (Windows) trait impls.
 - **0.9.10**: Pre-1.0 stabilization (Lockdown). Audit D1, D7, D8, R1-R7, D5 closed. Ten focused examples, `cargo-fuzz` scaffold, `docs/PERFORMANCE.md` with measured numbers, `cargo-audit` + `cargo-semver-checks` CI workflows, bench-regression hard gate. MSRV held at Rust 1.75.
