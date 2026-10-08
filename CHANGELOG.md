@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.1.0] - 2026-10-07
+
 Minor release: security fixes, soundness fixes, a first-party mapping layer, and new APIs. memmap2 is replaced by the in-house `mmap_io::raw` layer (closing RUSTSEC-2026-0186 for this crate); several fixes below are memory-safety bugs reachable from safe code (marked **soundness**), including run-time exclusion of atomic and plain views of the same bytes, so upgrading is recommended for every user. New: non-blocking `try_` accessors, opt-in writable copy-on-write mappings, `schedule_flush` (write-back without waiting), atomic views and huge pages on `AnonymousMmap`, `BufRead` for `MmapReader`, `MemoryMappedFileBuilder::create_new`, `FnMut` watch callbacks, and memmap2-style additions to `raw`. Everything is additive: no public items were removed or renamed and no signatures changed (one trait bound was relaxed); the behavior changes are listed under **Changed**.
 
 ### Security
@@ -939,7 +941,8 @@ impls. Everything is additive; no API breaks.
 - Basic README.
 
 <!-- LINK REFERENCE -->
-[Unreleased]: https://github.com/jamesgober/mmap-io/compare/v1.0.0...HEAD
+[Unreleased]: https://github.com/jamesgober/mmap-io/compare/v1.1.0...HEAD
+[1.1.0]: https://github.com/jamesgober/mmap-io/compare/v1.0.0...v1.1.0
 [1.0.0]: https://github.com/jamesgober/mmap-io/compare/v0.9.11...v1.0.0
 [0.9.11]: https://github.com/jamesgober/mmap-io/compare/v0.9.10...v0.9.11
 [0.9.10]: https://github.com/jamesgober/mmap-io/compare/v0.9.9...v0.9.10

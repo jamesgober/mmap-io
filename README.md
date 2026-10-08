@@ -40,7 +40,7 @@
 
 ```toml
 [dependencies]
-mmap-io = "1.0"
+mmap-io = "1.1"
 ```
 
 ```rust
@@ -102,7 +102,7 @@ Default features:
 
 ```toml
 [dependencies]
-mmap-io = "1.0"
+mmap-io = "1.1"
 ```
 
 Enable async helpers:
