@@ -282,7 +282,6 @@ fn chunks_mut_is_refused_on_read_only_mappings() {
 /// checked. Harmless (nothing is written), but the error contract is
 /// not what the docs say.
 #[test]
-#[ignore = "BUG: chunks_mut(0).for_each_mut on a read-only mapping returns Ok instead of InvalidMode"]
 fn chunks_mut_zero_chunk_size_still_checks_the_mode() {
     let (path, m, _) = rw(100, 9);
     drop(m);

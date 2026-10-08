@@ -354,7 +354,6 @@ fn slice_range_handles_values_above_u32_max() {
 /// in debug builds and wraps in release builds. Real mappings never
 /// reach `total == u64::MAX`, but both helpers are public.
 #[test]
-#[ignore = "BUG: utils::ensure_in_bounds accepts offset+len overflow when total == u64::MAX, and slice_range then panics"]
 fn bounds_helpers_reject_overflow_at_u64_max_total() {
     assert_oob(
         ensure_in_bounds(1, u64::MAX, u64::MAX),

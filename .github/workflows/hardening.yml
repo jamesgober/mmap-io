@@ -69,10 +69,6 @@ jobs:
           - bounds_checks
           - raw_map
           - managed_ops
-    # bounds_checks finds the known utils::ensure_in_bounds overflow at
-    # total == u64::MAX within seconds (pinned as an ignored test in
-    # tests/pure_logic.rs). Drop this line once that bug is fixed.
-    continue-on-error: ${{ matrix.target == 'bounds_checks' }}
     steps:
       - uses: actions/checkout@v5
 

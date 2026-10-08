@@ -356,7 +356,7 @@ mod tests {
     #[test]
     #[cfg(feature = "watch")]
     fn test_watch_accepts_fnmut_with_owned_state() {
-        let path = tmp_path("watch_fnmut");
+        let (_dir, path) = tmp_path("watch_fnmut");
         let _ = fs::remove_file(&path);
         let mmap = create_mmap(&path, 64).expect("create");
         let (tx, rx) = mpsc::channel();

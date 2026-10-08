@@ -188,7 +188,6 @@ fn hostile_segment_ranges_are_rejected_with_exact_fields() {
 /// the bytes being written, so a short write into a segment whose tail
 /// was cut off still succeeds.
 #[test]
-#[ignore = "BUG: SegmentMut::write succeeds on a segment that no longer fits its parent if the data still fits"]
 fn segment_write_rejects_a_segment_cut_by_a_shrink() {
     let path = tmp_path("segcut.bin");
     let m = Arc::new(MemoryMappedFile::create_rw(&path, 4096).unwrap());

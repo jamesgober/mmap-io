@@ -126,7 +126,6 @@ fn zero_length_requests_within_bounds_are_empty() {
 /// identically to `MemoryMappedFile`. `AnonymousMmap` returns
 /// `OutOfBounds` instead.
 #[test]
-#[ignore = "BUG: AnonymousMmap rejects zero-length requests past the end (crate rule: accepted at any offset)"]
 fn zero_length_requests_past_the_end_are_accepted() {
     let m = AnonymousMmap::new(100).unwrap();
     for offset in [101, u64::MAX] {
@@ -206,7 +205,6 @@ fn concurrent_disjoint_writers_and_readers() {
 /// first slice: a deadlock. API.md documents the recursive behavior for
 /// read views in general.
 #[test]
-#[ignore = "BUG: AnonymousMmap::as_slice deadlocks when the thread already holds a slice and a writer is queued"]
 fn nested_read_slices_do_not_deadlock_behind_a_queued_writer() {
     let m = Arc::new(AnonymousMmap::new(4096).unwrap());
     let (done_tx, done_rx) = mpsc::channel();
