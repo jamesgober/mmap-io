@@ -5,8 +5,14 @@ on:
     branches: [ main ]
   workflow_dispatch:
 
+# cargo-public-api reads rustdoc JSON, whose format changes between
+# nightlies; each cargo-public-api release supports a window of
+# formats. Both are pinned to a combination known to work together.
+# Bump them together, and regenerate public-api.txt with the same pair:
+#   cargo +$NIGHTLY public-api --simplified --all-features > public-api.txt
 env:
-  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
+  NIGHTLY: nightly-2026-05-11
+  CARGO_PUBLIC_API_VERSION: 0.51.0
 
 # Run only one public-api check per PR branch at a time.
 concurrency:
@@ -17,29 +23,30 @@ jobs:
   public-api:
     name: cargo-public-api diff
     runs-on: ubuntu-latest
-    timeout-minutes: 10
+    timeout-minutes: 15
     steps:
       - uses: actions/checkout@v5
 
-      - name: Install Rust (nightly, for rustdoc-json)
-        # cargo-public-api requires a nightly toolchain to build the
-        # rustdoc JSON output it parses. The crate itself is stable;
-        # only this CI step needs nightly.
-        uses: dtolnay/rust-toolchain@nightly
+      - name: Install Rust (pinned nightly, for rustdoc-json)
+        # The crate itself is stable; only this check needs nightly.
+        uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: ${{ env.NIGHTLY }}
 
       - name: Cache cargo-public-api binary
         id: cache-public-api
-        uses: actions/cache@v4
+        uses: actions/cache@v6
         with:
           path: ~/.cargo/bin/cargo-public-api
-          key: cargo-public-api-${{ runner.os }}-v1
+          # Keyed by version: bumping the pin installs the new binary.
+          key: cargo-public-api-${{ runner.os }}-${{ env.CARGO_PUBLIC_API_VERSION }}
 
       - name: Install cargo-public-api (if not cached)
         if: steps.cache-public-api.outputs.cache-hit != 'true'
-        run: cargo install cargo-public-api --locked
+        run: cargo install cargo-public-api --locked --version "$CARGO_PUBLIC_API_VERSION"
 
       - name: Regenerate public-api.txt from current branch
-        run: cargo +nightly public-api --simplified --all-features > public-api.current.txt
+        run: cargo +"$NIGHTLY" public-api --simplified --all-features > public-api.current.txt
 
       - name: Diff against committed snapshot
         # If the diff is non-empty, the public API changed. Either the
@@ -52,7 +59,7 @@ jobs:
             echo "::error::Public API changed without updating public-api.txt"
             echo ""
             echo "If the change is intentional:"
-            echo "  cargo public-api --simplified --all-features > public-api.txt"
+            echo "  cargo +$NIGHTLY public-api --simplified --all-features > public-api.txt"
             echo "  git add public-api.txt && git commit"
             echo ""
             echo "If it's accidental, revert the offending public-item change."

@@ -7,20 +7,24 @@ on:
     branches: [ main ]
   workflow_dispatch:
 
-env:
-  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
-
 # Cancel an in-flight bench run on a branch when a new commit lands;
 # benches are expensive and we only ever want the latest verdict.
 concurrency:
   group: bench-${{ github.ref }}
   cancel-in-progress: true
 
+# REPS.md section 7: a regression of more than 10% on any documented
+# benchmark must be fixed or justified in the CHANGELOG. Shared runners
+# are noisy, so a failure here means "look at the numbers", not
+# automatically "real regression".
+env:
+  REGRESSION_LIMIT: "1.10"
+
 jobs:
   bench:
     name: Run benches and check for regressions (Linux)
     runs-on: ubuntu-latest
-    timeout-minutes: 30
+    timeout-minutes: 45
     steps:
       - uses: actions/checkout@v5
         with:
@@ -38,7 +42,7 @@ jobs:
           fi
 
       - name: Cache cargo registry + target
-        uses: actions/cache@v4
+        uses: actions/cache@v6
         with:
           path: |
             ~/.cargo/registry
@@ -60,7 +64,9 @@ jobs:
       # because there is no PR to compare against.
       - name: Bench PR base for same-machine comparison
         if: github.event_name == 'pull_request'
+        shell: bash
         run: |
+          set -euo pipefail
           BASE="${{ github.event.pull_request.base.sha }}"
           git fetch origin "$BASE" --depth 1 || true
           git checkout "$BASE" -- benches/ src/ Cargo.toml Cargo.lock
@@ -69,32 +75,45 @@ jobs:
           # Restore the PR head's tree so subsequent steps see it.
           git checkout HEAD -- benches/ src/ Cargo.toml Cargo.lock
 
-      # Hard gate: any benchmark group regressing more than the
-      # threshold fails the workflow. critcmp emits a "regressed"
-      # line per group on its `--threshold` output. The threshold is
-      # intentionally loose (15%) because shared CI runners are
-      # noisy; a tighter gate produces false positives that waste
-      # the maintainer's time. Real perf regressions are typically
-      # 2x-100x and show up unmistakably.
-      - name: Compare HEAD vs base (>15% regression fails the PR)
+      # Hard gate. `critcmp pr-base pr-head` prints two header lines,
+      # then one row per benchmark:
+      #
+      #   <group/name>  <ratio> <time±err> <thrpt> <unit>  <ratio> <time±err> <thrpt> <unit>
+      #
+      # with one 4-column block per baseline, in the order given (base,
+      # then head). Each ratio is relative to the fastest baseline for
+      # that row (the fastest is 1.00), and throughput is "? ?/sec"
+      # when a bench sets none. So field 6 is HEAD's ratio, and a value
+      # above REGRESSION_LIMIT means HEAD is that much slower than base.
+      # A run that parses no rows fails too, so a format change cannot
+      # turn the gate into a silent pass.
+      - name: Compare HEAD vs base (fails above REGRESSION_LIMIT)
         if: github.event_name == 'pull_request'
+        shell: bash
         run: |
-          set -e
-          echo "Critcmp output:"
+          set -euo pipefail
           critcmp pr-base pr-head | tee critcmp.txt
-          # critcmp uses ANSI for the "1.15x or more slower" markers.
-          # We grep for the canonical regression keyword instead so
-          # the check is colour-independent.
-          if grep -E "[0-9]+\.[0-9]+x slower" critcmp.txt | awk '{print $2}' | awk -F. '{if ($1 >= 1 && ($1 > 1 || $2 >= 15)) exit 1}'; then
-            echo "::notice::No bench regressed beyond the 15% threshold."
-          else
-            echo "::error::At least one benchmark regressed more than 15%. See critcmp output above."
-            exit 1
-          fi
+          awk -v limit="$REGRESSION_LIMIT" '
+            NR > 2 && NF >= 9 && $2 ~ /^[0-9.]+$/ && $6 ~ /^[0-9.]+$/ {
+              rows++
+              if ($6 + 0 > limit + 0) {
+                printf "::error::%s regressed: HEAD is %.2fx base\n", $1, $6
+                bad++
+              }
+            }
+            END {
+              if (rows == 0) {
+                print "::error::no benchmark rows parsed from critcmp output"
+                exit 2
+              }
+              printf "Compared %d benchmarks, %d over the %sx limit.\n", rows, bad, limit
+              exit (bad > 0)
+            }
+          ' critcmp.txt
 
       - name: Upload criterion results
         if: always()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: criterion-${{ github.sha }}
           path: target/criterion/

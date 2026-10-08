@@ -12,13 +12,6 @@ on:
     - cron: '17 4 * * *'
   workflow_dispatch:
 
-# Opt into Node 24 for every action that still ships a Node 20
-# binary (actions/cache@v4, actions/upload-artifact@v4). Avoids
-# the deprecation warnings GitHub will start enforcing on
-# 2026-06-02. Drop this once those actions ship Node-24 majors.
-env:
-  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
-
 # Cancel in-flight audit runs on a branch when a new commit lands; we
 # only ever want the latest audit verdict per branch tip.
 concurrency:
@@ -36,16 +29,13 @@ jobs:
       - name: Install Rust (stable)
         uses: dtolnay/rust-toolchain@stable
 
-      - name: Cache cargo-audit binary
-        id: cache-audit
-        uses: actions/cache@v4
+      # Prebuilt release binary, latest version on every run. The old
+      # "-v1" binary cache never expired, so the advisory scanner
+      # itself was never updated.
+      - name: Install cargo-audit
+        uses: taiki-e/install-action@v2
         with:
-          path: ~/.cargo/bin/cargo-audit
-          key: cargo-audit-${{ runner.os }}-v1
-
-      - name: Install cargo-audit (if not cached)
-        if: steps.cache-audit.outputs.cache-hit != 'true'
-        run: cargo install cargo-audit --locked
+          tool: cargo-audit
 
       - name: Run cargo-audit
         # `--deny warnings` makes yanked-crate warnings (the 0.9.9
@@ -59,7 +49,7 @@ jobs:
     timeout-minutes: 5
     # Non-blocking for now: surfaces info but does not gate merges.
     # Promote to required-check after the maintainer has triaged the
-    # initial run and committed a `deny.toml` policy.
+    # initial run.
     continue-on-error: true
     steps:
       - uses: actions/checkout@v5
@@ -67,16 +57,10 @@ jobs:
       - name: Install Rust (stable)
         uses: dtolnay/rust-toolchain@stable
 
-      - name: Cache cargo-deny binary
-        id: cache-deny
-        uses: actions/cache@v4
+      - name: Install cargo-deny
+        uses: taiki-e/install-action@v2
         with:
-          path: ~/.cargo/bin/cargo-deny
-          key: cargo-deny-${{ runner.os }}-v1
-
-      - name: Install cargo-deny (if not cached)
-        if: steps.cache-deny.outputs.cache-hit != 'true'
-        run: cargo install cargo-deny --locked
+          tool: cargo-deny
 
       - name: Run cargo-deny check
         run: cargo deny check

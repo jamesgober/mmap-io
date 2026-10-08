@@ -68,9 +68,11 @@ tempfile = "3"
 # tokio in their tree; they get the `blocking` crate, which runs
 # on any executor. This dev-dep does NOT affect downstream builds.
 tokio = { version = "1", features = ["macros", "rt-multi-thread"] }
-# Property-based testing (0.9.6+). Pinned to a 1.x line that holds
-# MSRV 1.75. Default features disabled to avoid pulling in `regex`
-# extras we do not exercise; we opt back into the bits we need.
+# Property-based testing (0.9.6+). The requirement is "1.5", but the
+# lockfile resolves a newer 1.x (1.11 needs Rust 1.85), so the test
+# suite needs a newer toolchain than the 1.75 MSRV; CI builds only the
+# library on 1.75. Default features disabled to avoid pulling in
+# `regex` extras we do not exercise; we opt back into the bits we need.
 proptest = { version = "1.5", default-features = false, features = ["std", "bit-set", "fork", "timeout"] }
 
 [features]

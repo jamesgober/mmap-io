@@ -5,9 +5,6 @@ on:
     branches: [ main ]
   workflow_dispatch:
 
-env:
-  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
-
 # Run only one semver-check per PR branch at a time.
 concurrency:
   group: semver-${{ github.ref }}
@@ -24,25 +21,15 @@ jobs:
       - name: Install Rust (stable)
         uses: dtolnay/rust-toolchain@stable
 
-      - name: Cache cargo-semver-checks binary
-        id: cache-semver
-        uses: actions/cache@v4
+      # Prebuilt release binary, latest version on every run, so the
+      # lint set tracks new cargo-semver-checks releases.
+      - name: Install cargo-semver-checks
+        uses: taiki-e/install-action@v2
         with:
-          path: ~/.cargo/bin/cargo-semver-checks
-          key: cargo-semver-checks-${{ runner.os }}-v1
-
-      - name: Install cargo-semver-checks (if not cached)
-        if: steps.cache-semver.outputs.cache-hit != 'true'
-        run: cargo install cargo-semver-checks --locked
+          tool: cargo-semver-checks
 
       - name: Run semver-checks against the latest published release
         # `check-release` walks the public API and compares it to the
-        # version on crates.io. A breaking change without the
-        # appropriate major/minor bump is a non-zero exit.
-        #
-        # While we are pre-1.0, breaking changes are allowed inside
-        # 0.x bumps; this workflow runs as a heads-up so we never
-        # accidentally break the API in a PATCH (e.g. 0.9.10 vs
-        # 0.9.9 must be additive). After 1.0 cuts, this becomes a
-        # hard gate against unintended breaks.
+        # version on crates.io. Since 1.0 this is a hard gate: a
+        # breaking change without a major-version bump fails the PR.
         run: cargo semver-checks check-release --all-features
