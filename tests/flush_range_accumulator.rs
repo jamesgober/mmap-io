@@ -11,13 +11,9 @@
 
 use mmap_io::{flush::FlushPolicy, MemoryMappedFile, MmapMode};
 use std::fs;
-use std::path::PathBuf;
 
-fn tmp_path(name: &str) -> PathBuf {
-    let mut p = std::env::temp_dir();
-    p.push(format!("mmap_io_c1_test_{}_{}", name, std::process::id()));
-    p
-}
+mod common;
+use common::tmp_path;
 
 /// Read the underlying file from a fresh OS handle. This bypasses the
 /// page cache view that the active mmap might be serving, giving us
@@ -32,6 +28,7 @@ fn read_disk(path: &std::path::Path, offset: u64, len: usize) -> Vec<u8> {
     buf
 }
 
+#[cfg_attr(miri, ignore = "FFI mmap syscalls are not supported by Miri")]
 #[test]
 fn flush_range_preserves_accumulator_for_unflushed_writes() {
     // C1 regression: write 1 MiB, then flush_range a 4 KiB sub-range.
@@ -120,6 +117,7 @@ fn flush_range_preserves_accumulator_for_unflushed_writes() {
     );
 }
 
+#[cfg_attr(miri, ignore = "FFI mmap syscalls are not supported by Miri")]
 #[test]
 fn flush_range_does_not_double_count() {
     // Companion check: flush_range followed by a fresh, large write

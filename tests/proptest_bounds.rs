@@ -23,7 +23,9 @@
 
 use mmap_io::{errors::MmapIoError, MemoryMappedFile};
 use proptest::prelude::*;
-use std::path::PathBuf;
+
+mod common;
+use common::TmpPath;
 
 /// Test file sizes. Kept small enough that 1000+ cases run in a
 /// reasonable time on CI, large enough to span at least a few pages on
@@ -31,22 +33,13 @@ use std::path::PathBuf;
 const MIN_FILE: u64 = 64;
 const MAX_FILE: u64 = 64 * 1024; // 64 KiB
 
-/// Generate a unique-per-call temp path. We avoid `tempfile`'s
-/// per-handle teardown because that interacts poorly with our explicit
-/// mmap drop ordering on Windows.
-fn tmp_path(tag: &str, seed: u64) -> PathBuf {
-    let mut p = std::env::temp_dir();
-    p.push(format!(
-        "mmap_io_proptest_bounds_{}_{}_{}",
-        tag,
-        std::process::id(),
-        seed
-    ));
-    p
+/// A unique path in a private temp dir for this case.
+fn tmp_path(tag: &str, seed: u64) -> TmpPath {
+    common::tmp_path(&format!("{tag}_{seed}"))
 }
 
 /// Build a fresh RW mapping of the given size, filled with zeroes.
-fn rw_mmap(size: u64, tag: &str, seed: u64) -> (MemoryMappedFile, PathBuf) {
+fn rw_mmap(size: u64, tag: &str, seed: u64) -> (MemoryMappedFile, TmpPath) {
     let path = tmp_path(tag, seed);
     let _ = std::fs::remove_file(&path);
     let mmap = MemoryMappedFile::create_rw(&path, size).expect("create_rw");
@@ -55,7 +48,7 @@ fn rw_mmap(size: u64, tag: &str, seed: u64) -> (MemoryMappedFile, PathBuf) {
 
 /// Build a fresh RO mapping by creating an RW file, writing a known
 /// pattern, dropping, then re-opening read-only.
-fn ro_mmap(size: u64, tag: &str, seed: u64) -> (MemoryMappedFile, PathBuf) {
+fn ro_mmap(size: u64, tag: &str, seed: u64) -> (MemoryMappedFile, TmpPath) {
     let path = tmp_path(tag, seed);
     let _ = std::fs::remove_file(&path);
     {
@@ -90,6 +83,7 @@ proptest! {
     /// and return a slice of the requested length, OR reject with
     /// OutOfBounds for any range that exceeds the file. No other error
     /// variant is reachable on the RO path.
+    #[cfg_attr(miri, ignore = "FFI mmap syscalls are not supported by Miri")]
     #[test]
     fn as_slice_ro_bounds(
         size in MIN_FILE..MAX_FILE,
@@ -134,6 +128,7 @@ proptest! {
     /// in-bounds request yields a `MappedSlice` of the right length;
     /// every OOB request yields `OutOfBounds`. No `InvalidMode` reaches
     /// the RW path anymore.
+    #[cfg_attr(miri, ignore = "FFI mmap syscalls are not supported by Miri")]
     #[test]
     fn as_slice_rw_returns_mapped_slice(
         size in MIN_FILE..MAX_FILE,
@@ -170,6 +165,7 @@ proptest! {
     /// `as_slice_mut` on an RW mapping mirrors `as_slice` on RO: it
     /// accepts every in-bounds request and rejects every OOB one with
     /// OutOfBounds.
+    #[cfg_attr(miri, ignore = "FFI mmap syscalls are not supported by Miri")]
     #[test]
     fn as_slice_mut_bounds(
         size in MIN_FILE..MAX_FILE,
@@ -218,6 +214,7 @@ proptest! {
     /// is fully written for in-bounds reads; OOB returns OutOfBounds.
     /// We also verify that a one-byte sentinel placed past the read
     /// region is NOT modified (no buffer overrun).
+    #[cfg_attr(miri, ignore = "FFI mmap syscalls are not supported by Miri")]
     #[test]
     fn read_into_bounds_and_no_overrun(
         size in MIN_FILE..MAX_FILE,
@@ -257,6 +254,7 @@ proptest! {
 
     /// `update_region` rejects out-of-bounds writes. For in-bounds
     /// writes, the data must round-trip through `read_into`.
+    #[cfg_attr(miri, ignore = "FFI mmap syscalls are not supported by Miri")]
     #[test]
     fn update_region_round_trip(
         size in MIN_FILE..MAX_FILE,
@@ -290,6 +288,7 @@ proptest! {
     /// `flush_range` bounds: in-bounds ranges succeed (assuming
     /// FlushPolicy doesn't introduce additional errors, which it
     /// doesn't), OOB returns OutOfBounds. Zero-length is always OK.
+    #[cfg_attr(miri, ignore = "FFI mmap syscalls are not supported by Miri")]
     #[test]
     fn flush_range_bounds(
         size in MIN_FILE..MAX_FILE,
@@ -323,6 +322,7 @@ proptest! {
     /// Boundary-condition focus: tests with offset/len picked to land
     /// exactly at file boundaries. This is where overflow bugs (e.g.,
     /// `offset + len` wrapping) historically lurked.
+    #[cfg_attr(miri, ignore = "FFI mmap syscalls are not supported by Miri")]
     #[test]
     fn boundary_conditions(
         size in MIN_FILE..MAX_FILE,

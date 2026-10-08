@@ -23,6 +23,7 @@ fn checksum(bytes: &[u8]) -> u64 {
     })
 }
 
+#[cfg_attr(miri, ignore = "FFI mmap syscalls are not supported by Miri")]
 #[test]
 fn many_threads_read_one_shared_mapping() {
     let dir = tempfile::tempdir().expect("tempdir");
@@ -68,6 +69,7 @@ fn many_threads_read_one_shared_mapping() {
     }
 }
 
+#[cfg_attr(miri, ignore = "FFI mmap syscalls are not supported by Miri")]
 #[test]
 fn mutable_mapping_moves_between_threads() {
     let dir = tempfile::tempdir().expect("tempdir");
@@ -96,6 +98,7 @@ fn mutable_mapping_moves_between_threads() {
     assert!(std::fs::read(&path).expect("read").iter().all(|&b| b == 7));
 }
 
+#[cfg_attr(miri, ignore = "FFI mmap syscalls are not supported by Miri")]
 #[test]
 fn parallel_writers_on_disjoint_mappings_of_one_file() {
     let dir = tempfile::tempdir().expect("tempdir");
@@ -140,6 +143,7 @@ fn parallel_writers_on_disjoint_mappings_of_one_file() {
     }
 }
 
+#[cfg_attr(miri, ignore = "FFI mmap syscalls are not supported by Miri")]
 #[test]
 fn map_drop_churn_with_data_checks() {
     let dir = tempfile::tempdir().expect("tempdir");

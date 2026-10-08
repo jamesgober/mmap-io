@@ -6,18 +6,11 @@
 
 use mmap_io::{MemoryMappedFile, MmapMode};
 use std::fs;
-use std::path::PathBuf;
 
-fn tmp_path(name: &str) -> PathBuf {
-    let mut p = std::env::temp_dir();
-    p.push(format!(
-        "mmap_io_platform_parity_{}_{}",
-        name,
-        std::process::id()
-    ));
-    p
-}
+mod common;
+use common::tmp_path;
 
+#[cfg_attr(miri, ignore = "FFI mmap syscalls are not supported by Miri")]
 #[test]
 fn parity_flush_visibility_full_file() {
     let path = tmp_path("parity_flush_visibility_full_file");
@@ -44,6 +37,7 @@ fn parity_flush_visibility_full_file() {
     let _ = fs::remove_file(&path);
 }
 
+#[cfg_attr(miri, ignore = "FFI mmap syscalls are not supported by Miri")]
 #[test]
 fn parity_flush_visibility_range() {
     let path = tmp_path("parity_flush_visibility_range");

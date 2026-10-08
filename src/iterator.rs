@@ -440,20 +440,19 @@ mod tests {
     use std::fs;
     use std::path::PathBuf;
 
-    fn tmp_path(name: &str) -> PathBuf {
-        let mut p = std::env::temp_dir();
-        p.push(format!(
-            "mmap_io_iterator_test_{}_{}",
-            name,
-            std::process::id()
-        ));
-        p
+    /// A path in a fresh private temp dir; the dir is removed when
+    /// the returned `TempDir` drops.
+    fn tmp_path(name: &str) -> (tempfile::TempDir, PathBuf) {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let path = dir.path().join(name);
+        (dir, path)
     }
 
+    #[cfg_attr(miri, ignore = "FFI mmap syscalls are not supported by Miri")]
     #[test]
     #[cfg(feature = "iterator")]
     fn test_chunk_iterator_zero_copy() {
-        let path = tmp_path("chunk_iter");
+        let (_dir, path) = tmp_path("chunk_iter");
         let _ = fs::remove_file(&path);
 
         let mmap = create_mmap(&path, 10240).expect("create");
@@ -480,10 +479,11 @@ mod tests {
         fs::remove_file(&path).expect("cleanup");
     }
 
+    #[cfg_attr(miri, ignore = "FFI mmap syscalls are not supported by Miri")]
     #[test]
     #[cfg(feature = "iterator")]
     fn test_page_iterator_zero_copy() {
-        let path = tmp_path("page_iter");
+        let (_dir, path) = tmp_path("page_iter");
         let _ = fs::remove_file(&path);
 
         let ps = page_size();
@@ -502,10 +502,11 @@ mod tests {
         fs::remove_file(&path).expect("cleanup");
     }
 
+    #[cfg_attr(miri, ignore = "FFI mmap syscalls are not supported by Miri")]
     #[test]
     #[cfg(feature = "iterator")]
     fn test_chunks_owned_compat() {
-        let path = tmp_path("chunks_owned");
+        let (_dir, path) = tmp_path("chunks_owned");
         let _ = fs::remove_file(&path);
 
         let mmap = create_mmap(&path, 4096).expect("create");
@@ -525,10 +526,11 @@ mod tests {
         fs::remove_file(&path).expect("cleanup");
     }
 
+    #[cfg_attr(miri, ignore = "FFI mmap syscalls are not supported by Miri")]
     #[test]
     #[cfg(feature = "iterator")]
     fn test_mutable_chunk_iterator_single_guard() {
-        let path = tmp_path("mut_chunk_iter");
+        let (_dir, path) = tmp_path("mut_chunk_iter");
         let _ = fs::remove_file(&path);
 
         let mmap = create_mmap(&path, 4096).expect("create");
@@ -553,10 +555,11 @@ mod tests {
         fs::remove_file(&path).expect("cleanup");
     }
 
+    #[cfg_attr(miri, ignore = "FFI mmap syscalls are not supported by Miri")]
     #[test]
     #[cfg(feature = "iterator")]
     fn test_iterator_size_hint() {
-        let path = tmp_path("size_hint");
+        let (_dir, path) = tmp_path("size_hint");
         let _ = fs::remove_file(&path);
 
         let mmap = create_mmap(&path, 10000).expect("create");
@@ -574,10 +577,11 @@ mod tests {
         fs::remove_file(&path).expect("cleanup");
     }
 
+    #[cfg_attr(miri, ignore = "FFI mmap syscalls are not supported by Miri")]
     #[test]
     #[cfg(feature = "iterator")]
     fn test_iterator_zero_chunk_size_yields_nothing() {
-        let path = tmp_path("zero_chunk");
+        let (_dir, path) = tmp_path("zero_chunk");
         let _ = fs::remove_file(&path);
 
         let mmap = create_mmap(&path, 4096).expect("create");
@@ -587,10 +591,11 @@ mod tests {
         fs::remove_file(&path).expect("cleanup");
     }
 
+    #[cfg_attr(miri, ignore = "FFI mmap syscalls are not supported by Miri")]
     #[test]
     #[cfg(feature = "iterator")]
     fn test_one_byte_file_iteration() {
-        let path = tmp_path("one_byte_iter");
+        let (_dir, path) = tmp_path("one_byte_iter");
         let _ = fs::remove_file(&path);
 
         let mmap = create_mmap(&path, 1).expect("create");

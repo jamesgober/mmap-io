@@ -5,14 +5,11 @@ use mmap_io::{
     MmapMode,
 };
 use std::fs;
-use std::path::PathBuf;
 
-fn tmp_path(name: &str) -> PathBuf {
-    let mut p = std::env::temp_dir();
-    p.push(format!("mmap_io_test_{}_{}", name, std::process::id()));
-    p
-}
+mod common;
+use common::tmp_path;
 
+#[cfg_attr(miri, ignore = "FFI mmap syscalls are not supported by Miri")]
 #[test]
 fn create_write_read_flush_ro() {
     let path = tmp_path("create_write_read_flush_ro");
@@ -36,6 +33,7 @@ fn create_write_read_flush_ro() {
     delete_mmap(&path).expect("delete");
 }
 
+#[cfg_attr(miri, ignore = "FFI mmap syscalls are not supported by Miri")]
 #[test]
 fn flush_policy_manual_no_auto_flush() {
     use mmap_io::flush::FlushPolicy;
@@ -65,6 +63,7 @@ fn flush_policy_manual_no_auto_flush() {
     let _ = fs::remove_file(&path);
 }
 
+#[cfg_attr(miri, ignore = "FFI mmap syscalls are not supported by Miri")]
 #[test]
 fn flush_policy_threshold_triggers() {
     use mmap_io::flush::FlushPolicy;
@@ -92,6 +91,7 @@ fn flush_policy_threshold_triggers() {
     let _ = fs::remove_file(&path);
 }
 
+#[cfg_attr(miri, ignore = "FFI mmap syscalls are not supported by Miri")]
 #[test]
 fn flush_policy_interval_flushes_automatically() {
     // C2 regression: FlushPolicy::EveryMillis must trigger an
@@ -113,9 +113,8 @@ fn flush_policy_interval_flushes_automatically() {
         .expect("builder create");
 
     mmap.update_region(10, b"INTV").expect("update");
-    // NO manual flush. Wait long enough for the background thread
-    // to wake up and flush at least once.
-    std::thread::sleep(std::time::Duration::from_millis(300));
+    // NO manual flush. Wait for the background thread to flush.
+    common::wait_for_background_flush(&mmap);
 
     let ro = load_mmap(&path, MmapMode::ReadOnly).expect("open ro");
     let slice = ro.as_slice(10, 4).expect("slice");
@@ -125,6 +124,7 @@ fn flush_policy_interval_flushes_automatically() {
     let _ = fs::remove_file(&path);
 }
 
+#[cfg_attr(miri, ignore = "FFI mmap syscalls are not supported by Miri")]
 #[test]
 fn segments_mut_and_read_into() {
     let path = tmp_path("segments_mut_and_read_into");
@@ -151,6 +151,7 @@ fn segments_mut_and_read_into() {
     delete_mmap(&path).expect("delete");
 }
 
+#[cfg_attr(miri, ignore = "FFI mmap syscalls are not supported by Miri")]
 #[test]
 fn huge_pages_builder_noop_nonlinux_or_enabled_linux() {
     // This test ensures the builder API compiles and runs with/without the `hugepages` feature.
@@ -180,6 +181,7 @@ fn huge_pages_builder_noop_nonlinux_or_enabled_linux() {
     let _ = fs::remove_file(&path);
 }
 
+#[cfg_attr(miri, ignore = "FFI mmap syscalls are not supported by Miri")]
 #[test]
 fn copy_and_delete() {
     let src = tmp_path("copy_and_delete_src");
@@ -200,6 +202,7 @@ fn copy_and_delete() {
     delete_mmap(&src).expect("delete src");
     delete_mmap(&dst).expect("delete dst");
 }
+#[cfg_attr(miri, ignore = "FFI mmap syscalls are not supported by Miri")]
 #[test]
 fn zero_length_file() {
     let path = tmp_path("zero_length_file");
@@ -215,6 +218,7 @@ fn zero_length_file() {
     }
 }
 
+#[cfg_attr(miri, ignore = "FFI mmap syscalls are not supported by Miri")]
 #[test]
 fn invalid_offset_access() {
     let path = tmp_path("invalid_offset_access");
@@ -234,6 +238,7 @@ fn invalid_offset_access() {
     delete_mmap(&path).expect("delete");
 }
 
+#[cfg_attr(miri, ignore = "FFI mmap syscalls are not supported by Miri")]
 #[test]
 fn concurrent_access() {
     use std::thread;

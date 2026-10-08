@@ -7,15 +7,12 @@ use mmap_io::{
     MmapIoError, MmapMode,
 };
 use std::fs;
-use std::path::PathBuf;
 use std::sync::Arc;
 
-fn tmp_path(name: &str) -> PathBuf {
-    let mut p = std::env::temp_dir();
-    p.push(format!("mmap_io_test_{}_{}", name, std::process::id()));
-    p
-}
+mod common;
+use common::tmp_path;
 
+#[cfg_attr(miri, ignore = "FFI mmap syscalls are not supported by Miri")]
 #[test]
 fn test_resize_operations() {
     let path = tmp_path("resize_operations");
@@ -45,6 +42,7 @@ fn test_resize_operations() {
     fs::remove_file(&path).expect("delete");
 }
 
+#[cfg_attr(miri, ignore = "FFI mmap syscalls are not supported by Miri")]
 #[test]
 fn test_flush_range() {
     let path = tmp_path("flush_range");
@@ -66,6 +64,7 @@ fn test_flush_range() {
     fs::remove_file(&path).expect("delete");
 }
 
+#[cfg_attr(miri, ignore = "FFI mmap syscalls are not supported by Miri")]
 #[test]
 fn test_segment_operations() {
     let path = tmp_path("segment_operations");
@@ -97,6 +96,7 @@ fn test_segment_operations() {
     fs::remove_file(&path).expect("delete");
 }
 
+#[cfg_attr(miri, ignore = "FFI mmap syscalls are not supported by Miri")]
 #[test]
 fn test_segment_bounds_checking() {
     let path = tmp_path("segment_bounds");
@@ -116,6 +116,7 @@ fn test_segment_bounds_checking() {
     fs::remove_file(&path).expect("delete");
 }
 
+#[cfg_attr(miri, ignore = "FFI mmap syscalls are not supported by Miri")]
 #[test]
 fn test_utils_functions() {
     // Test page_size
@@ -142,6 +143,7 @@ fn test_utils_functions() {
     assert!(ensure_in_bounds(101, 0, 100).is_err());
 }
 
+#[cfg_attr(miri, ignore = "FFI mmap syscalls are not supported by Miri")]
 #[test]
 fn test_error_display() {
     use std::io;
@@ -164,6 +166,7 @@ fn test_error_display() {
     assert!(mode_err.to_string().contains("test mode error"));
 }
 
+#[cfg_attr(miri, ignore = "FFI mmap syscalls are not supported by Miri")]
 #[test]
 fn test_readonly_write_fails() {
     let path = tmp_path("readonly_write");
@@ -188,6 +191,7 @@ fn test_readonly_write_fails() {
     fs::remove_file(&path).expect("delete");
 }
 
+#[cfg_attr(miri, ignore = "FFI mmap syscalls are not supported by Miri")]
 #[test]
 fn test_empty_operations() {
     let path = tmp_path("empty_operations");
@@ -210,6 +214,7 @@ fn test_empty_operations() {
 }
 
 #[cfg(feature = "async")]
+#[cfg_attr(miri, ignore = "FFI mmap syscalls are not supported by Miri")]
 #[tokio::test]
 async fn test_async_operations() {
     use mmap_io::manager::r#async::{copy_mmap_async, create_mmap_async, delete_mmap_async};

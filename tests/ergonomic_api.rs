@@ -7,14 +7,11 @@ use mmap_io::flush::FlushPolicy;
 use mmap_io::{MemoryMappedFile, MmapIoError, MmapMode};
 use std::fs::{self, OpenOptions};
 use std::io::{Read, Seek, SeekFrom};
-use std::path::PathBuf;
 
-fn tmp_path(name: &str) -> PathBuf {
-    let mut p = std::env::temp_dir();
-    p.push(format!("mmap_io_ergonomic_{}_{}", name, std::process::id()));
-    p
-}
+mod common;
+use common::tmp_path;
 
+#[cfg_attr(miri, ignore = "FFI mmap syscalls are not supported by Miri")]
 #[test]
 fn open_or_create_creates_when_missing() {
     let path = tmp_path("ooc_create");
@@ -30,6 +27,7 @@ fn open_or_create_creates_when_missing() {
     let _ = fs::remove_file(&path);
 }
 
+#[cfg_attr(miri, ignore = "FFI mmap syscalls are not supported by Miri")]
 #[test]
 fn open_or_create_opens_when_present() {
     let path = tmp_path("ooc_open");
@@ -59,6 +57,7 @@ fn open_or_create_opens_when_present() {
     let _ = fs::remove_file(&path);
 }
 
+#[cfg_attr(miri, ignore = "FFI mmap syscalls are not supported by Miri")]
 #[test]
 fn builder_open_or_create_create_path() {
     let path = tmp_path("builder_ooc_create");
@@ -77,6 +76,7 @@ fn builder_open_or_create_create_path() {
     let _ = fs::remove_file(&path);
 }
 
+#[cfg_attr(miri, ignore = "FFI mmap syscalls are not supported by Miri")]
 #[test]
 fn builder_open_or_create_open_path() {
     let path = tmp_path("builder_ooc_open");
@@ -97,6 +97,7 @@ fn builder_open_or_create_open_path() {
     let _ = fs::remove_file(&path);
 }
 
+#[cfg_attr(miri, ignore = "FFI mmap syscalls are not supported by Miri")]
 #[test]
 fn from_file_read_write() {
     let path = tmp_path("from_file_rw");
@@ -123,6 +124,7 @@ fn from_file_read_write() {
     let _ = fs::remove_file(&path);
 }
 
+#[cfg_attr(miri, ignore = "FFI mmap syscalls are not supported by Miri")]
 #[test]
 fn from_file_read_only() {
     let path = tmp_path("from_file_ro");
@@ -145,6 +147,7 @@ fn from_file_read_only() {
     let _ = fs::remove_file(&path);
 }
 
+#[cfg_attr(miri, ignore = "FFI mmap syscalls are not supported by Miri")]
 #[test]
 fn from_file_rw_zero_length_errors() {
     let path = tmp_path("from_file_zero");
@@ -164,6 +167,7 @@ fn from_file_rw_zero_length_errors() {
     let _ = fs::remove_file(&path);
 }
 
+#[cfg_attr(miri, ignore = "FFI mmap syscalls are not supported by Miri")]
 #[test]
 fn unmap_returns_file_when_unique() {
     let path = tmp_path("unmap_unique");
@@ -183,6 +187,7 @@ fn unmap_returns_file_when_unique() {
     let _ = fs::remove_file(&path);
 }
 
+#[cfg_attr(miri, ignore = "FFI mmap syscalls are not supported by Miri")]
 #[test]
 fn unmap_returns_self_when_shared() {
     let path = tmp_path("unmap_shared");
@@ -199,6 +204,7 @@ fn unmap_returns_self_when_shared() {
     let _ = fs::remove_file(&path);
 }
 
+#[cfg_attr(miri, ignore = "FFI mmap syscalls are not supported by Miri")]
 #[test]
 fn flush_policy_returns_configured_policy() {
     let path = tmp_path("flush_policy_accessor");
@@ -223,6 +229,7 @@ fn flush_policy_returns_configured_policy() {
     let _ = fs::remove_file(&path2);
 }
 
+#[cfg_attr(miri, ignore = "FFI mmap syscalls are not supported by Miri")]
 #[test]
 fn pending_bytes_tracks_accumulator() {
     let path = tmp_path("pending_bytes");
@@ -260,6 +267,7 @@ fn pending_bytes_tracks_accumulator() {
     let _ = fs::remove_file(&path);
 }
 
+#[cfg_attr(miri, ignore = "FFI mmap syscalls are not supported by Miri")]
 #[test]
 fn as_ptr_roundtrip_via_raw_read() {
     let path = tmp_path("as_ptr");
@@ -283,6 +291,7 @@ fn as_ptr_roundtrip_via_raw_read() {
     let _ = fs::remove_file(&path);
 }
 
+#[cfg_attr(miri, ignore = "FFI mmap syscalls are not supported by Miri")]
 #[test]
 fn as_mut_ptr_writes_visible_via_safe_path() {
     let path = tmp_path("as_mut_ptr");
@@ -308,6 +317,7 @@ fn as_mut_ptr_writes_visible_via_safe_path() {
     let _ = fs::remove_file(&path);
 }
 
+#[cfg_attr(miri, ignore = "FFI mmap syscalls are not supported by Miri")]
 #[test]
 fn as_mut_ptr_errors_on_ro() {
     let path = tmp_path("as_mut_ptr_ro");
@@ -325,6 +335,7 @@ fn as_mut_ptr_errors_on_ro() {
     let _ = fs::remove_file(&path);
 }
 
+#[cfg_attr(miri, ignore = "FFI mmap syscalls are not supported by Miri")]
 #[test]
 fn prefetch_range_in_bounds_succeeds() {
     let path = tmp_path("prefetch_ok");
@@ -344,6 +355,7 @@ fn prefetch_range_in_bounds_succeeds() {
     let _ = fs::remove_file(&path);
 }
 
+#[cfg_attr(miri, ignore = "FFI mmap syscalls are not supported by Miri")]
 #[test]
 fn prefetch_range_out_of_bounds_errors() {
     let path = tmp_path("prefetch_oob");
@@ -359,6 +371,7 @@ fn prefetch_range_out_of_bounds_errors() {
     let _ = fs::remove_file(&path);
 }
 
+#[cfg_attr(miri, ignore = "FFI mmap syscalls are not supported by Miri")]
 #[test]
 fn prefetch_range_zero_len_is_noop() {
     let path = tmp_path("prefetch_zero");

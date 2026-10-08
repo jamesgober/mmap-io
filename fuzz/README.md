@@ -1,6 +1,7 @@
 # mmap-io fuzz targets
 
-`cargo-fuzz` targets for the read/write/atomic/bounds-check paths.
+`cargo-fuzz` targets for the read/write/atomic/bounds-check paths and
+for stateful operation sequences.
 
 ## Why a separate crate?
 
@@ -26,6 +27,7 @@ not part of the workspace; it exists only to be driven by the
 | `atomic_view`    | `atomic_u32`/`u64`/`u32_slice`/`u64_slice` alignment edges |
 | `bounds_checks`  | `ensure_in_bounds` and `slice_range` directly             |
 | `raw_map`        | `mmap_io::raw` windows plus read/write/flush sequences    |
+| `managed_ops`    | Op sequences on `MemoryMappedFile` checked against a model |
 
 ## Running
 
@@ -38,6 +40,7 @@ cargo +nightly fuzz run update_region   -- -runs=1000000
 cargo +nightly fuzz run atomic_view     -- -runs=1000000
 cargo +nightly fuzz run bounds_checks   -- -runs=1000000
 cargo +nightly fuzz run raw_map         -- -runs=1000000
+cargo +nightly fuzz run managed_ops     -- -max_total_time=1200
 ```
 
 `-runs=1000000` is a reasonable smoke pass (~1-2 minutes per

@@ -206,16 +206,19 @@ mod tests {
     use std::fs;
     use std::path::PathBuf;
 
-    fn tmp_path(name: &str) -> PathBuf {
-        let mut p = std::env::temp_dir();
-        p.push(format!("mmap_io_lock_test_{}_{}", name, std::process::id()));
-        p
+    /// A path in a fresh private temp dir; the dir is removed when
+    /// the returned `TempDir` drops.
+    fn tmp_path(name: &str) -> (tempfile::TempDir, PathBuf) {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let path = dir.path().join(name);
+        (dir, path)
     }
 
+    #[cfg_attr(miri, ignore = "FFI mmap syscalls are not supported by Miri")]
     #[test]
     #[cfg(feature = "locking")]
     fn test_lock_unlock_operations() {
-        let path = tmp_path("lock_ops");
+        let (_dir, path) = tmp_path("lock_ops");
         let _ = fs::remove_file(&path);
 
         let mmap = create_mmap(&path, 8192).expect("create");
@@ -252,10 +255,11 @@ mod tests {
         fs::remove_file(&path).expect("cleanup");
     }
 
+    #[cfg_attr(miri, ignore = "FFI mmap syscalls are not supported by Miri")]
     #[test]
     #[cfg(feature = "locking")]
     fn test_lock_with_different_modes() {
-        let path = tmp_path("lock_modes");
+        let (_dir, path) = tmp_path("lock_modes");
         let _ = fs::remove_file(&path);
 
         // Create and test with RW mode
@@ -277,10 +281,11 @@ mod tests {
         fs::remove_file(&path).expect("cleanup");
     }
 
+    #[cfg_attr(miri, ignore = "FFI mmap syscalls are not supported by Miri")]
     #[test]
     #[cfg(all(feature = "locking", unix))]
     fn test_multiple_lock_regions() {
-        let path = tmp_path("multi_lock");
+        let (_dir, path) = tmp_path("multi_lock");
         let _ = fs::remove_file(&path);
 
         let mmap = create_mmap(&path, 16384).expect("create");

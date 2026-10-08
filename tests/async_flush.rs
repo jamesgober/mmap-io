@@ -3,18 +3,11 @@
 
 use mmap_io::MemoryMappedFile;
 use std::fs;
-use std::path::PathBuf;
 
-fn tmp_path(name: &str) -> PathBuf {
-    let mut p = std::env::temp_dir();
-    p.push(format!(
-        "mmap_io_async_test_{}_{}",
-        name,
-        std::process::id()
-    ));
-    p
-}
+mod common;
+use common::tmp_path;
 
+#[cfg_attr(miri, ignore = "FFI mmap syscalls are not supported by Miri")]
 #[tokio::test(flavor = "multi_thread")]
 async fn async_update_region_auto_flushes() {
     let path = tmp_path("async_update_region_auto_flushes");
@@ -36,6 +29,7 @@ async fn async_update_region_auto_flushes() {
     let _ = fs::remove_file(&path);
 }
 
+#[cfg_attr(miri, ignore = "FFI mmap syscalls are not supported by Miri")]
 #[tokio::test(flavor = "multi_thread")]
 async fn async_explicit_flush_still_works() {
     let path = tmp_path("async_explicit_flush_still_works");

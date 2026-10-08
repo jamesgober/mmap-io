@@ -21,18 +21,15 @@
 
 use mmap_io::create_mmap;
 use std::fs;
-use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use std::thread;
 use std::time::{Duration, Instant};
 
-fn tmp_path(name: &str) -> PathBuf {
-    let mut p = std::env::temp_dir();
-    p.push(format!("mmap_io_c3_test_{}_{}", name, std::process::id()));
-    p
-}
+mod common;
+use common::tmp_path;
 
+#[cfg_attr(miri, ignore = "FFI mmap syscalls are not supported by Miri")]
 #[test]
 fn resize_blocks_while_atomic_view_is_alive() {
     // The core C3 safety property: a live AtomicView must keep the
@@ -114,6 +111,7 @@ fn resize_blocks_while_atomic_view_is_alive() {
     let _ = fs::remove_file(&path);
 }
 
+#[cfg_attr(miri, ignore = "FFI mmap syscalls are not supported by Miri")]
 #[test]
 fn concurrent_atomic_fetch_add_with_resize_attempts() {
     // Stress test: multiple threads do concurrent fetch_add via
@@ -179,6 +177,7 @@ fn concurrent_atomic_fetch_add_with_resize_attempts() {
     let _ = fs::remove_file(&path);
 }
 
+#[cfg_attr(miri, ignore = "FFI mmap syscalls are not supported by Miri")]
 #[test]
 fn slice_view_also_blocks_resize() {
     // Same property for AtomicSliceView.

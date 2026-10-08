@@ -2,19 +2,12 @@
 
 use mmap_io::MemoryMappedFile;
 use std::fs;
-use std::path::PathBuf;
 use std::time::Instant;
 
-fn tmp_path(name: &str) -> PathBuf {
-    let mut p = std::env::temp_dir();
-    p.push(format!(
-        "mmap_io_touch_test_{}_{}",
-        name,
-        std::process::id()
-    ));
-    p
-}
+mod common;
+use common::tmp_path;
 
+#[cfg_attr(miri, ignore = "FFI mmap syscalls are not supported by Miri")]
 #[test]
 fn test_touch_pages_basic() {
     let path = tmp_path("touch_basic");
@@ -45,6 +38,7 @@ fn test_touch_pages_basic() {
     fs::remove_file(&path).expect("cleanup");
 }
 
+#[cfg_attr(miri, ignore = "FFI mmap syscalls are not supported by Miri")]
 #[test]
 fn test_touch_pages_range() {
     let path = tmp_path("touch_range");
@@ -68,6 +62,7 @@ fn test_touch_pages_range() {
     fs::remove_file(&path).expect("cleanup");
 }
 
+#[cfg_attr(miri, ignore = "FFI mmap syscalls are not supported by Miri")]
 #[test]
 fn test_microflush_optimization() {
     let path = tmp_path("microflush");
@@ -89,6 +84,7 @@ fn test_microflush_optimization() {
 }
 
 #[cfg(feature = "async")]
+#[cfg_attr(miri, ignore = "FFI mmap syscalls are not supported by Miri")]
 #[tokio::test(flavor = "multi_thread")]
 async fn test_time_based_flushing() {
     use mmap_io::{flush::FlushPolicy, MmapMode};

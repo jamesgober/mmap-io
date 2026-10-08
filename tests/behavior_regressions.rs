@@ -9,16 +9,13 @@ use mmap_io::segment::SegmentMut;
 use mmap_io::{MemoryMappedFile, MmapIoError, MmapMode};
 use std::fs;
 use std::io::{Read, Seek, SeekFrom};
-use std::path::{Path, PathBuf};
+use std::path::Path;
 use std::sync::Arc;
 use std::thread;
 use std::time::{Duration, Instant};
 
-fn tmp_path(name: &str) -> PathBuf {
-    let mut p = std::env::temp_dir();
-    p.push(format!("mmap_io_behavior_{}_{}", name, std::process::id()));
-    p
-}
+mod common;
+use common::tmp_path;
 
 fn read_file(path: &Path) -> Vec<u8> {
     fs::read(path).expect("read file")
@@ -28,6 +25,7 @@ fn read_file(path: &Path) -> Vec<u8> {
 // Flush accounting
 // ---------------------------------------------------------------------
 
+#[cfg_attr(miri, ignore = "FFI mmap syscalls are not supported by Miri")]
 #[test]
 fn pending_bytes_counts_update_region_under_default_policy() {
     let path = tmp_path("pending_default");
@@ -42,6 +40,7 @@ fn pending_bytes_counts_update_region_under_default_policy() {
     let _ = fs::remove_file(&path);
 }
 
+#[cfg_attr(miri, ignore = "FFI mmap syscalls are not supported by Miri")]
 #[test]
 fn pending_bytes_counts_slice_mut_writes() {
     let path = tmp_path("pending_slice_mut");
@@ -70,6 +69,7 @@ fn pending_bytes_counts_slice_mut_writes() {
 }
 
 #[cfg(feature = "iterator")]
+#[cfg_attr(miri, ignore = "FFI mmap syscalls are not supported by Miri")]
 #[test]
 fn pending_bytes_counts_chunks_mut_writes() {
     let path = tmp_path("pending_chunks_mut");
@@ -87,6 +87,7 @@ fn pending_bytes_counts_chunks_mut_writes() {
 }
 
 #[cfg(feature = "atomic")]
+#[cfg_attr(miri, ignore = "FFI mmap syscalls are not supported by Miri")]
 #[test]
 fn pending_bytes_counts_atomic_views() {
     use std::sync::atomic::Ordering;
@@ -107,6 +108,7 @@ fn pending_bytes_counts_atomic_views() {
     let _ = fs::remove_file(&path);
 }
 
+#[cfg_attr(miri, ignore = "FFI mmap syscalls are not supported by Miri")]
 #[test]
 fn flush_range_does_not_debit_unrelated_pending_bytes() {
     let path = tmp_path("flush_range_debit");
@@ -132,6 +134,7 @@ fn flush_range_does_not_debit_unrelated_pending_bytes() {
     let _ = fs::remove_file(&path);
 }
 
+#[cfg_attr(miri, ignore = "FFI mmap syscalls are not supported by Miri")]
 #[test]
 fn every_writes_counts_calls_and_pending_reports_bytes() {
     let path = tmp_path("every_writes");
@@ -155,6 +158,7 @@ fn every_writes_counts_calls_and_pending_reports_bytes() {
 // Resize
 // ---------------------------------------------------------------------
 
+#[cfg_attr(miri, ignore = "FFI mmap syscalls are not supported by Miri")]
 #[test]
 fn shrink_truncates_file_and_regrow_reads_zeros() {
     let path = tmp_path("shrink_regrow");
@@ -201,6 +205,7 @@ fn wait_until(timeout: Duration, mut pred: impl FnMut() -> bool) -> bool {
     pred()
 }
 
+#[cfg_attr(miri, ignore = "FFI mmap syscalls are not supported by Miri")]
 #[test]
 fn builder_open_starts_time_based_flusher() {
     let path = tmp_path("builder_open_millis");
@@ -220,6 +225,7 @@ fn builder_open_starts_time_based_flusher() {
     let _ = fs::remove_file(&path);
 }
 
+#[cfg_attr(miri, ignore = "FFI mmap syscalls are not supported by Miri")]
 #[test]
 fn builder_open_or_create_existing_file_defaults_to_read_write() {
     let path = tmp_path("builder_ooc_rw");
@@ -242,6 +248,7 @@ fn builder_open_or_create_existing_file_defaults_to_read_write() {
 // open_or_create / create_mmap_async
 // ---------------------------------------------------------------------
 
+#[cfg_attr(miri, ignore = "FFI mmap syscalls are not supported by Miri")]
 #[test]
 fn open_or_create_preserves_existing_data() {
     let path = tmp_path("ooc_preserve");
@@ -255,6 +262,7 @@ fn open_or_create_preserves_existing_data() {
     let _ = fs::remove_file(&path);
 }
 
+#[cfg_attr(miri, ignore = "FFI mmap syscalls are not supported by Miri")]
 #[test]
 fn open_or_create_sizes_existing_empty_file() {
     let path = tmp_path("ooc_empty");
@@ -266,6 +274,7 @@ fn open_or_create_sizes_existing_empty_file() {
     let _ = fs::remove_file(&path);
 }
 
+#[cfg_attr(miri, ignore = "FFI mmap syscalls are not supported by Miri")]
 #[test]
 fn open_or_create_rejects_zero_default_for_new_file() {
     let path = tmp_path("ooc_zero");
@@ -281,6 +290,7 @@ fn open_or_create_rejects_zero_default_for_new_file() {
 }
 
 #[cfg(feature = "async")]
+#[cfg_attr(miri, ignore = "FFI mmap syscalls are not supported by Miri")]
 #[tokio::test(flavor = "multi_thread")]
 async fn create_mmap_async_validates_before_truncating() {
     use mmap_io::manager::r#async::create_mmap_async;
@@ -301,6 +311,7 @@ async fn create_mmap_async_validates_before_truncating() {
 // SegmentMut bounds
 // ---------------------------------------------------------------------
 
+#[cfg_attr(miri, ignore = "FFI mmap syscalls are not supported by Miri")]
 #[test]
 fn segment_mut_write_rejects_data_longer_than_segment() {
     let path = tmp_path("segment_write_bounds");
@@ -326,6 +337,7 @@ fn segment_mut_write_rejects_data_longer_than_segment() {
 // ---------------------------------------------------------------------
 
 #[cfg(feature = "advise")]
+#[cfg_attr(miri, ignore = "FFI mmap syscalls are not supported by Miri")]
 #[test]
 fn advise_accepts_unaligned_offsets() {
     use mmap_io::MmapAdvice;
@@ -350,6 +362,7 @@ fn advise_accepts_unaligned_offsets() {
 // MmapReader / utils
 // ---------------------------------------------------------------------
 
+#[cfg_attr(miri, ignore = "FFI mmap syscalls are not supported by Miri")]
 #[test]
 fn reader_seek_rejects_negative_and_overflowing_positions() {
     let path = tmp_path("reader_seek");
@@ -382,6 +395,7 @@ fn reader_seek_rejects_negative_and_overflowing_positions() {
     let _ = fs::remove_file(&path);
 }
 
+#[cfg_attr(miri, ignore = "FFI mmap syscalls are not supported by Miri")]
 #[test]
 fn align_up_saturates_instead_of_overflowing() {
     use mmap_io::utils::align_up;
@@ -395,6 +409,7 @@ fn align_up_saturates_instead_of_overflowing() {
 // Zero-length range rule
 // ---------------------------------------------------------------------
 
+#[cfg_attr(miri, ignore = "FFI mmap syscalls are not supported by Miri")]
 #[test]
 fn zero_length_requests_are_accepted_at_any_offset() {
     let path = tmp_path("zero_len_rule");
@@ -424,6 +439,7 @@ fn zero_length_requests_are_accepted_at_any_offset() {
 // Error Display
 // ---------------------------------------------------------------------
 
+#[cfg_attr(miri, ignore = "FFI mmap syscalls are not supported by Miri")]
 #[test]
 fn error_display_strings_are_stable() {
     use std::error::Error as _;
@@ -464,6 +480,7 @@ fn error_display_strings_are_stable() {
     }
 }
 
+#[cfg_attr(miri, ignore = "FFI mmap syscalls are not supported by Miri")]
 #[test]
 fn reader_reads_whole_file() {
     let path = tmp_path("reader_whole");

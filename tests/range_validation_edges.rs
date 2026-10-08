@@ -15,19 +15,11 @@
 //! succeed.
 
 use mmap_io::{errors::MmapIoError, MemoryMappedFile};
-use std::path::PathBuf;
+
+mod common;
+use common::tmp_path;
 
 const SIZE: u64 = 64 * 1024;
-
-fn tmp_path(name: &str) -> PathBuf {
-    let mut p = std::env::temp_dir();
-    p.push(format!(
-        "mmap_io_range_edges_{}_{}",
-        name,
-        std::process::id()
-    ));
-    p
-}
 
 /// Ranges that must be rejected for a mapping of `total` bytes.
 fn hostile_ranges(total: u64) -> Vec<(u64, u64)> {
@@ -68,7 +60,7 @@ fn assert_oob(res: Result<(), MmapIoError>, op: &str, offset: u64, len: u64) {
     }
 }
 
-fn create_dirty(name: &str) -> (PathBuf, MemoryMappedFile) {
+fn create_dirty(name: &str) -> (common::TmpPath, MemoryMappedFile) {
     let path = tmp_path(name);
     let _ = std::fs::remove_file(&path);
     let mmap = MemoryMappedFile::create_rw(&path, SIZE).expect("create_rw");
@@ -78,6 +70,7 @@ fn create_dirty(name: &str) -> (PathBuf, MemoryMappedFile) {
     (path, mmap)
 }
 
+#[cfg_attr(miri, ignore = "FFI mmap syscalls are not supported by Miri")]
 #[test]
 fn flush_range_rejects_hostile_ranges() {
     let (path, mmap) = create_dirty("flush_hostile");
@@ -88,6 +81,7 @@ fn flush_range_rejects_hostile_ranges() {
     let _ = std::fs::remove_file(&path);
 }
 
+#[cfg_attr(miri, ignore = "FFI mmap syscalls are not supported by Miri")]
 #[test]
 fn flush_range_accepts_boundary_ranges() {
     let (path, mmap) = create_dirty("flush_boundary");
@@ -100,6 +94,7 @@ fn flush_range_accepts_boundary_ranges() {
     let _ = std::fs::remove_file(&path);
 }
 
+#[cfg_attr(miri, ignore = "FFI mmap syscalls are not supported by Miri")]
 #[test]
 fn flush_range_zero_length_is_noop_everywhere() {
     // Zero-length requests are documented as always accepted. They must
@@ -113,6 +108,7 @@ fn flush_range_zero_length_is_noop_everywhere() {
     let _ = std::fs::remove_file(&path);
 }
 
+#[cfg_attr(miri, ignore = "FFI mmap syscalls are not supported by Miri")]
 #[test]
 fn flush_range_after_shrink_rejects_stale_range() {
     // A range that was valid before `resize` shrank the file must be
@@ -129,6 +125,7 @@ fn flush_range_after_shrink_rejects_stale_range() {
     let _ = std::fs::remove_file(&path);
 }
 
+#[cfg_attr(miri, ignore = "FFI mmap syscalls are not supported by Miri")]
 #[test]
 fn flush_range_on_read_only_and_cow_still_validates() {
     let (path, mmap) = create_dirty("flush_ro");
@@ -151,6 +148,7 @@ fn flush_range_on_read_only_and_cow_still_validates() {
     let _ = std::fs::remove_file(&path);
 }
 
+#[cfg_attr(miri, ignore = "FFI mmap syscalls are not supported by Miri")]
 #[test]
 fn touch_pages_range_rejects_hostile_ranges() {
     let (path, mmap) = create_dirty("touch_hostile");
@@ -171,6 +169,7 @@ fn touch_pages_range_rejects_hostile_ranges() {
 }
 
 #[cfg(feature = "advise")]
+#[cfg_attr(miri, ignore = "FFI mmap syscalls are not supported by Miri")]
 #[test]
 fn advise_rejects_hostile_ranges_for_every_advice() {
     use mmap_io::advise::MmapAdvice;
@@ -205,6 +204,7 @@ fn advise_rejects_hostile_ranges_for_every_advice() {
 }
 
 #[cfg(feature = "locking")]
+#[cfg_attr(miri, ignore = "FFI mmap syscalls are not supported by Miri")]
 #[test]
 fn lock_and_unlock_reject_hostile_ranges() {
     let (path, mmap) = create_dirty("lock_hostile");
@@ -217,6 +217,7 @@ fn lock_and_unlock_reject_hostile_ranges() {
 }
 
 #[cfg(any(target_os = "linux", target_os = "android"))]
+#[cfg_attr(miri, ignore = "FFI mmap syscalls are not supported by Miri")]
 #[test]
 fn prefetch_range_rejects_hostile_ranges() {
     let (path, mmap) = create_dirty("prefetch_hostile");
@@ -232,6 +233,7 @@ fn prefetch_range_rejects_hostile_ranges() {
     let _ = std::fs::remove_file(&path);
 }
 
+#[cfg_attr(miri, ignore = "FFI mmap syscalls are not supported by Miri")]
 #[test]
 fn read_and_write_paths_reject_hostile_ranges() {
     let (path, mmap) = create_dirty("rw_hostile");

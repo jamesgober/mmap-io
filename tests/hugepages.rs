@@ -6,6 +6,7 @@ use mmap_io::{MemoryMappedFile, MmapMode};
 use std::fs;
 use tempfile::tempdir;
 
+#[cfg_attr(miri, ignore = "FFI mmap syscalls are not supported by Miri")]
 #[test]
 fn test_hugepages_builder_create() {
     let dir = tempdir().unwrap();
@@ -43,6 +44,7 @@ fn test_hugepages_builder_create() {
     }
 }
 
+#[cfg_attr(miri, ignore = "FFI mmap syscalls are not supported by Miri")]
 #[test]
 fn test_hugepages_builder_open() {
     let dir = tempdir().unwrap();
@@ -79,6 +81,7 @@ fn test_hugepages_builder_open() {
     }
 }
 
+#[cfg_attr(miri, ignore = "FFI mmap syscalls are not supported by Miri")]
 #[test]
 fn test_hugepages_fallback() {
     // This test verifies that the huge pages implementation gracefully
@@ -108,6 +111,7 @@ fn test_hugepages_fallback() {
     assert_eq!(&buf, test_data);
 }
 
+#[cfg_attr(miri, ignore = "FFI mmap syscalls are not supported by Miri")]
 #[test]
 fn test_hugepages_large_file() {
     let dir = tempdir().unwrap();
@@ -144,6 +148,7 @@ fn test_hugepages_large_file() {
     mmap.flush().unwrap();
 }
 
+#[cfg_attr(miri, ignore = "FFI mmap syscalls are not supported by Miri")]
 #[test]
 fn test_hugepages_disabled() {
     // Test that huge_pages(false) works correctly
@@ -171,6 +176,7 @@ fn test_hugepages_disabled() {
     assert_eq!(&buf, data);
 }
 
+#[cfg_attr(miri, ignore = "FFI mmap syscalls are not supported by Miri")]
 #[test]
 fn test_hugepages_does_not_prefault_the_file() {
     // Before 1.1, `.huge_pages(true)` ran madvise(MADV_POPULATE_WRITE)

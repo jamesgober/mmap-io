@@ -294,14 +294,12 @@ mod tests {
     use std::sync::Arc;
     use std::time::{Duration, Instant};
 
-    fn tmp_path(name: &str) -> PathBuf {
-        let mut p = std::env::temp_dir();
-        p.push(format!(
-            "mmap_io_watch_test_{}_{}",
-            name,
-            std::process::id()
-        ));
-        p
+    /// A path in a fresh private temp dir; the dir is removed when
+    /// the returned `TempDir` drops.
+    fn tmp_path(name: &str) -> (tempfile::TempDir, PathBuf) {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let path = dir.path().join(name);
+        (dir, path)
     }
 
     /// Spin until `pred()` returns true or `timeout` elapses. Returns
@@ -337,10 +335,11 @@ mod tests {
         f.sync_all().expect("external sync");
     }
 
+    #[cfg_attr(miri, ignore = "FFI mmap syscalls are not supported by Miri")]
     #[test]
     #[cfg(feature = "watch")]
     fn test_watch_file_changes() {
-        let path = tmp_path("watch_changes");
+        let (_dir, path) = tmp_path("watch_changes");
         let _ = fs::remove_file(&path);
 
         let mmap = create_mmap(&path, 1024).expect("create");
@@ -382,10 +381,11 @@ mod tests {
         let _ = fs::remove_file(&path);
     }
 
+    #[cfg_attr(miri, ignore = "FFI mmap syscalls are not supported by Miri")]
     #[test]
     #[cfg(feature = "watch")]
     fn test_multiple_watchers() {
-        let path = tmp_path("multi_watch");
+        let (_dir, path) = tmp_path("multi_watch");
         let _ = fs::remove_file(&path);
 
         let mmap = create_mmap(&path, 1024).expect("create");
@@ -428,10 +428,11 @@ mod tests {
         let _ = fs::remove_file(&path);
     }
 
+    #[cfg_attr(miri, ignore = "FFI mmap syscalls are not supported by Miri")]
     #[test]
     #[cfg(feature = "watch")]
     fn test_watch_handle_drop_stops_watching() {
-        let path = tmp_path("watch_drop");
+        let (_dir, path) = tmp_path("watch_drop");
         let _ = fs::remove_file(&path);
 
         let mmap = create_mmap(&path, 1024).expect("create");
@@ -467,5 +468,74 @@ mod tests {
 
         drop(mmap);
         let _ = fs::remove_file(&path);
+    }
+}
+
+#[cfg(test)]
+mod kind_mapping_tests {
+    //! `map_notify_kind` over every `notify` event kind. Pure, so it
+    //! also runs under Miri.
+
+    use super::{map_notify_kind, ChangeKind};
+    use notify::event::{
+        AccessKind, AccessMode, CreateKind, DataChange, EventKind, MetadataKind, ModifyKind,
+        RemoveKind, RenameMode,
+    };
+
+    #[test]
+    fn every_event_kind_maps_as_documented() {
+        let m = Some(ChangeKind::Modified);
+        let meta = Some(ChangeKind::Metadata);
+        let r = Some(ChangeKind::Removed);
+        let cases = [
+            (EventKind::Any, m),
+            (EventKind::Other, m),
+            (EventKind::Create(CreateKind::Any), m),
+            (EventKind::Create(CreateKind::File), m),
+            (EventKind::Create(CreateKind::Folder), m),
+            (EventKind::Create(CreateKind::Other), m),
+            (EventKind::Modify(ModifyKind::Any), m),
+            (EventKind::Modify(ModifyKind::Other), m),
+            (EventKind::Modify(ModifyKind::Data(DataChange::Any)), m),
+            (EventKind::Modify(ModifyKind::Data(DataChange::Size)), m),
+            (EventKind::Modify(ModifyKind::Data(DataChange::Content)), m),
+            (EventKind::Modify(ModifyKind::Data(DataChange::Other)), m),
+            (
+                EventKind::Modify(ModifyKind::Metadata(MetadataKind::Any)),
+                meta,
+            ),
+            (
+                EventKind::Modify(ModifyKind::Metadata(MetadataKind::WriteTime)),
+                meta,
+            ),
+            (
+                EventKind::Modify(ModifyKind::Metadata(MetadataKind::Permissions)),
+                meta,
+            ),
+            (
+                EventKind::Modify(ModifyKind::Metadata(MetadataKind::Other)),
+                meta,
+            ),
+            (EventKind::Modify(ModifyKind::Name(RenameMode::Any)), r),
+            (EventKind::Modify(ModifyKind::Name(RenameMode::From)), r),
+            (EventKind::Modify(ModifyKind::Name(RenameMode::To)), r),
+            (EventKind::Modify(ModifyKind::Name(RenameMode::Both)), r),
+            (EventKind::Modify(ModifyKind::Name(RenameMode::Other)), r),
+            (EventKind::Remove(RemoveKind::Any), r),
+            (EventKind::Remove(RemoveKind::File), r),
+            (EventKind::Remove(RemoveKind::Folder), r),
+            (EventKind::Remove(RemoveKind::Other), r),
+            (EventKind::Access(AccessKind::Any), None),
+            (EventKind::Access(AccessKind::Read), None),
+            (EventKind::Access(AccessKind::Open(AccessMode::Any)), None),
+            (
+                EventKind::Access(AccessKind::Close(AccessMode::Write)),
+                None,
+            ),
+            (EventKind::Access(AccessKind::Other), None),
+        ];
+        for (kind, want) in cases {
+            assert_eq!(map_notify_kind(&kind), want, "{kind:?}");
+        }
     }
 }

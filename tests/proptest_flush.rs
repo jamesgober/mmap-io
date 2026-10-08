@@ -13,17 +13,13 @@
 use mmap_io::{flush::FlushPolicy, MemoryMappedFile, MmapMode};
 use proptest::prelude::*;
 use std::io::{Read, Seek, SeekFrom};
-use std::path::PathBuf;
 
-fn tmp_path(tag: &str, seed: u64) -> PathBuf {
-    let mut p = std::env::temp_dir();
-    p.push(format!(
-        "mmap_io_proptest_flush_{}_{}_{}",
-        tag,
-        std::process::id(),
-        seed
-    ));
-    p
+mod common;
+use common::TmpPath;
+
+/// A unique path in a private temp dir for this case.
+fn tmp_path(tag: &str, seed: u64) -> TmpPath {
+    common::tmp_path(&format!("{tag}_{seed}"))
 }
 
 /// Read `len` bytes from `path` at `offset` via a fresh handle (i.e.,
@@ -68,6 +64,7 @@ proptest! {
     /// flush counts because that is implementation-defined; we assert
     /// that the operations never error for valid (in-bounds) inputs
     /// and that bytes round-trip via read_into.
+    #[cfg_attr(miri, ignore = "FFI mmap syscalls are not supported by Miri")]
     #[test]
     fn every_bytes_policy_mixed_writes(
         seed in 0u64..u64::MAX,
@@ -147,6 +144,7 @@ proptest! {
     /// verify by checking that subsequent sub-threshold writes do NOT
     /// hit disk (their on-disk byte differs from in-memory).
     /// This is the inverse of the C1 regression.
+    #[cfg_attr(miri, ignore = "FFI mmap syscalls are not supported by Miri")]
     #[test]
     fn every_bytes_policy_no_over_trigger(
         seed in 0u64..u64::MAX,
@@ -201,6 +199,7 @@ proptest! {
     /// Property: `FlushPolicy::Manual` (and its alias `Never`) NEVER
     /// auto-flushes. After arbitrary writes, an explicit
     /// `mmap.flush()` is required to make data durable.
+    #[cfg_attr(miri, ignore = "FFI mmap syscalls are not supported by Miri")]
     #[test]
     fn manual_policy_never_auto_flushes(
         seed in 0u64..u64::MAX,
@@ -243,6 +242,7 @@ proptest! {
     /// of triggered flushes equals floor(K / N). We can't directly
     /// observe the flush count, but we can observe its durability
     /// side effect: every N-th write is on disk.
+    #[cfg_attr(miri, ignore = "FFI mmap syscalls are not supported by Miri")]
     #[test]
     fn every_writes_policy_triggers_at_n(
         seed in 0u64..u64::MAX,

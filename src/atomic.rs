@@ -353,20 +353,19 @@ mod tests {
     use std::path::PathBuf;
     use std::sync::atomic::Ordering;
 
-    fn tmp_path(name: &str) -> PathBuf {
-        let mut p = std::env::temp_dir();
-        p.push(format!(
-            "mmap_io_atomic_test_{}_{}",
-            name,
-            std::process::id()
-        ));
-        p
+    /// A path in a fresh private temp dir; the dir is removed when
+    /// the returned `TempDir` drops.
+    fn tmp_path(name: &str) -> (tempfile::TempDir, PathBuf) {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let path = dir.path().join(name);
+        (dir, path)
     }
 
+    #[cfg_attr(miri, ignore = "FFI mmap syscalls are not supported by Miri")]
     #[test]
     #[cfg(feature = "atomic")]
     fn test_atomic_u64_operations() {
-        let path = tmp_path("atomic_u64");
+        let (_dir, path) = tmp_path("atomic_u64");
         let _ = fs::remove_file(&path);
 
         let mmap = create_mmap(&path, 64).expect("create");
@@ -409,10 +408,11 @@ mod tests {
         fs::remove_file(&path).expect("cleanup");
     }
 
+    #[cfg_attr(miri, ignore = "FFI mmap syscalls are not supported by Miri")]
     #[test]
     #[cfg(feature = "atomic")]
     fn test_atomic_u32_operations() {
-        let path = tmp_path("atomic_u32");
+        let (_dir, path) = tmp_path("atomic_u32");
         let _ = fs::remove_file(&path);
 
         let mmap = create_mmap(&path, 32).expect("create");
@@ -448,10 +448,11 @@ mod tests {
         fs::remove_file(&path).expect("cleanup");
     }
 
+    #[cfg_attr(miri, ignore = "FFI mmap syscalls are not supported by Miri")]
     #[test]
     #[cfg(feature = "atomic")]
     fn test_atomic_slices() {
-        let path = tmp_path("atomic_slices");
+        let (_dir, path) = tmp_path("atomic_slices");
         let _ = fs::remove_file(&path);
 
         let mmap = create_mmap(&path, 128).expect("create");
@@ -491,10 +492,11 @@ mod tests {
         fs::remove_file(&path).expect("cleanup");
     }
 
+    #[cfg_attr(miri, ignore = "FFI mmap syscalls are not supported by Miri")]
     #[test]
     #[cfg(feature = "atomic")]
     fn test_atomic_with_different_modes() {
-        let path = tmp_path("atomic_modes");
+        let (_dir, path) = tmp_path("atomic_modes");
         let _ = fs::remove_file(&path);
 
         let mmap = create_mmap(&path, 16).expect("create");
@@ -540,13 +542,14 @@ mod tests {
         fs::remove_file(&path).expect("cleanup");
     }
 
+    #[cfg_attr(miri, ignore = "FFI mmap syscalls are not supported by Miri")]
     #[test]
     #[cfg(feature = "atomic")]
     fn test_concurrent_atomic_access() {
         use std::sync::Arc;
         use std::thread;
 
-        let path = tmp_path("concurrent_atomic");
+        let (_dir, path) = tmp_path("concurrent_atomic");
         let _ = fs::remove_file(&path);
 
         let mmap = Arc::new(create_mmap(&path, 8).expect("create"));

@@ -2,14 +2,11 @@
 
 use mmap_io::{MemoryMappedFile, MmapIoError};
 use std::fs;
-use std::path::PathBuf;
 
-fn tmp_path(name: &str) -> PathBuf {
-    let mut p = std::env::temp_dir();
-    p.push(format!("mmap_io_size_test_{}_{}", name, std::process::id()));
-    p
-}
+mod common;
+use common::tmp_path;
 
+#[cfg_attr(miri, ignore = "FFI mmap syscalls are not supported by Miri")]
 #[test]
 fn test_max_size_validation_create() {
     let path = tmp_path("max_size_create");
@@ -32,6 +29,7 @@ fn test_max_size_validation_create() {
     let _ = fs::remove_file(&path);
 }
 
+#[cfg_attr(miri, ignore = "FFI mmap syscalls are not supported by Miri")]
 #[test]
 fn test_max_size_validation_resize() {
     let path = tmp_path("max_size_resize");
@@ -57,6 +55,7 @@ fn test_max_size_validation_resize() {
     let _ = fs::remove_file(&path);
 }
 
+#[cfg_attr(miri, ignore = "FFI mmap syscalls are not supported by Miri")]
 #[test]
 fn test_max_size_validation_builder() {
     let path = tmp_path("max_size_builder");
@@ -81,18 +80,25 @@ fn test_max_size_validation_builder() {
     let _ = fs::remove_file(&path);
 }
 
+#[cfg_attr(miri, ignore = "FFI mmap syscalls are not supported by Miri")]
 #[test]
 fn test_normal_size_still_works() {
     let path = tmp_path("normal_size");
     let _ = fs::remove_file(&path);
 
     // Test that normal sizes still work fine
-    let normal_sizes = vec![
-        1024,                    // 1 KB
-        1024 * 1024,             // 1 MB
-        1024 * 1024 * 1024,      // 1 GB
-        10 * 1024 * 1024 * 1024, // 10 GB
+    let mut normal_sizes = vec![
+        1024,        // 1 KB
+        1024 * 1024, // 1 MB
     ];
+    if cfg!(target_pointer_width = "64") {
+        normal_sizes.push(1024 * 1024 * 1024); // 1 GB
+        normal_sizes.push(10 * 1024 * 1024 * 1024); // 10 GB
+    } else {
+        // 32-bit targets cap mappings at 2 GiB and have a few GiB of
+        // address space in total.
+        normal_sizes.push(256 * 1024 * 1024);
+    }
 
     for size in normal_sizes {
         // Create with normal size should work
@@ -105,6 +111,7 @@ fn test_normal_size_still_works() {
     }
 }
 
+#[cfg_attr(miri, ignore = "FFI mmap syscalls are not supported by Miri")]
 #[test]
 fn test_zero_size_validation() {
     let path = tmp_path("zero_size");

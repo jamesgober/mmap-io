@@ -23,6 +23,7 @@ const MAGIC_CHILD: &[u8] = b"FROM_CHL";
 const OFFSET_PARENT: u64 = 0;
 const OFFSET_CHILD: u64 = 8;
 
+#[cfg_attr(miri, ignore = "FFI mmap syscalls are not supported by Miri")]
 #[test]
 fn ipc_cross_process_byte_visibility() {
     // Child branch: detect env var, do the child dance, exit.

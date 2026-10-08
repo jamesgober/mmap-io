@@ -14,23 +14,19 @@
 
 use mmap_io::{errors::MmapIoError, MemoryMappedFile};
 use proptest::prelude::*;
-use std::path::PathBuf;
 use std::sync::atomic::Ordering;
+
+mod common;
+use common::TmpPath;
 
 const FILE_SIZE: u64 = 4096; // single page, plenty of room for atomic slots
 
-fn tmp_path(tag: &str, seed: u64) -> PathBuf {
-    let mut p = std::env::temp_dir();
-    p.push(format!(
-        "mmap_io_proptest_atomic_{}_{}_{}",
-        tag,
-        std::process::id(),
-        seed
-    ));
-    p
+/// A unique path in a private temp dir for this case.
+fn tmp_path(tag: &str, seed: u64) -> TmpPath {
+    common::tmp_path(&format!("{tag}_{seed}"))
 }
 
-fn fresh_rw(tag: &str, seed: u64) -> (MemoryMappedFile, PathBuf) {
+fn fresh_rw(tag: &str, seed: u64) -> (MemoryMappedFile, TmpPath) {
     let path = tmp_path(tag, seed);
     let _ = std::fs::remove_file(&path);
     let mmap = MemoryMappedFile::create_rw(&path, FILE_SIZE).expect("create_rw");
@@ -43,6 +39,7 @@ proptest! {
     /// `atomic_u64`: aligned + in-bounds offsets succeed. Misaligned
     /// offsets MUST yield `Misaligned`. OOB offsets MUST yield
     /// `OutOfBounds`. No silent UB.
+    #[cfg_attr(miri, ignore = "FFI mmap syscalls are not supported by Miri")]
     #[test]
     fn atomic_u64_alignment_and_bounds(offset in 0u64..(FILE_SIZE * 2)) {
         let (mmap, path) = fresh_rw("u64_align", offset);
@@ -84,6 +81,7 @@ proptest! {
 
     /// `atomic_u32`: same property as `atomic_u64` with 4-byte
     /// alignment.
+    #[cfg_attr(miri, ignore = "FFI mmap syscalls are not supported by Miri")]
     #[test]
     fn atomic_u32_alignment_and_bounds(offset in 0u64..(FILE_SIZE * 2)) {
         let (mmap, path) = fresh_rw("u32_align", offset);
@@ -123,6 +121,7 @@ proptest! {
     /// Slice views: same alignment requirement on the starting
     /// offset; bounds checked against the total range
     /// `offset + count * size_of::<T>()`.
+    #[cfg_attr(miri, ignore = "FFI mmap syscalls are not supported by Miri")]
     #[test]
     fn atomic_u64_slice_alignment_and_bounds(
         offset in 0u64..(FILE_SIZE * 2),
@@ -171,6 +170,7 @@ proptest! {
     }
 
     /// Slice view for u32 - same contract with 4-byte alignment.
+    #[cfg_attr(miri, ignore = "FFI mmap syscalls are not supported by Miri")]
     #[test]
     fn atomic_u32_slice_alignment_and_bounds(
         offset in 0u64..(FILE_SIZE * 2),

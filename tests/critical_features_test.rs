@@ -2,21 +2,14 @@
 
 use mmap_io::{flush::FlushPolicy, MemoryMappedFile, MmapMode, TouchHint};
 use std::fs;
-use std::path::PathBuf;
 use std::time::Instant;
 
-fn tmp_path(name: &str) -> PathBuf {
-    let mut p = std::env::temp_dir();
-    p.push(format!(
-        "mmap_io_critical_test_{}_{}",
-        name,
-        std::process::id()
-    ));
-    p
-}
+mod common;
+use common::tmp_path;
 
 // Runs everywhere: `.huge_pages(true)` is a Linux-only hint and a
 // no-op elsewhere, so mapping creation must succeed on every platform.
+#[cfg_attr(miri, ignore = "FFI mmap syscalls are not supported by Miri")]
 #[test]
 fn test_hugepages_fallback_behavior() {
     let path = tmp_path("hugepages");
@@ -47,6 +40,7 @@ fn test_hugepages_fallback_behavior() {
     let _ = fs::remove_file(&path);
 }
 
+#[cfg_attr(miri, ignore = "FFI mmap syscalls are not supported by Miri")]
 #[test]
 fn test_touch_hint_eager() {
     let path = tmp_path("touch_eager");
@@ -77,6 +71,7 @@ fn test_touch_hint_eager() {
     fs::remove_file(&path).expect("cleanup");
 }
 
+#[cfg_attr(miri, ignore = "FFI mmap syscalls are not supported by Miri")]
 #[test]
 fn test_touch_hint_never() {
     let path = tmp_path("touch_never");
@@ -107,6 +102,7 @@ fn test_touch_hint_never() {
     fs::remove_file(&path).expect("cleanup");
 }
 
+#[cfg_attr(miri, ignore = "FFI mmap syscalls are not supported by Miri")]
 #[test]
 fn test_time_based_flushing_policy() {
     let path = tmp_path("time_flush");
@@ -135,6 +131,7 @@ fn test_time_based_flushing_policy() {
     fs::remove_file(&path).expect("cleanup");
 }
 
+#[cfg_attr(miri, ignore = "FFI mmap syscalls are not supported by Miri")]
 #[test]
 fn test_microflush_optimization() {
     let path = tmp_path("microflush");
@@ -161,6 +158,7 @@ fn test_microflush_optimization() {
     fs::remove_file(&path).expect("cleanup");
 }
 
+#[cfg_attr(miri, ignore = "FFI mmap syscalls are not supported by Miri")]
 #[test]
 fn test_comprehensive_feature_combination() {
     let path = tmp_path("all-features");
