@@ -1,0 +1,190 @@
+name: Hardening
+
+# Checks beyond the main test matrix in ci.yml: Miri over the pure
+# logic, a short run of every fuzz target, the test suite on 32-bit
+# targets, ThreadSanitizer over the concurrency tests, and (on a
+# schedule or on demand) the long-running soak tests.
+
+on:
+  push:
+    branches: [ main ]
+  pull_request:
+    branches: [ main ]
+  schedule:
+    # Weekly, Monday 03:17 UTC: runs the soak job as well.
+    - cron: '17 3 * * 1'
+  workflow_dispatch:
+    inputs:
+      soak_secs:
+        description: 'Seconds per soak stress run'
+        required: false
+        default: '600'
+
+env:
+  CARGO_TERM_COLOR: always
+
+concurrency:
+  group: hardening-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  # Miri cannot execute mmap and friends, so every FFI test carries
+  # cfg_attr(miri, ignore). What runs: tests/pure_logic.rs, the raw
+  # range arithmetic, the flusher lifecycle tests, and a few helpers.
+  # Doctests map real files and are skipped (`--lib --tests`).
+  miri:
+    name: Miri
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Install Rust (nightly + miri)
+        uses: dtolnay/rust-toolchain@nightly
+        with:
+          components: miri, rust-src
+
+      - name: Set up Miri
+        run: cargo miri setup
+
+      - name: Miri (default features)
+        run: cargo miri test --lib --tests
+
+      - name: Miri (all features)
+        run: cargo miri test --all-features --lib --tests
+
+  # A short libFuzzer run per target catches harness rot and shallow
+  # crashes on every PR. Long runs stay manual (see fuzz/README.md).
+  fuzz-smoke:
+    name: fuzz smoke (${{ matrix.target }})
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        target:
+          - read_into
+          - update_region
+          - atomic_view
+          - bounds_checks
+          - raw_map
+          - managed_ops
+    # bounds_checks finds the known utils::ensure_in_bounds overflow at
+    # total == u64::MAX within seconds (pinned as an ignored test in
+    # tests/pure_logic.rs). Drop this line once that bug is fixed.
+    continue-on-error: ${{ matrix.target == 'bounds_checks' }}
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Install Rust (nightly)
+        uses: dtolnay/rust-toolchain@nightly
+
+      - name: Install cargo-fuzz
+        uses: taiki-e/install-action@v2
+        with:
+          tool: cargo-fuzz
+
+      - name: Fuzz for 60 seconds
+        working-directory: fuzz
+        run: cargo +nightly fuzz run ${{ matrix.target }} -- -max_total_time=60
+
+      - name: Upload crash artifacts
+        if: failure()
+        uses: actions/upload-artifact@v7
+        with:
+          name: fuzz-artifacts-${{ matrix.target }}
+          path: fuzz/artifacts/${{ matrix.target }}
+          if-no-files-found: ignore
+
+  # 32-bit targets: usize is 32 bits, MAX_MMAP_SIZE is 2 GiB, and every
+  # u64 -> usize conversion in the crate is exercised for real.
+  test-32bit:
+    name: test 32-bit (${{ matrix.target }})
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 45
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: windows-latest
+            target: i686-pc-windows-msvc
+          - os: ubuntu-latest
+            target: i686-unknown-linux-gnu
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Install Rust (stable, ${{ matrix.target }})
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
+
+      - name: Install 32-bit C toolchain
+        if: matrix.target == 'i686-unknown-linux-gnu'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y gcc-multilib
+
+      - name: Test (default features)
+        run: cargo test --target ${{ matrix.target }}
+
+      - name: Test (all features)
+        run: cargo test --target ${{ matrix.target }} --all-features
+
+  # ThreadSanitizer over the tests that share mappings across threads.
+  # Needs nightly and a sanitized std (-Zbuild-std).
+  tsan:
+    name: ThreadSanitizer
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    env:
+      RUSTFLAGS: -Zsanitizer=thread
+      TSAN_OPTIONS: halt_on_error=1 second_deadlock_stack=1
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Install Rust (nightly + rust-src)
+        uses: dtolnay/rust-toolchain@nightly
+        with:
+          components: rust-src
+
+      - name: Concurrency tests under TSan
+        run: >-
+          cargo test -Zbuild-std --target x86_64-unknown-linux-gnu --all-features
+          --test concurrency_stress
+          --test raw_concurrency
+          --test soundness_regressions
+          --test atomic_view_resize_safety
+
+  # Long-running tests, ignored in normal runs. Weekly and on demand.
+  soak:
+    name: soak (${{ matrix.os }})
+    if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 120
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest, windows-latest]
+    env:
+      MMAP_IO_SOAK: '1'
+      MMAP_IO_SOAK_SECS: ${{ github.event.inputs.soak_secs || '600' }}
+      PROPTEST_CASES: '20000'
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Install Rust (stable)
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Soak stress tests
+        # Only the soak_* tests: other ignored tests pin known bugs.
+        run: cargo test --release --all-features --test concurrency_stress -- --ignored soak_
+
+      - name: Deep property tests
+        run: >-
+          cargo test --release --all-features
+          --test proptest_model
+          --test proptest_bounds
+          --test proptest_flush
+          --test proptest_atomic
+          --test raw_proptest
+          --test pure_logic
