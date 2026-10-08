@@ -25,11 +25,14 @@
 
 - **Zero-copy reads on every mode.** `as_slice` returns a `MappedSlice<'_>` borrowed directly from the mapping. No allocation. No memcpy. Works on read-only, read-write, and copy-on-write mappings uniformly.
 - **Zero-allocation iteration.** `mmap.chunks(N)` and `mmap.pages()` walk the file in fixed strides without ever heap-allocating. A 1 GiB scan at 4 KiB chunks skips 262,144 allocations and half the memory bandwidth of the naive approach.
-- **Aligned atomic views.** On read-write mappings, `atomic_u32` / `atomic_u64` return a wrapper that derefs to `&AtomicU64`. Multi-thread `fetch_add` over a memory-mapped counter is one cache-line ping; no cross-process locking required.
+- **Aligned atomic views.** On read-write, copy-on-write and anonymous mappings, `atomic_u32` / `atomic_u64` return a wrapper that derefs to `&AtomicU64`. Multi-thread `fetch_add` over a memory-mapped counter is one cache-line ping; no cross-process locking required. Since 1.1 the crate refuses a plain slice and an atomic view over the same bytes at run time, so the two cannot race.
 - **Configurable durability.** `flush()` is synchronous (`msync(MS_SYNC)` on Unix, `FlushViewOfFile` + `FlushFileBuffers` on Windows). `FlushPolicy::EveryBytes(N)`, `EveryWrites(N)`, `EveryMillis(N)`, `Always`, or `Manual` decide when the crate flushes for you; the millis policy runs a background flusher bound to the mapping's lifetime.
-- **Thread-safe.** Interior mutability via `parking_lot::RwLock`. Multiple concurrent readers, one writer at a time. Every live read view (slice, iterator item, atomic view) blocks writes and `resize()` until released, so memory under your reference cannot move.
+- **Thread-safe.** Interior mutability via `parking_lot::RwLock`. Multiple concurrent readers, one writer at a time. Every live read view (slice, iterator item, atomic view) blocks writes and `resize()` until released, so memory under your reference cannot move. The non-blocking `try_as_slice` / `try_as_slice_mut` / `try_update_region` report "would block" instead of waiting (and instead of deadlocking on the thread that holds a view).
+- **Writable copy-on-write.** `open_cow` maps a file privately: write to it freely, the file never changes (since 1.1).
+- **Write-back without waiting.** `schedule_flush()` starts write-back and returns (`sync_file_range` on Linux); `flush()` is the durable one.
 - **Anonymous mappings.** Process-local memory without a backing file via `AnonymousMmap::new(size)` for shared scratch buffers between threads, large temporary allocations, or as the kernel substrate for IPC patterns. Atomic views (feature `atomic`) and the non-blocking `try_` methods work on them too.
-- **Cross-platform.** Linux, macOS, Windows. Per-platform hooks where they exist (`MADV_HUGEPAGE` for the huge-page hint, `posix_fadvise` for OS-level prefetch on Linux).
+- **Streaming readers.** `mmap.reader()` implements `Read`, `Seek` and `BufRead` (zero-copy `lines()` on read-only mappings).
+- **Cross-platform.** Linux, macOS, Windows. Per-platform hooks where they exist (`MADV_HUGEPAGE` / `MAP_HUGETLB` for huge pages, `posix_fadvise` for OS-level prefetch and `sync_file_range` for write-back on Linux).
 - **Opt-in surface.** Default features are `advise` + `iterator`. Everything else (`async`, `atomic`, `cow`, `locking`, `watch`, `hugepages`) is off by default to keep compile time tight.
 - **MSRV: 1.75.** Pinned and verified in CI.
 

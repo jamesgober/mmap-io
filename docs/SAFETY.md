@@ -88,23 +88,25 @@ view can observe a truncated file:
 
 ### 1. Mapping construction (`src/mmap.rs`)
 
-`memmap2::Mmap::map`, `MmapMut::map_mut`, and `MmapOptions::map` /
-`map_mut` are `unsafe` because the OS does not stop another process
-from modifying or truncating the file under the mapping. Inside the
+`raw::RawMmap::map`, `RawMmapMut::map_mut`, and `RawMmapOptions::map`
+/ `map_mut` / `map_copy` are `unsafe` because the OS does not stop
+another process from modifying or truncating the file under the
+mapping. Inside the
 process, all access to RW mappings goes through the lock described
 above (COW included), and RO mappings are never written.
 Cross-process modification is out of scope (REPS.md section 5.1).
 
-Sites: `create_rw`, `open_ro`, `open_rw`, `from_file`, `open_cow`,
-`MemoryMappedFileBuilder::open_existing` (RO and COW), and
-`map_file_rw`, which every builder RW path and `resize()` use. Callers
-of `map_file_rw` never pass a length beyond the file's current length.
+Sites: `create_rw`, `open_ro`, `open_rw`, `from_file`,
+`MemoryMappedFileBuilder::open_existing` (RO), `map_file_rw`, which
+every builder RW path and `resize()` use, and `map_file_cow` (`open_cow`,
+`from_file` and the builder with `CopyOnWrite`). Callers of both
+helpers never pass a length beyond the file's current length.
 
-Reference: [`memmap2::MmapMut::map_mut`](https://docs.rs/memmap2/latest/memmap2/struct.MmapMut.html#method.map_mut)
+Contract: `RawMmapOptions::map` (category 8 below).
 
 ### 2. Guarded slices (`MappedSlice`, `src/mmap.rs`)
 
-For RW mappings a `MappedSlice` stores the read guard plus a raw
+For RW and COW mappings a `MappedSlice` stores the read guard plus a raw
 `*const [u8]` computed once at construction, so `Deref` is a pointer
 dereference with no range arithmetic. Soundness: the slice was taken
 from the guarded mapping, the guard lives exactly as long as the
