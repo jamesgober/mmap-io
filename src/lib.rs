@@ -52,6 +52,12 @@ pub mod errors;
 pub mod manager;
 /// Memory-mapped file support.
 pub mod mmap;
+/// Raw platform mappings ([`raw::RawMmap`], [`raw::RawMmapMut`],
+/// [`raw::RawMmapOptions`]): the `mmap` / `MapViewOfFile` layer with
+/// checked offset and length handling, returning `std::io::Result`.
+/// Use [`MemoryMappedFile`] unless you need a bare mapping without
+/// locks, flush policy or path tracking.
+pub mod raw;
 pub mod segment;
 pub mod utils;
 
