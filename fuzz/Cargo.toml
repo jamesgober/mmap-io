@@ -43,3 +43,9 @@ path = "fuzz_targets/raw_map.rs"
 test = false
 doc = false
 bench = false
+[[bin]]
+name = "managed_ops"
+path = "fuzz_targets/managed_ops.rs"
+test = false
+doc = false
+bench = false
