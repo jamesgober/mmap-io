@@ -2442,10 +2442,9 @@ impl MemoryMappedFileBuilder {
     /// every write method works, with the changes visible through this
     /// mapping only and never written to the file; see
     /// [`MemoryMappedFile::open_cow_writable`] for the full behavior.
-    /// Ignored for `ReadOnly` and `ReadWrite`, like
-    /// [`huge_pages`](Self::huge_pages) is for the modes it does not
-    /// apply to; check [`MemoryMappedFile::is_cow_writable`] on the
-    /// result if in doubt.
+    /// Ignored for `ReadOnly` and `ReadWrite`, like `huge_pages` is
+    /// for the modes it does not apply to; check
+    /// [`MemoryMappedFile::is_cow_writable`] on the result if in doubt.
     ///
     /// # Example
     ///
