@@ -11,20 +11,29 @@
 //! The API follows the shape of the `memmap2` crate so code written
 //! against it ports by renaming types:
 //!
-//! | `memmap2`          | `mmap_io::raw`        |
-//! |--------------------|-----------------------|
-//! | `Mmap`             | [`RawMmap`]           |
-//! | `MmapMut`          | [`RawMmapMut`]        |
-//! | `MmapOptions`      | [`RawMmapOptions`]    |
+//! | `memmap2`     | `mmap_io::raw`                                      |
+//! |---------------|-----------------------------------------------------|
+//! | `Mmap`        | [`RawMmap`](crate::raw::RawMmap)                    |
+//! | `MmapMut`     | [`RawMmapMut`](crate::raw::RawMmapMut)              |
+//! | `MmapOptions` | [`RawMmapOptions`](crate::raw::RawMmapOptions)      |
 //!
 //! # Types
 //!
-//! - [`RawMmap`]: read-only, shared view of a file. Derefs to `[u8]`.
-//! - [`RawMmapMut`]: writable view. Shared with the file
-//!   ([`RawMmapOptions::map_mut`]), private copy-on-write
-//!   ([`RawMmapOptions::map_copy`]), or anonymous
-//!   ([`RawMmapMut::map_anon`]). Derefs to `[u8]` and `mut [u8]`.
-//! - [`RawMmapOptions`]: builder for an offset / length window.
+//! - [`RawMmap`](crate::raw::RawMmap): read-only, shared view of a
+//!   file. Derefs to `[u8]`.
+//! - [`RawMmapMut`](crate::raw::RawMmapMut): writable view. Shared
+//!   with the file
+//!   ([`RawMmapOptions::map_mut`](crate::raw::RawMmapOptions::map_mut)),
+//!   private copy-on-write
+//!   ([`RawMmapOptions::map_copy`](crate::raw::RawMmapOptions::map_copy)),
+//!   or anonymous ([`RawMmapMut::map_anon`](crate::raw::RawMmapMut::map_anon)).
+//!   Derefs to `[u8]` and `mut [u8]`.
+//! - [`RawMmapOptions`](crate::raw::RawMmapOptions): builder for an
+//!   offset / length window.
+//!
+// Links in this overview use `crate::raw::...` paths: rustdoc
+// resolves a module's inner docs in the parent scope when the `mod`
+// item in lib.rs also carries outer docs.
 //!
 //! # Guarantees
 //!
