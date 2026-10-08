@@ -1786,6 +1786,7 @@ impl<'a> MapRead<'a> {
     /// # Errors
     ///
     /// `InvalidMode` if the range overlaps a live atomic view.
+    #[inline]
     pub(crate) fn into_view(
         self,
         views: &'a ViewRegistry,
@@ -1830,6 +1831,7 @@ impl std::ops::Deref for MapRead<'_> {
 
 impl MemoryMappedFile {
     /// Acquire read access to the current mapping. See [`MapRead`].
+    #[inline]
     pub(crate) fn map_read(&self) -> MapRead<'_> {
         match &self.inner.map {
             MapVariant::Ro(m) => MapRead::Shared(m),
@@ -2670,6 +2672,7 @@ fn start_time_based_flusher(mmap_file: &MemoryMappedFile, ms: u64) {
 /// # Panics
 ///
 /// Panics if `range` is not within the mapping.
+#[inline]
 fn sub_slice_ptr(guard: &RawMmapMut, range: std::ops::Range<usize>) -> *const [u8] {
     assert!(
         range.start <= range.end && range.end <= guard.len(),
@@ -2795,11 +2798,11 @@ enum MappedSliceInner<'a> {
         _guard: RwLockReadGuard<'a, RawMmapMut>,
         bytes: *const [u8],
     },
-    /// Owned copy of the bytes, used for iterator items (and reader
-    /// buffers) that overlap a live atomic view: those bytes cannot be
-    /// lent as `&[u8]`, so they are copied with atomic loads instead.
-    // Only built by the iterators, when atomic views can exist.
-    #[cfg_attr(not(all(feature = "atomic", feature = "iterator")), allow(dead_code))]
+    /// Owned copy of the bytes, used for iterator items that overlap a
+    /// live atomic view: those bytes cannot be lent as `&[u8]`, so they
+    /// are copied with atomic loads instead. Only exists when atomic
+    /// views and iterators both do, so other builds pay nothing for it.
+    #[cfg(all(feature = "atomic", feature = "iterator"))]
     Snapshot(Box<[u8]>),
 }
 
@@ -2848,6 +2851,7 @@ impl<'a> MappedSlice<'a> {
     ///
     /// Panics if `range` is not within `guard`'s mapping. Callers
     /// validate the range against `guard.len()` first.
+    #[inline]
     pub(crate) fn guarded(
         guard: RwLockReadGuard<'a, RawMmapMut>,
         reg: PlainReg<'a>,
@@ -2864,8 +2868,7 @@ impl<'a> MappedSlice<'a> {
     }
 
     /// Construct an owned copy (see `MappedSliceInner::Snapshot`).
-    // Only called by the iterators, when atomic views can exist.
-    #[cfg_attr(not(all(feature = "atomic", feature = "iterator")), allow(dead_code))]
+    #[cfg(all(feature = "atomic", feature = "iterator"))]
     pub(crate) fn snapshot(bytes: Box<[u8]>) -> Self {
         Self {
             inner: MappedSliceInner::Snapshot(bytes),
@@ -2891,6 +2894,7 @@ impl<'a> MappedSlice<'a> {
             // as the slice lives (and the slice was only created because
             // no such view existed), so nothing stores to them.
             MappedSliceInner::Guarded { bytes, .. } => unsafe { &**bytes },
+            #[cfg(all(feature = "atomic", feature = "iterator"))]
             MappedSliceInner::Snapshot(b) => b,
         }
     }

@@ -607,17 +607,25 @@ mod imp {
     /// Zero-sized stand-in for the registration of a plain view.
     pub(crate) struct PlainReg<'a>(PhantomData<&'a ViewRegistry>);
 
+    impl PlainReg<'_> {
+        /// A registration that tracks nothing (no atomic views exist).
+        pub(crate) fn untracked() -> Self {
+            PlainReg(PhantomData)
+        }
+    }
+
     impl ViewRegistry {
         pub(crate) fn new() -> Self {
             ViewRegistry
         }
 
+        #[inline]
         pub(crate) fn register_plain(
             &self,
             _start: usize,
             _end: usize,
         ) -> Result<PlainReg<'_>, Conflict> {
-            Ok(PlainReg(PhantomData))
+            Ok(PlainReg::untracked())
         }
 
         /// See the `atomic`-feature version; here every byte is plain.

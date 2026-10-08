@@ -203,7 +203,18 @@ mod all_features {
 
                     // Atomic increment
                     if thread_id < 8 {
-                        let atomic = mmap.atomic_u64(thread_id * 8).expect("thread atomic");
+                        // Since 1.1 an atomic view cannot be created while
+                        // another thread holds a chunk over the same bytes
+                        // (thread 0 reads chunk 0, which holds every
+                        // counter); that is InvalidMode, so retry until the
+                        // chunk is dropped.
+                        let atomic = loop {
+                            match mmap.atomic_u64(thread_id * 8) {
+                                Ok(a) => break a,
+                                Err(mmap_io::MmapIoError::InvalidMode(_)) => thread::yield_now(),
+                                Err(e) => panic!("thread atomic: {e}"),
+                            }
+                        };
                         atomic.fetch_add(100, Ordering::SeqCst);
                     }
                 })

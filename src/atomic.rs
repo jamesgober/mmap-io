@@ -47,7 +47,11 @@
 //!   of the other element size (mixed-size atomic access).
 //!
 //! Disjoint ranges are unaffected, so a header of atomic counters next
-//! to plain data works as before. Copying reads (`read_into`,
+//! to plain data works as before. The check concerns views alive at
+//! that moment: while another thread holds a slice or iterator item
+//! over the same bytes (a `chunks()` scan of the whole file passes over
+//! a header), creating an atomic view there returns `InvalidMode`.
+//! Create long-lived atomic views up front, or retry. Copying reads (`read_into`,
 //! `read_bytes`, `std::io::Read` on `MmapReader`, owned iterators) are
 //! never refused: bytes under a live atomic view are read with atomic
 //! loads of that view's element size. Overlapping atomic views of the

@@ -1614,7 +1614,7 @@ Since 1.1.0 each writable mapping tracks the byte ranges of its live views. An a
 | `AtomicU64` view | `AtomicU32` view (or the reverse) | `InvalidMode` (mixed-size access) |
 | `AtomicU64` view | `AtomicU64` view | allowed |
 
-Disjoint ranges never conflict: counters in a header next to plain data work as before. The checks cover one mapping and its clones; an independent `MemoryMappedFile` of the same file, another process, or raw pointers are not tracked. Without the `atomic` feature nothing is tracked and plain views cost what they did in 1.0. With it, each RW / COW plain view adds one small lock round trip (numbers in `docs/PERFORMANCE.md`).
+Disjoint ranges never conflict: counters in a header next to plain data work as before. The check is about views that are alive at that moment, so a reader on another thread that briefly holds a slice or iterator item over the counters (for example while scanning the whole file with `chunks()`) makes atomic view creation return `InvalidMode` for that moment. Create long-lived atomic views up front, read the counters through them (or with `read_into`), or retry on `InvalidMode`. The checks cover one mapping and its clones; an independent `MemoryMappedFile` of the same file, another process, or raw pointers are not tracked. Without the `atomic` feature nothing is tracked and plain views cost what they did in 1.0. With it, each RW / COW plain view adds one small lock round trip (numbers in `docs/PERFORMANCE.md`).
 
 ```rust
 use std::sync::atomic::Ordering;

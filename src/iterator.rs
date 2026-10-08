@@ -29,6 +29,8 @@ use crate::errors::Result;
 use crate::mmap::{MapVariant, MappedSlice, MemoryMappedFile};
 use crate::raw::RawMmapMut;
 use crate::utils::page_size;
+#[cfg(not(feature = "atomic"))]
+use crate::views::PlainReg;
 use crate::views::ViewRegistry;
 use parking_lot::{RwLock, RwLockReadGuard};
 use std::marker::PhantomData;
@@ -134,6 +136,18 @@ impl<'a> Iterator for ChunkIterator<'a> {
             // which is still held, so the range is valid.
             ChunkSource::Locked { lock, views, .. } => {
                 let guard = lock.read_recursive();
+                // Without the `atomic` feature no atomic view exists, so
+                // there is nothing to register against.
+                #[cfg(not(feature = "atomic"))]
+                {
+                    let _ = views;
+                    Some(MappedSlice::guarded(
+                        guard,
+                        PlainReg::untracked(),
+                        start..end,
+                    ))
+                }
+                #[cfg(feature = "atomic")]
                 Some(match views.register_plain(start, end) {
                     Ok(reg) => MappedSlice::guarded(guard, reg, start..end),
                     Err(_) => {
