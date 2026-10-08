@@ -105,6 +105,7 @@ impl MemoryMappedFile {
         {
             // Windows only supports prefetching (WillNeed equivalent)
             if matches!(advice, MmapAdvice::WillNeed) {
+                // Field names mirror the Win32 definition.
                 #[allow(non_snake_case)]
                 #[repr(C)]
                 struct WIN32_MEMORY_RANGE_ENTRY {

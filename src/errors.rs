@@ -1,24 +1,21 @@
 //! Crate-specific error types for mmap-io.
 
+use std::fmt;
 use std::io;
-use thiserror::Error;
 
 /// Result alias for mmap-io operations.
 pub type Result<T> = std::result::Result<T, MmapIoError>;
 
 /// Error type covering filesystem, mapping, bounds, and concurrency issues.
-#[derive(Debug, Error)]
+#[derive(Debug)]
 pub enum MmapIoError {
     /// Wrapper for `std::io::Error`.
-    #[error("I/O error: {0}")]
-    Io(#[from] io::Error),
+    Io(io::Error),
 
     /// Error returned when attempting an operation in an incompatible mode.
-    #[error("invalid access mode: {0}")]
     InvalidMode(&'static str),
 
     /// Error when a requested offset/length pair is out of bounds.
-    #[error("range out of bounds: offset={offset}, len={len}, total={total}")]
     OutOfBounds {
         /// Requested offset.
         offset: u64,
@@ -29,27 +26,21 @@ pub enum MmapIoError {
     },
 
     /// Error when a flush operation fails.
-    #[error("flush failed: {0}")]
     FlushFailed(String),
 
     /// Error when resizing is not allowed or fails.
-    #[error("resize failed: {0}")]
     ResizeFailed(String),
 
     /// Error when memory advise fails.
-    #[error("advice failed: {0}")]
     AdviceFailed(String),
 
     /// Error when lock operation fails.
-    #[error("lock failed: {0}")]
     LockFailed(String),
 
     /// Error when unlock operation fails.
-    #[error("unlock failed: {0}")]
     UnlockFailed(String),
 
     /// Error when alignment is required for atomic memory views.
-    #[error("atomic alignment error: required={required}, offset={offset}")]
     Misaligned {
         /// Required alignment in bytes.
         required: u64,
@@ -58,6 +49,43 @@ pub enum MmapIoError {
     },
 
     /// Error when starting or running a watcher fails.
-    #[error("watch failed: {0}")]
     WatchFailed(String),
+}
+
+impl fmt::Display for MmapIoError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Io(e) => write!(f, "I/O error: {e}"),
+            Self::InvalidMode(msg) => write!(f, "invalid access mode: {msg}"),
+            Self::OutOfBounds { offset, len, total } => write!(
+                f,
+                "range out of bounds: offset={offset}, len={len}, total={total}"
+            ),
+            Self::FlushFailed(msg) => write!(f, "flush failed: {msg}"),
+            Self::ResizeFailed(msg) => write!(f, "resize failed: {msg}"),
+            Self::AdviceFailed(msg) => write!(f, "advice failed: {msg}"),
+            Self::LockFailed(msg) => write!(f, "lock failed: {msg}"),
+            Self::UnlockFailed(msg) => write!(f, "unlock failed: {msg}"),
+            Self::Misaligned { required, offset } => write!(
+                f,
+                "atomic alignment error: required={required}, offset={offset}"
+            ),
+            Self::WatchFailed(msg) => write!(f, "watch failed: {msg}"),
+        }
+    }
+}
+
+impl std::error::Error for MmapIoError {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        match self {
+            Self::Io(e) => Some(e),
+            _ => None,
+        }
+    }
+}
+
+impl From<io::Error> for MmapIoError {
+    fn from(e: io::Error) -> Self {
+        Self::Io(e)
+    }
 }

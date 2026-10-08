@@ -396,13 +396,15 @@ The crate has a minimal direct dependency set:
 | Dependency      | Purpose                                       | Required |
 |-----------------|-----------------------------------------------|----------|
 | `memmap2`       | Platform abstraction over `mmap` / `MapView`  | Yes      |
-| `parking_lot`   | Faster `RwLock` for interior mutability       | Yes      |
-| `libc`          | POSIX syscall declarations                    | Yes      |
-| `anyhow`        | Error context in tests/examples               | Yes      |
-| `thiserror`     | Derive-based error type definitions           | Yes      |
+| `parking_lot`   | `RwLock` for interior mutability (`send_guard` feature, so guard-holding views can be `Send`) | Yes |
+| `libc`          | POSIX syscall declarations                    | Unix only |
 | `log`           | Standard logging facade                       | Yes      |
-| `cfg-if`        | Cross-platform conditional compilation        | Yes      |
-| `tokio`         | Async helpers                                 | `async`  |
+| `blocking`      | Runtime-agnostic thread pool for async helpers | `async` |
+| `notify`        | Native file-change events                     | `watch`  |
+| `bytes`         | `bytes::Bytes` conversions                    | `bytes`  |
+
+`MmapIoError` implements `Display` and `std::error::Error` by hand;
+no derive crate is used. `tokio` is a dev-dependency only (tests).
 
 New dependencies MUST be justified against:
 - Does the crate already pull in equivalent functionality?

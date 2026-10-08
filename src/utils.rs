@@ -22,19 +22,10 @@ pub fn page_size() -> usize {
 
 /// Query the platform for the current page size. Called at most once
 /// per process via [`PAGE_SIZE`].
+#[cfg(windows)]
 fn query_page_size() -> usize {
-    cfg_if::cfg_if! {
-        if #[cfg(target_os = "windows")] {
-            windows_page_size()
-        } else {
-            unix_page_size()
-        }
-    }
-}
-
-#[cfg(target_os = "windows")]
-fn windows_page_size() -> usize {
     use std::mem::MaybeUninit;
+    // Field names mirror the Win32 `SYSTEM_INFO` definition.
     #[allow(non_snake_case)]
     #[repr(C)]
     struct SYSTEM_INFO {
@@ -71,24 +62,29 @@ fn windows_page_size() -> usize {
     }
 }
 
-#[cfg(not(target_os = "windows"))]
-#[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
-fn unix_page_size() -> usize {
-    // SAFETY: `sysconf` (POSIX.1-2001) with `_SC_PAGESIZE` is a
-    // documented query that takes no pointer arguments and has no
-    // failure mode that requires inspection on supported platforms.
-    // It returns a long that is always positive on the platforms we
-    // support (Linux, macOS, FreeBSD, OpenBSD, illumos). On the rare
-    // chance it returns -1 (POSIX permits this only for queries
-    // sysconf doesn't recognize, which is impossible for _SC_PAGESIZE),
-    // we clamp to 0 via `.max(0)` and the resulting `as usize` cast
-    // produces 0. Callers can detect this degenerate value, but no
-    // documented platform exhibits it.
+/// Query the platform for the current page size. Called at most once
+/// per process via [`PAGE_SIZE`].
+#[cfg(unix)]
+fn query_page_size() -> usize {
+    // SAFETY: `sysconf` (POSIX.1-2001) with `_SC_PAGESIZE` takes no
+    // pointer arguments and only reads system configuration; the
+    // `unsafe` is required solely because it is an `extern "C"`
+    // function.
     // Reference: https://man7.org/linux/man-pages/man3/sysconf.3.html
-    unsafe {
-        let page_size = libc::sysconf(libc::_SC_PAGESIZE);
-        page_size.max(0) as usize
-    }
+    let page_size = unsafe { libc::sysconf(libc::_SC_PAGESIZE) };
+    // POSIX allows -1 only for names sysconf does not know, which
+    // cannot happen for _SC_PAGESIZE. Fall back to 4 KiB rather than
+    // returning 0, which callers would divide by.
+    usize::try_from(page_size)
+        .ok()
+        .filter(|&p| p > 0)
+        .unwrap_or(4096)
+}
+
+/// Fallback for targets that are neither Unix nor Windows.
+#[cfg(not(any(unix, windows)))]
+fn query_page_size() -> usize {
+    4096
 }
 
 /// Align a value up to the nearest multiple of `alignment`.
@@ -145,19 +141,20 @@ pub fn ensure_in_bounds(offset: u64, len: u64, total: u64) -> Result<()> {
 /// Compute a safe byte slice range for a given total length, returning start..end as usize tuple.
 ///
 /// `#[inline]` because this is on every read/write hot path; the
-/// function body is small (one bounds check + two casts) and inlining
-/// removes the call/return overhead.
+/// function body is small (one bounds check + two conversions) and
+/// inlining removes the call/return overhead.
 ///
 /// # Errors
 ///
-/// Returns `MmapIoError::OutOfBounds` if the requested range exceeds the total length.
+/// Returns `MmapIoError::OutOfBounds` if the requested range exceeds
+/// the total length, or does not fit in `usize` (only possible when a
+/// caller passes a `total` larger than the address space).
 #[inline]
-#[allow(clippy::cast_possible_truncation)]
 pub fn slice_range(offset: u64, len: u64, total: u64) -> Result<(usize, usize)> {
     ensure_in_bounds(offset, len, total)?;
-    // Safe to cast because we've already validated bounds against total
-    // which itself must fit in memory (and thus usize)
-    let start = offset as usize;
-    let end = (offset + len) as usize;
-    Ok((start, end))
+    // `offset + len <= total` was checked without overflow above.
+    match (usize::try_from(offset), usize::try_from(offset + len)) {
+        (Ok(start), Ok(end)) => Ok((start, end)),
+        _ => Err(MmapIoError::OutOfBounds { offset, len, total }),
+    }
 }

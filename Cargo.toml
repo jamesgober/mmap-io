@@ -43,9 +43,6 @@ blocking = { version = "1", optional = true }
 # `deadlock_detection` feature at compile time.
 parking_lot = { version = "0.12", features = ["send_guard"] }
 log = "0.4"
-thiserror = "1.0"
-cfg-if = "1.0"
-libc = { version = "0.2", optional = false }
 # Native file-change watchers (inotify on Linux, FSEvents on macOS,
 # ReadDirectoryChangesW on Windows). Optional; activated by the
 # `watch` feature. Default features off to keep the dep tree tight.
@@ -55,6 +52,11 @@ notify = { version = "6", default-features = false, features = ["macos_fsevent"]
 # hyper / tower / tonic / axum / reqwest ecosystem. Gated under the
 # `bytes` feature so callers who don't need it pay zero compile cost.
 bytes = { version = "1", optional = true }
+
+# POSIX syscalls (madvise, mlock/munlock, sysconf,
+# posix_fadvise). Only Unix code paths use it.
+[target.'cfg(unix)'.dependencies]
+libc = "0.2"
 
 [dev-dependencies]
 # Benchmarking framework
@@ -138,5 +140,4 @@ name = "10_ipc_shared_state"
 required-features = ["atomic"]
 
 [package.metadata.docs.rs]
-features = ["async"]
 all-features = true

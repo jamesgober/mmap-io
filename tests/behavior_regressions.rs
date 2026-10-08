@@ -425,6 +425,46 @@ fn zero_length_requests_are_accepted_at_any_offset() {
 // ---------------------------------------------------------------------
 
 #[test]
+fn error_display_strings_are_stable() {
+    use std::error::Error as _;
+    let io = MmapIoError::from(std::io::Error::other("boom"));
+    assert_eq!(io.to_string(), "I/O error: boom");
+    assert!(io.source().is_some(), "Io keeps its source");
+
+    let cases: Vec<(MmapIoError, &str)> = vec![
+        (
+            MmapIoError::InvalidMode("nope"),
+            "invalid access mode: nope",
+        ),
+        (
+            MmapIoError::OutOfBounds {
+                offset: 1,
+                len: 2,
+                total: 3,
+            },
+            "range out of bounds: offset=1, len=2, total=3",
+        ),
+        (MmapIoError::FlushFailed("f".into()), "flush failed: f"),
+        (MmapIoError::ResizeFailed("r".into()), "resize failed: r"),
+        (MmapIoError::AdviceFailed("a".into()), "advice failed: a"),
+        (MmapIoError::LockFailed("l".into()), "lock failed: l"),
+        (MmapIoError::UnlockFailed("u".into()), "unlock failed: u"),
+        (
+            MmapIoError::Misaligned {
+                required: 8,
+                offset: 3,
+            },
+            "atomic alignment error: required=8, offset=3",
+        ),
+        (MmapIoError::WatchFailed("w".into()), "watch failed: w"),
+    ];
+    for (err, want) in cases {
+        assert_eq!(err.to_string(), want);
+        assert!(err.source().is_none(), "{want} has no source");
+    }
+}
+
+#[test]
 fn reader_reads_whole_file() {
     let path = tmp_path("reader_whole");
     let _ = fs::remove_file(&path);

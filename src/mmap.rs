@@ -2131,6 +2131,8 @@ impl<'a> MappedSliceMut<'a> {
     ///
     /// Note: This method is intentionally named `as_mut` for consistency,
     /// even though it conflicts with the standard trait naming.
+    // Public since 0.9.x; renaming it or replacing it with an `AsMut`
+    // impl would break callers, so the lint is silenced here.
     #[allow(clippy::should_implement_trait)]
     pub fn as_mut(&mut self) -> &mut [u8] {
         // Avoid clone by using the range directly
