@@ -431,7 +431,7 @@ let mmap = MemoryMappedFile::builder("hp.bin")
 - All operations perform bounds checks, under the mapping lock. A zero-length request is accepted at any offset.
 - Every `unsafe` block carries a SAFETY comment; [docs/SAFETY.md](./docs/SAFETY.md) explains the locking model.
 - Interior mutability uses `parking_lot::RwLock`.
-- A live `MappedSlice`, iterator item, or atomic view holds the read lock; a `MappedSliceMut` holds the write lock. Calling a method that needs the other kind of lock (for example `update_region` or `resize` while holding a slice, or `flush` while holding a `MappedSliceMut`) on the same thread deadlocks. Drop the guard first.
+- A live `MappedSlice`, iterator item, or atomic view holds the read lock; a `MappedSliceMut` holds the write lock. Calling a method that needs the other kind of lock (for example `update_region` or `resize` while holding a slice, or `flush` while holding a `MappedSliceMut`) on the same thread deadlocks. Drop the guard first, or use the non-blocking `try_update_region` / `try_as_slice_mut` / `try_as_slice`, which return "would block" (`Ok(false)` / `Ok(None)`) instead of waiting.
 
 ## ⚠️ Unsafe Code Disclaimer
 

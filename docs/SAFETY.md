@@ -47,7 +47,10 @@ Consequences callers must know:
   it covers, and `resize()`. Writes to "disjoint" regions are not
   exempt.
 - Calling a write method on a thread that holds a read view of the
-  same mapping deadlocks. Drop the view first.
+  same mapping deadlocks. Drop the view first, or use the non-blocking
+  `try_update_region` / `try_as_slice_mut` / `try_as_slice` (1.1),
+  which use `try_write` / `try_read_recursive` and return "would
+  block" instead of waiting.
 - Read paths take the lock with `read_recursive()`, so a thread that
   already holds a view can take another one even while a writer is
   queued (a fair `read()` would deadlock there).

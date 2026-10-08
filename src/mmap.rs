@@ -381,13 +381,17 @@ impl MemoryMappedFile {
     /// (indexing, iteration, passing as `&[u8]` via `&*slice` or
     /// `slice.as_ref()`).
     ///
-    /// For RW mappings the slice holds an internal read guard for its
-    /// lifetime. Other readers are not blocked, but every operation
-    /// that needs the write lock is: `resize()`, `update_region()`,
-    /// `as_slice_mut()`, and `chunks_mut()` wait until the slice is
-    /// dropped, whatever region they touch. Calling one of those on
-    /// the thread that holds the slice deadlocks; drop the slice
-    /// first. Taking more read views on the same thread is fine.
+    /// For RW and COW mappings the slice holds an internal read guard
+    /// for its lifetime. Other readers are not blocked, but every
+    /// operation that needs the write lock is: `resize()`,
+    /// `update_region()`, `as_slice_mut()`, and `chunks_mut()` wait
+    /// until the slice is dropped, whatever region they touch. Calling
+    /// one of those on the thread that holds the slice deadlocks; drop
+    /// the slice first, or use the non-blocking
+    /// [`try_update_region`](Self::try_update_region) /
+    /// [`try_as_slice_mut`](Self::try_as_slice_mut), which return
+    /// "would block" instead of waiting. Taking more read views on the
+    /// same thread is fine.
     ///
     /// # Performance
     ///
@@ -514,7 +518,8 @@ impl MemoryMappedFile {
     /// lifetime: every other reader and writer (on any region) waits
     /// until it is dropped. Calling this while the same thread holds a
     /// [`MappedSlice`], an iterator item, or an atomic view of this
-    /// mapping deadlocks.
+    /// mapping deadlocks; [`try_as_slice_mut`](Self::try_as_slice_mut)
+    /// returns `Ok(None)` instead.
     ///
     /// A zero-length request returns an empty slice at any offset (it
     /// still takes the write lock).
@@ -545,7 +550,9 @@ impl MemoryMappedFile {
     /// Takes the mapping's write lock for the duration of the copy, so
     /// it waits for every live [`MappedSlice`], iterator item, and
     /// atomic view to be dropped, whatever region they cover. Calling
-    /// it on a thread that holds one of those deadlocks.
+    /// it on a thread that holds one of those deadlocks;
+    /// [`try_update_region`](Self::try_update_region) returns
+    /// `Ok(false)` instead.
     ///
     /// # Performance
     ///
@@ -575,6 +582,176 @@ impl MemoryMappedFile {
         // Apply flush policy after releasing the write lock; flushing
         // only needs a read guard.
         self.apply_flush_policy(len)
+    }
+
+    /// Non-blocking [`as_slice`](Self::as_slice): returns `Ok(None)`
+    /// instead of waiting when the mapping's lock is held for writing
+    /// (a live [`MappedSliceMut`], a running `update_region`,
+    /// `chunks_mut`, or `resize`). Since 1.1.0.
+    ///
+    /// Readers never block each other, so this only reports "would
+    /// block" while a writer holds the lock; a thread that holds read
+    /// views can always take another. `ReadOnly` mappings have no lock
+    /// and always return `Some`. Otherwise it behaves exactly like
+    /// `as_slice`: the range is validated against the mapping under the
+    /// lock (it is not checked when `None` is returned), a zero-length
+    /// request returns an empty slice at any offset, and a range that
+    /// overlaps a live atomic view is refused.
+    ///
+    /// The call never waits for a lock held by user code. It may wait
+    /// briefly for the crate's internal view-tracking locks, which are
+    /// only held for a few instructions.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`MmapIoError::OutOfBounds`] if `offset + len` exceeds
+    /// the mapping length.
+    /// Returns [`MmapIoError::InvalidMode`] if the range overlaps a
+    /// live atomic view.
+    ///
+    /// # Example
+    ///
+    /// ```
+    /// use mmap_io::MemoryMappedFile;
+    ///
+    /// let dir = tempfile::tempdir()?;
+    /// let mmap = MemoryMappedFile::create_rw(dir.path().join("t.bin"), 64)?;
+    /// mmap.update_region(0, b"hello")?;
+    ///
+    /// let writer = mmap.as_slice_mut(32, 8)?; // holds the write lock
+    /// assert!(mmap.try_as_slice(0, 5)?.is_none()); // would block
+    /// drop(writer);
+    /// let view = mmap.try_as_slice(0, 5)?.expect("lock is free");
+    /// assert_eq!(&*view, b"hello");
+    /// # Ok::<(), Box<dyn std::error::Error>>(())
+    /// ```
+    pub fn try_as_slice(&self, offset: u64, len: u64) -> Result<Option<MappedSlice<'_>>> {
+        if len == 0 {
+            return Ok(Some(MappedSlice::owned(&[])));
+        }
+        let map = match &self.inner.map {
+            MapVariant::Ro(m) => MapRead::Shared(m),
+            MapVariant::Rw(lock) | MapVariant::Cow(lock) => match lock.try_read_recursive() {
+                Some(guard) => MapRead::Guarded(guard),
+                None => return Ok(None),
+            },
+        };
+        let (start, end) = slice_range(offset, len, map.len() as u64)?;
+        map.into_view(&self.inner.views, start..end).map(Some)
+    }
+
+    /// Non-blocking [`as_slice_mut`](Self::as_slice_mut): returns
+    /// `Ok(None)` instead of waiting when any view or writer holds the
+    /// mapping's lock. Since 1.1.0.
+    ///
+    /// This is the way to write from a thread that may itself hold a
+    /// [`MappedSlice`], an iterator item, or an atomic view of the
+    /// mapping: `as_slice_mut` would deadlock there, this returns
+    /// `Ok(None)`. Otherwise it behaves like `as_slice_mut`: the range
+    /// is validated under the lock (not checked when `None` is
+    /// returned), and a zero-length request returns an empty slice.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`MmapIoError::InvalidMode`] on a `ReadOnly` mapping
+    /// (checked before the lock, so also when it would block).
+    /// Returns [`MmapIoError::OutOfBounds`] if the range exceeds the
+    /// mapping length.
+    ///
+    /// # Example
+    ///
+    /// ```
+    /// use mmap_io::MemoryMappedFile;
+    ///
+    /// let dir = tempfile::tempdir()?;
+    /// let mmap = MemoryMappedFile::create_rw(dir.path().join("t.bin"), 64)?;
+    /// let reader = mmap.as_slice(0, 8)?;
+    /// // `as_slice_mut` would deadlock here: this thread holds a view.
+    /// assert!(mmap.try_as_slice_mut(16, 8)?.is_none());
+    /// drop(reader);
+    /// let mut w = mmap.try_as_slice_mut(16, 8)?.expect("lock is free");
+    /// w.copy_from_slice(b"12345678");
+    /// # Ok::<(), Box<dyn std::error::Error>>(())
+    /// ```
+    pub fn try_as_slice_mut(&self, offset: u64, len: u64) -> Result<Option<MappedSliceMut<'_>>> {
+        let lock = self.write_lock("mutable access on read-only mapping")?;
+        let Some(guard) = lock.try_write() else {
+            return Ok(None);
+        };
+        let (start, end) = if len == 0 {
+            (0, 0)
+        } else {
+            slice_range(offset, len, guard.len() as u64)?
+        };
+        Ok(Some(MappedSliceMut {
+            guard,
+            range: start..end,
+            pending: self.pending_counter(),
+        }))
+    }
+
+    /// Non-blocking [`update_region`](Self::update_region): returns
+    /// `Ok(false)` instead of waiting when any view or writer holds the
+    /// mapping's lock, and `Ok(true)` once the bytes are written. Since
+    /// 1.1.0.
+    ///
+    /// The return value is a `bool` rather than `Option<()>` because
+    /// the only information is "written or not". `Ok(false)` means
+    /// nothing was written and nothing was validated; retry later or
+    /// drop the views this thread holds. Use it where `update_region`
+    /// could deadlock: on a thread that may hold a [`MappedSlice`], an
+    /// iterator item, or an atomic view of the mapping.
+    ///
+    /// Otherwise it behaves like `update_region`: empty `data` returns
+    /// `Ok(true)` at any offset, the range is validated under the lock,
+    /// the write is counted in [`pending_bytes`](Self::pending_bytes),
+    /// and the [`FlushPolicy`] runs. A policy flush happens under the
+    /// same lock, downgraded to a read guard, so the call never waits
+    /// for another lock holder; it does wait for the disk when the
+    /// policy flushes.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`MmapIoError::InvalidMode`] on a `ReadOnly` mapping
+    /// (checked before the lock).
+    /// Returns [`MmapIoError::OutOfBounds`] if the range exceeds the
+    /// mapping length.
+    /// Returns [`MmapIoError::FlushFailed`] if a policy flush fails
+    /// (the bytes are written in that case).
+    ///
+    /// # Example
+    ///
+    /// ```
+    /// use mmap_io::MemoryMappedFile;
+    ///
+    /// let dir = tempfile::tempdir()?;
+    /// let mmap = MemoryMappedFile::create_rw(dir.path().join("t.bin"), 64)?;
+    /// let view = mmap.as_slice(0, 4)?;
+    /// // `update_region` would deadlock on this thread.
+    /// assert!(!mmap.try_update_region(8, b"data")?);
+    /// drop(view);
+    /// assert!(mmap.try_update_region(8, b"data")?);
+    /// assert_eq!(&*mmap.as_slice(8, 4)?, b"data");
+    /// # Ok::<(), Box<dyn std::error::Error>>(())
+    /// ```
+    pub fn try_update_region(&self, offset: u64, data: &[u8]) -> Result<bool> {
+        if data.is_empty() {
+            return Ok(true);
+        }
+        let lock = self.write_lock("Update region requires ReadWrite or CopyOnWrite mode.")?;
+        let Some(mut guard) = lock.try_write() else {
+            return Ok(false);
+        };
+        let len = data.len() as u64;
+        let (start, end) = slice_range(offset, len, guard.len() as u64)?;
+        guard[start..end].copy_from_slice(data);
+        if self.count_update(len) {
+            // Flush under the lock we already hold, downgraded so
+            // readers can proceed; never wait for another holder.
+            let guard = RwLockWriteGuard::downgrade(guard);
+            self.flush_mapped(&guard)?;
+        }
+        Ok(true)
     }
 
     /// Async write that enforces Async-Only Flushing semantics: always flush after write.
@@ -648,28 +825,31 @@ impl MemoryMappedFile {
             // Copy-on-write pages are private: there is nothing to
             // write back, by design.
             MapVariant::Ro(_) | MapVariant::Cow(_) => Ok(()),
-            MapVariant::Rw(lock) => {
-                let guard = lock.read_recursive();
-                // Take the counters before flushing: anything recorded
-                // after this point (e.g. an atomic view dropped during
-                // the flush) stays pending for the next flush.
-                let bytes = self
-                    .inner
-                    .written_since_last_flush
-                    .swap(0, Ordering::AcqRel);
-                let writes = self.inner.writes_since_last_flush.swap(0, Ordering::AcqRel);
-                if let Err(e) = guard.flush() {
-                    self.inner
-                        .written_since_last_flush
-                        .fetch_add(bytes, Ordering::AcqRel);
-                    self.inner
-                        .writes_since_last_flush
-                        .fetch_add(writes, Ordering::AcqRel);
-                    return Err(MmapIoError::FlushFailed(e.to_string()));
-                }
-                Ok(())
-            }
+            MapVariant::Rw(lock) => self.flush_mapped(&lock.read_recursive()),
         }
+    }
+
+    /// Durably flush `map`, the RW mapping the caller holds a guard
+    /// on, and reset the pending counters.
+    fn flush_mapped(&self, map: &RawMmapMut) -> Result<()> {
+        // Take the counters before flushing: anything recorded after
+        // this point (e.g. an atomic view dropped during the flush)
+        // stays pending for the next flush.
+        let bytes = self
+            .inner
+            .written_since_last_flush
+            .swap(0, Ordering::AcqRel);
+        let writes = self.inner.writes_since_last_flush.swap(0, Ordering::AcqRel);
+        if let Err(e) = map.flush() {
+            self.inner
+                .written_since_last_flush
+                .fetch_add(bytes, Ordering::AcqRel);
+            self.inner
+                .writes_since_last_flush
+                .fetch_add(writes, Ordering::AcqRel);
+            return Err(MmapIoError::FlushFailed(e.to_string()));
+        }
+        Ok(())
     }
 
     /// Async flush changes to disk. For read-only or COW mappings, this is a no-op.
@@ -1696,8 +1876,19 @@ impl MemoryMappedFile {
     /// policy. Called after the write lock has been released. A no-op
     /// on copy-on-write mappings.
     fn apply_flush_policy(&self, written: u64) -> Result<()> {
+        if self.count_update(written) {
+            self.flush()
+        } else {
+            Ok(())
+        }
+    }
+
+    /// Count one `update_region` of `written` bytes and report whether
+    /// the flush policy asks for a flush now. Always `false` on
+    /// copy-on-write mappings, which have nothing to flush.
+    fn count_update(&self, written: u64) -> bool {
         if !self.tracks_writes() {
-            return Ok(());
+            return false;
         }
         let pending = self
             .inner
@@ -1712,22 +1903,10 @@ impl MemoryMappedFile {
         match self.inner.flush_policy {
             // EveryMillis flushes from its background thread, which
             // checks `pending_bytes()`.
-            FlushPolicy::Never | FlushPolicy::Manual | FlushPolicy::EveryMillis(_) => Ok(()),
-            FlushPolicy::Always => self.flush(),
-            FlushPolicy::EveryBytes(n) => {
-                if n > 0 && pending >= n as u64 {
-                    self.flush()
-                } else {
-                    Ok(())
-                }
-            }
-            FlushPolicy::EveryWrites(w) => {
-                if w > 0 && writes >= w as u64 {
-                    self.flush()
-                } else {
-                    Ok(())
-                }
-            }
+            FlushPolicy::Never | FlushPolicy::Manual | FlushPolicy::EveryMillis(_) => false,
+            FlushPolicy::Always => true,
+            FlushPolicy::EveryBytes(n) => n > 0 && pending >= n as u64,
+            FlushPolicy::EveryWrites(w) => w > 0 && writes >= w as u64,
         }
     }
 

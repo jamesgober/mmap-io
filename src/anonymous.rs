@@ -189,6 +189,101 @@ impl AnonymousMmap {
         Ok(MappedSliceMut::guarded(guard, start..end))
     }
 
+    /// Non-blocking [`as_slice`](Self::as_slice): returns `Ok(None)`
+    /// instead of waiting while a writer ([`as_mut_slice`](Self::as_mut_slice)
+    /// guard or a running `update_region`) holds the lock. Same
+    /// validation as `as_slice` otherwise. Since 1.1.0.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`MmapIoError::OutOfBounds`] if the range exceeds the
+    /// mapping length.
+    /// Returns [`MmapIoError::InvalidMode`] if the range overlaps a live
+    /// atomic view.
+    ///
+    /// # Example
+    ///
+    /// ```
+    /// use mmap_io::AnonymousMmap;
+    ///
+    /// let mmap = AnonymousMmap::new(4096)?;
+    /// let w = mmap.as_mut_slice(0, 16)?;
+    /// assert!(mmap.try_as_slice(100, 4)?.is_none());
+    /// drop(w);
+    /// assert!(mmap.try_as_slice(100, 4)?.is_some());
+    /// # Ok::<(), mmap_io::MmapIoError>(())
+    /// ```
+    pub fn try_as_slice(&self, offset: u64, len: u64) -> Result<Option<MappedSlice<'_>>> {
+        let (start, end) = slice_range(offset, len, self.len)?;
+        let Some(guard) = self.map.try_read_recursive() else {
+            return Ok(None);
+        };
+        let reg = self.views.register_plain(start, end)?;
+        Ok(Some(MappedSlice::guarded(guard, reg, start..end)))
+    }
+
+    /// Non-blocking [`as_mut_slice`](Self::as_mut_slice): returns
+    /// `Ok(None)` instead of waiting while any view or writer holds the
+    /// lock, which is also what it returns on a thread that holds a
+    /// view of this mapping (where `as_mut_slice` deadlocks). Since
+    /// 1.1.0.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`MmapIoError::OutOfBounds`] if the range exceeds the
+    /// mapping length (checked before the lock: the length of an
+    /// anonymous mapping never changes).
+    ///
+    /// # Example
+    ///
+    /// ```
+    /// use mmap_io::AnonymousMmap;
+    ///
+    /// let mmap = AnonymousMmap::new(4096)?;
+    /// let view = mmap.as_slice(0, 8)?;
+    /// assert!(mmap.try_as_mut_slice(8, 8)?.is_none());
+    /// drop(view);
+    /// mmap.try_as_mut_slice(8, 8)?.expect("free").fill(1);
+    /// # Ok::<(), mmap_io::MmapIoError>(())
+    /// ```
+    pub fn try_as_mut_slice(&self, offset: u64, len: u64) -> Result<Option<MappedSliceMut<'_>>> {
+        let (start, end) = slice_range(offset, len, self.len)?;
+        Ok(self
+            .map
+            .try_write()
+            .map(|guard| MappedSliceMut::guarded(guard, start..end)))
+    }
+
+    /// Non-blocking [`update_region`](Self::update_region): returns
+    /// `Ok(false)` instead of waiting while any view or writer holds
+    /// the lock, `Ok(true)` once the bytes are written. Since 1.1.0.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`MmapIoError::OutOfBounds`] if the range exceeds the
+    /// mapping length (checked before the lock).
+    ///
+    /// # Example
+    ///
+    /// ```
+    /// use mmap_io::AnonymousMmap;
+    ///
+    /// let mmap = AnonymousMmap::new(64)?;
+    /// let view = mmap.as_slice(0, 4)?;
+    /// assert!(!mmap.try_update_region(8, b"x")?);
+    /// drop(view);
+    /// assert!(mmap.try_update_region(8, b"x")?);
+    /// # Ok::<(), mmap_io::MmapIoError>(())
+    /// ```
+    pub fn try_update_region(&self, offset: u64, data: &[u8]) -> Result<bool> {
+        let (start, end) = slice_range(offset, data.len() as u64, self.len)?;
+        let Some(mut guard) = self.map.try_write() else {
+            return Ok(false);
+        };
+        guard[start..end].copy_from_slice(data);
+        Ok(true)
+    }
+
     /// Raw pointer to the start of the mapping.
     ///
     /// # Safety

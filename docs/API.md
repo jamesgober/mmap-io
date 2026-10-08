@@ -44,6 +44,7 @@ Complete reference for public-facing APIs. Each item lists its signature, parame
   - [as_slice_mut](#as_slice_mut)
   - [read_into](#read_into)
   - [update_region](#update_region-1)
+  - [try_as_slice / try_as_slice_mut / try_update_region](#try_as_slice--try_as_slice_mut--try_update_region) (1.1.0)
   - [flush](#flush-1)
   - [flush_range](#flush_range)
   - [resize](#resize)
@@ -284,6 +285,9 @@ assert_eq!(&buf, b"hello");
 | `update_region` | `fn update_region(&self, offset: u64, data: &[u8]) -> Result<()>` | Copy bytes into the mapping. |
 | `as_slice` | `fn as_slice(&self, offset: u64, len: u64) -> Result<MappedSlice<'_>>` | Borrow a read-only slice (holds a read lock). |
 | `as_mut_slice` | `fn as_mut_slice(&self, offset: u64, len: u64) -> Result<MappedSliceMut<'_>>` | Borrow a mutable slice (holds a write lock). |
+| `try_as_slice` | `fn try_as_slice(&self, offset: u64, len: u64) -> Result<Option<MappedSlice<'_>>>` | 1.1.0. `Ok(None)` instead of waiting for a writer. |
+| `try_as_mut_slice` | `fn try_as_mut_slice(&self, offset: u64, len: u64) -> Result<Option<MappedSliceMut<'_>>>` | 1.1.0. `Ok(None)` instead of waiting for views or writers. |
+| `try_update_region` | `fn try_update_region(&self, offset: u64, data: &[u8]) -> Result<bool>` | 1.1.0. `Ok(false)` instead of waiting. |
 | `as_ptr` | `unsafe fn as_ptr(&self) -> *const u8` | Raw byte pointer for FFI. |
 | `as_mut_ptr` | `unsafe fn as_mut_ptr(&self) -> *mut u8` | Raw mutable byte pointer for FFI. |
 
@@ -291,7 +295,7 @@ assert_eq!(&buf, b"hello");
 
 ### MappedSlice
 
-Read-only slice into a memory-mapped region. For RW mappings it holds the read lock for its lifetime, so `resize` and every write method (`update_region`, `as_slice_mut`, `chunks_mut`) block until the slice is dropped. Calling one of those on the thread that holds the slice deadlocks. `Send + Sync`.
+Read-only slice into a memory-mapped region. For RW and COW mappings it holds the read lock for its lifetime, so `resize` and every write method (`update_region`, `as_slice_mut`, `chunks_mut`) block until the slice is dropped. Calling one of those on the thread that holds the slice deadlocks; the `try_` methods return "would block" instead. `Send + Sync`.
 
 ```rust
 pub struct MappedSlice<'a> { /* private fields */ }
@@ -799,6 +803,48 @@ pub fn update_region(&self, offset: u64, data: &[u8]) -> Result<()>
 ```rust
 let mmap = MemoryMappedFile::create_rw("data.bin", 1024)?;
 mmap.update_region(100, b"Hello")?;
+```
+
+On a thread that may hold a `MappedSlice`, iterator item, or atomic view of the same mapping, `update_region` deadlocks; use [`try_update_region`](#try_as_slice--try_as_slice_mut--try_update_region).
+
+<br>
+
+### try_as_slice / try_as_slice_mut / try_update_region
+
+*(Since 1.1.0)*
+
+```rust
+pub fn try_as_slice(&self, offset: u64, len: u64) -> Result<Option<MappedSlice<'_>>>
+pub fn try_as_slice_mut(&self, offset: u64, len: u64) -> Result<Option<MappedSliceMut<'_>>>
+pub fn try_update_region(&self, offset: u64, data: &[u8]) -> Result<bool>
+```
+
+**Description**: Non-blocking versions of `as_slice`, `as_slice_mut` and `update_region`. Instead of waiting for the mapping's lock they report "would block": `Ok(None)` for the slice methods, `Ok(false)` for `try_update_region` (a `bool` because "written or not" is the only information; `Ok(true)` means the bytes are written). They exist because a live read view (`MappedSlice`, iterator item, atomic view) blocks every writer, including a write on the same thread, which deadlocks with the blocking methods.
+
+| Method | Reports "would block" when |
+|--------|----------------------------|
+| `try_as_slice` | a writer holds the lock (`MappedSliceMut`, running `update_region` / `chunks_mut` / `resize`). Readers never block readers. `ReadOnly` mappings have no lock and always return `Some`. |
+| `try_as_slice_mut` | any view or writer holds the lock, on any thread |
+| `try_update_region` | any view or writer holds the lock, on any thread |
+
+Otherwise they behave like the blocking versions: same mode checks (`InvalidMode` on `ReadOnly` for the write methods, checked before the lock), the range is validated under the lock (not checked when "would block" is returned), zero-length requests are accepted at any offset, `try_as_slice` refuses ranges that overlap a live atomic view, and `try_update_region` counts `pending_bytes()` and runs the flush policy. A policy flush runs under the lock already held (downgraded to a read guard), so the call never waits for another lock holder; it does wait for the disk when the policy flushes. The crate's internal view-tracking locks may be taken for a few instructions.
+
+`AnonymousMmap` has the same three methods (`try_as_slice`, `try_as_mut_slice`, `try_update_region`); its length never changes, so ranges are validated before the lock.
+
+**Example**:
+```rust
+use mmap_io::MemoryMappedFile;
+
+let mmap = MemoryMappedFile::create_rw("data.bin", 1024)?;
+let header = mmap.as_slice(0, 16)?;          // this thread holds a read view
+// mmap.update_region(100, b"x")?;           // would deadlock
+if !mmap.try_update_region(100, b"x")? {
+    // Busy: retry after dropping our views, or hand the write to
+    // another thread.
+}
+drop(header);
+assert!(mmap.try_update_region(100, b"x")?);
+# Ok::<(), mmap_io::MmapIoError>(())
 ```
 
 <br>
