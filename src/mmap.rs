@@ -127,6 +127,15 @@ pub struct MemoryMappedFile {
     pub(crate) inner: Arc<Inner>,
 }
 
+impl MemoryMappedFile {
+    /// Wrap a freshly built `Inner`.
+    fn from_inner(inner: Inner) -> Self {
+        Self {
+            inner: Arc::new(inner),
+        }
+    }
+}
+
 impl std::fmt::Debug for MemoryMappedFile {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         let mut ds = f.debug_struct("MemoryMappedFile");
@@ -923,12 +932,15 @@ impl MemoryMappedFile {
 // under audit IDs E1, E2, E6, E7, F2, F5, F9.
 impl MemoryMappedFile {
     /// Open `path` for read-write, creating it at `default_size` if
-    /// it does not exist. Convenience for the common pattern of
-    /// `if path.exists() { open_rw } else { create_rw }`.
+    /// it does not exist.
     ///
-    /// If the file already exists, `default_size` is **ignored** and
-    /// the file is opened at its current length. Use [`resize`](Self::resize)
-    /// afterward if you need to change the size.
+    /// The file is never truncated. If it already exists and is not
+    /// empty, `default_size` is **ignored** and the file is opened at
+    /// its current length; use [`resize`](Self::resize) afterward if
+    /// you need to change the size. An existing zero-length file is
+    /// extended to `default_size`. Creation is exclusive, so a file
+    /// created concurrently by another process is opened rather than
+    /// overwritten.
     ///
     /// # Sparse file behavior
     ///
@@ -943,8 +955,9 @@ impl MemoryMappedFile {
     /// Returns [`MmapIoError::Io`] if the filesystem rejects the
     /// create or open call.
     /// Returns [`MmapIoError::ResizeFailed`] if `default_size` is zero
-    /// (only checked on the create path; existing files of any size
-    /// are accepted).
+    /// or exceeds the maximum safe size (only checked when the file is
+    /// created or extended; non-empty existing files of any size are
+    /// accepted).
     ///
     /// # Examples
     ///
@@ -956,12 +969,10 @@ impl MemoryMappedFile {
     /// # Ok::<(), mmap_io::MmapIoError>(())
     /// ```
     pub fn open_or_create<P: AsRef<Path>>(path: P, default_size: u64) -> Result<Self> {
-        let p = path.as_ref();
-        if p.exists() {
-            Self::open_rw(p)
-        } else {
-            Self::create_rw(p, default_size)
-        }
+        Self::builder(path)
+            .mode(MmapMode::ReadWrite)
+            .size(default_size)
+            .open_or_create()
     }
 
     /// Construct a `MemoryMappedFile` from a pre-opened `File`. The
@@ -1780,6 +1791,10 @@ impl MemoryMappedFileBuilder {
 
     /// Create a new mapping; for ReadWrite requires size for creation.
     ///
+    /// For `ReadWrite` (the default mode here) the file is created or
+    /// truncated to `size`. For `ReadOnly` and `CopyOnWrite` the file
+    /// must already exist and is opened as-is.
+    ///
     /// # Errors
     ///
     /// Returns [`MmapIoError::ResizeFailed`] if size is missing or zero
@@ -1791,164 +1806,26 @@ impl MemoryMappedFileBuilder {
         let mode = self.mode.unwrap_or(MmapMode::ReadWrite);
         match mode {
             MmapMode::ReadWrite => {
-                let size = self.size.ok_or_else(|| {
-                    MmapIoError::ResizeFailed(
-                        "Size must be set for create() in ReadWrite mode".into(),
-                    )
-                })?;
-                if size == 0 {
-                    return Err(MmapIoError::ResizeFailed(ERR_ZERO_SIZE.into()));
-                }
-                if size > MAX_MMAP_SIZE {
-                    return Err(MmapIoError::ResizeFailed(format!(
-                        "Size {size} exceeds maximum safe limit of {MAX_MMAP_SIZE} bytes"
-                    )));
-                }
-                let path_ref = &self.path;
+                let size = validated_create_size(self.size)?;
                 let file = OpenOptions::new()
                     .create(true)
                     .write(true)
                     .read(true)
                     .truncate(true)
-                    .open(path_ref)?;
+                    .open(&self.path)?;
                 file.set_len(size)?;
-                let len = usize::try_from(size).map_err(|_| {
-                    MmapIoError::ResizeFailed(format!("Size {size} does not fit in usize"))
-                })?;
-                let mmap = map_file_rw(&file, len, builder_huge_pages(&self))?;
-
-                // Build the Inner now (without a live flusher), wrap in Arc.
-                // We attach the time-based flusher AFTER the Arc exists so that
-                // Arc::downgrade produces a real Weak that can later upgrade,
-                // unlike the previous Weak::new() (dangling). C2 fix.
-                let inner = Inner {
-                    path: path_ref.clone(),
-                    file,
-                    mode,
-                    cached_len: AtomicU64::new(size),
-                    map: MapVariant::Rw(RwLock::new(mmap)),
-                    flush_policy: self.flush_policy,
-                    written_since_last_flush: AtomicU64::new(0),
-                    writes_since_last_flush: AtomicU64::new(0),
-                    flusher: RwLock::new(None),
-                    #[cfg(feature = "hugepages")]
-                    huge_pages: self.huge_pages,
-                };
-
-                let mmap_file = MemoryMappedFile {
-                    inner: Arc::new(inner),
-                };
-
-                // C2 fix: install the time-based flusher with a real weak ref.
-                // The flusher is stored on Inner so its background thread's
-                // lifetime is bound to the mapping. When the last Arc<Inner>
-                // drops, the flusher's Drop runs and signals the thread to exit.
-                if let FlushPolicy::EveryMillis(ms) = self.flush_policy {
-                    if ms > 0 {
-                        let inner_weak = Arc::downgrade(&mmap_file.inner);
-                        let flusher = crate::flush::TimeBasedFlusher::new(ms, move || {
-                            // Upgrade the weak ref. Returns None once the
-                            // mapping has been dropped; thread will continue
-                            // to wake but the callback short-circuits.
-                            let Some(inner) = inner_weak.upgrade() else {
-                                return false;
-                            };
-                            // Only flush if there are pending writes.
-                            let pending =
-                                inner.written_since_last_flush.load(Ordering::Acquire) > 0;
-                            if !pending {
-                                return false;
-                            }
-                            let temp = MemoryMappedFile { inner };
-                            temp.flush().is_ok()
-                        });
-                        // Store the flusher on Inner so its background thread
-                        // lives as long as the mapping. The Option allows for
-                        // ms == 0 (which TimeBasedFlusher::new returns None for).
-                        *mmap_file.inner.flusher.write() = flusher;
-                    }
-                }
-
-                // Apply touch hint if specified
-                if self.touch_hint == TouchHint::Eager {
-                    log::debug!("Eagerly touching all pages for {size} bytes");
-                    if let Err(e) = mmap_file.touch_pages() {
-                        log::warn!("Failed to eagerly touch pages: {e}");
-                        // Don't fail the creation, just log the warning
-                    }
-                }
-
-                Ok(mmap_file)
+                self.finish_rw(file, size)
             }
-            MmapMode::ReadOnly => {
-                let path_ref = &self.path;
-                let file = OpenOptions::new().read(true).open(path_ref)?;
-                let len = file.metadata()?.len();
-                // SAFETY: see `MemoryMappedFile::open_ro` for the full
-                // justification of calling `Mmap::map`. The file was
-                // just opened read-only; cross-process modification is
-                // the only residual hazard and is documented as
-                // out-of-scope.
-                let mmap = unsafe { Mmap::map(&file)? };
-                let inner = Inner {
-                    path: path_ref.clone(),
-                    file,
-                    mode,
-                    cached_len: AtomicU64::new(len),
-                    map: MapVariant::Ro(mmap),
-                    flush_policy: FlushPolicy::Never,
-                    written_since_last_flush: AtomicU64::new(0),
-                    writes_since_last_flush: AtomicU64::new(0),
-                    flusher: RwLock::new(None),
-                    #[cfg(feature = "hugepages")]
-                    huge_pages: false,
-                };
-                Ok(MemoryMappedFile {
-                    inner: Arc::new(inner),
-                })
-            }
-            #[cfg(feature = "cow")]
-            MmapMode::CopyOnWrite => {
-                let path_ref = &self.path;
-                let file = OpenOptions::new().read(true).open(path_ref)?;
-                let len = file.metadata()?.len();
-                if len == 0 {
-                    return Err(MmapIoError::ResizeFailed(ERR_ZERO_LENGTH_FILE.into()));
-                }
-                // SAFETY: see `open_cow` above for the full
-                // justification. Identical preconditions: file just
-                // opened read-only, `len > 0` verified, and the COW
-                // mapping is exposed as read-only at the Rust API.
-                let mmap = unsafe {
-                    let mut opts = MmapOptions::new();
-                    opts.len(len as usize);
-                    opts.map(&file)?
-                };
-                let inner = Inner {
-                    path: path_ref.clone(),
-                    file,
-                    mode,
-                    cached_len: AtomicU64::new(len),
-                    map: MapVariant::Cow(mmap),
-                    flush_policy: FlushPolicy::Never,
-                    written_since_last_flush: AtomicU64::new(0),
-                    writes_since_last_flush: AtomicU64::new(0),
-                    flusher: RwLock::new(None),
-                    #[cfg(feature = "hugepages")]
-                    huge_pages: false,
-                };
-                Ok(MemoryMappedFile {
-                    inner: Arc::new(inner),
-                })
-            }
-            #[cfg(not(feature = "cow"))]
-            MmapMode::CopyOnWrite => Err(MmapIoError::InvalidMode(
-                "CopyOnWrite mode requires 'cow' feature",
-            )),
+            MmapMode::ReadOnly | MmapMode::CopyOnWrite => self.open_existing(mode),
         }
     }
 
     /// Open an existing file with provided mode (size ignored).
+    ///
+    /// The mode defaults to `ReadOnly`. For `ReadWrite`, the
+    /// configured `flush_policy` (including the `EveryMillis`
+    /// background flusher), `touch_hint`, and `huge_pages` apply
+    /// exactly as they do for [`create`](Self::create).
     ///
     /// # Errors
     ///
@@ -1959,108 +1836,27 @@ impl MemoryMappedFileBuilder {
     /// zero-length.
     pub fn open(self) -> Result<MemoryMappedFile> {
         let mode = self.mode.unwrap_or(MmapMode::ReadOnly);
-        match mode {
-            MmapMode::ReadOnly => {
-                let path_ref = &self.path;
-                let file = OpenOptions::new().read(true).open(path_ref)?;
-                let len = file.metadata()?.len();
-                // SAFETY: see `MemoryMappedFile::open_ro`.
-                let mmap = unsafe { Mmap::map(&file)? };
-                let inner = Inner {
-                    path: path_ref.clone(),
-                    file,
-                    mode,
-                    cached_len: AtomicU64::new(len),
-                    map: MapVariant::Ro(mmap),
-                    flush_policy: FlushPolicy::Never,
-                    written_since_last_flush: AtomicU64::new(0),
-                    writes_since_last_flush: AtomicU64::new(0),
-                    flusher: RwLock::new(None),
-                    #[cfg(feature = "hugepages")]
-                    huge_pages: false,
-                };
-                Ok(MemoryMappedFile {
-                    inner: Arc::new(inner),
-                })
-            }
-            MmapMode::ReadWrite => {
-                let path_ref = &self.path;
-                let file = OpenOptions::new().read(true).write(true).open(path_ref)?;
-                let len = file.metadata()?.len();
-                if len == 0 {
-                    return Err(MmapIoError::ResizeFailed(ERR_ZERO_LENGTH_FILE.into()));
-                }
-                let map_len = usize::try_from(len).map_err(|_| {
-                    MmapIoError::ResizeFailed(format!("File length {len} does not fit in usize"))
-                })?;
-                let mmap = map_file_rw(&file, map_len, builder_huge_pages(&self))?;
-                let inner = Inner {
-                    path: path_ref.clone(),
-                    file,
-                    mode,
-                    cached_len: AtomicU64::new(len),
-                    map: MapVariant::Rw(RwLock::new(mmap)),
-                    flush_policy: self.flush_policy,
-                    written_since_last_flush: AtomicU64::new(0),
-                    writes_since_last_flush: AtomicU64::new(0),
-                    flusher: RwLock::new(None),
-                    #[cfg(feature = "hugepages")]
-                    huge_pages: self.huge_pages,
-                };
-                Ok(MemoryMappedFile {
-                    inner: Arc::new(inner),
-                })
-            }
-            #[cfg(feature = "cow")]
-            MmapMode::CopyOnWrite => {
-                let path_ref = &self.path;
-                let file = OpenOptions::new().read(true).open(path_ref)?;
-                let len = file.metadata()?.len();
-                if len == 0 {
-                    return Err(MmapIoError::ResizeFailed(ERR_ZERO_LENGTH_FILE.into()));
-                }
-                // SAFETY: see `open_cow`.
-                let mmap = unsafe {
-                    let mut opts = MmapOptions::new();
-                    opts.len(len as usize);
-                    opts.map(&file)?
-                };
-                let inner = Inner {
-                    path: path_ref.clone(),
-                    file,
-                    mode,
-                    cached_len: AtomicU64::new(len),
-                    map: MapVariant::Cow(mmap),
-                    flush_policy: FlushPolicy::Never,
-                    written_since_last_flush: AtomicU64::new(0),
-                    writes_since_last_flush: AtomicU64::new(0),
-                    flusher: RwLock::new(None),
-                    #[cfg(feature = "hugepages")]
-                    huge_pages: false,
-                };
-                Ok(MemoryMappedFile {
-                    inner: Arc::new(inner),
-                })
-            }
-            #[cfg(not(feature = "cow"))]
-            MmapMode::CopyOnWrite => Err(MmapIoError::InvalidMode(
-                "CopyOnWrite mode requires 'cow' feature",
-            )),
-        }
+        self.open_existing(mode)
     }
 
     /// Terminal builder method that opens the file if it exists, or
     /// creates it (using the builder's configured size) if it does
-    /// not. Requires [`.size()`](Self::size) to be set for the
-    /// create path; the existing-file path uses the file's current
-    /// length. The configured `mode` (default `ReadWrite`),
-    /// `flush_policy`, `touch_hint`, and `huge_pages` apply to both
-    /// paths.
+    /// not. The mode defaults to `ReadWrite`.
+    ///
+    /// For `ReadWrite` the file is never truncated: a non-empty
+    /// existing file is mapped at its current length (`size` is
+    /// ignored), and a missing or zero-length file is created or
+    /// extended to `size`. Creation uses an exclusive create, so two
+    /// processes racing to create the same path cannot truncate each
+    /// other's data. The configured `flush_policy`, `touch_hint`, and
+    /// `huge_pages` apply on both paths. For `ReadOnly` and
+    /// `CopyOnWrite` this is the same as [`open`](Self::open).
     ///
     /// # Errors
     ///
-    /// Returns [`MmapIoError::ResizeFailed`] if creating a new file
-    /// and `.size()` was not set or was set to zero.
+    /// Returns [`MmapIoError::ResizeFailed`] if the file has to be
+    /// created or extended and `.size()` was not set or was set to
+    /// zero.
     /// Returns [`MmapIoError::Io`] if the open or create call fails.
     ///
     /// # Examples
@@ -2077,12 +1873,208 @@ impl MemoryMappedFileBuilder {
     /// # Ok::<(), mmap_io::MmapIoError>(())
     /// ```
     pub fn open_or_create(self) -> Result<MemoryMappedFile> {
-        if self.path.exists() {
-            self.open()
-        } else {
-            self.create()
+        let mode = self.mode.unwrap_or(MmapMode::ReadWrite);
+        if mode != MmapMode::ReadWrite {
+            return self.open_existing(mode);
+        }
+        let (file, len) = open_or_create_rw_file(&self.path, self.size)?;
+        self.finish_rw(file, len)
+    }
+
+    /// Open an existing file in `mode`. Shared by `open`, and by
+    /// `create` / `open_or_create` for the non-RW modes.
+    fn open_existing(self, mode: MmapMode) -> Result<MemoryMappedFile> {
+        match mode {
+            MmapMode::ReadOnly => {
+                let file = OpenOptions::new().read(true).open(&self.path)?;
+                let len = file.metadata()?.len();
+                // SAFETY: see `MemoryMappedFile::open_ro` for the full
+                // justification of calling `Mmap::map`. The file was
+                // just opened read-only; cross-process modification is
+                // the only residual hazard and is documented as
+                // out-of-scope.
+                let mmap = unsafe { Mmap::map(&file)? };
+                Ok(MemoryMappedFile::from_inner(Inner {
+                    path: self.path,
+                    file,
+                    mode,
+                    cached_len: AtomicU64::new(len),
+                    map: MapVariant::Ro(mmap),
+                    flush_policy: FlushPolicy::Never,
+                    written_since_last_flush: AtomicU64::new(0),
+                    writes_since_last_flush: AtomicU64::new(0),
+                    flusher: RwLock::new(None),
+                    #[cfg(feature = "hugepages")]
+                    huge_pages: false,
+                }))
+            }
+            MmapMode::ReadWrite => {
+                let file = OpenOptions::new().read(true).write(true).open(&self.path)?;
+                let len = file.metadata()?.len();
+                if len == 0 {
+                    return Err(MmapIoError::ResizeFailed(ERR_ZERO_LENGTH_FILE.into()));
+                }
+                self.finish_rw(file, len)
+            }
+            #[cfg(feature = "cow")]
+            MmapMode::CopyOnWrite => {
+                let file = OpenOptions::new().read(true).open(&self.path)?;
+                let len = file.metadata()?.len();
+                if len == 0 {
+                    return Err(MmapIoError::ResizeFailed(ERR_ZERO_LENGTH_FILE.into()));
+                }
+                // SAFETY: see `open_cow` for the full justification.
+                // Identical preconditions: file just opened read-only,
+                // `len > 0` verified, and the COW mapping is exposed
+                // as read-only at the Rust API.
+                let mmap = unsafe {
+                    let mut opts = MmapOptions::new();
+                    opts.len(len as usize);
+                    opts.map(&file)?
+                };
+                Ok(MemoryMappedFile::from_inner(Inner {
+                    path: self.path,
+                    file,
+                    mode,
+                    cached_len: AtomicU64::new(len),
+                    map: MapVariant::Cow(mmap),
+                    flush_policy: FlushPolicy::Never,
+                    written_since_last_flush: AtomicU64::new(0),
+                    writes_since_last_flush: AtomicU64::new(0),
+                    flusher: RwLock::new(None),
+                    #[cfg(feature = "hugepages")]
+                    huge_pages: false,
+                }))
+            }
+            #[cfg(not(feature = "cow"))]
+            MmapMode::CopyOnWrite => Err(MmapIoError::InvalidMode(
+                "CopyOnWrite mode requires 'cow' feature",
+            )),
         }
     }
+
+    /// Map an RW file of `len` bytes and apply every builder option:
+    /// huge-page hint, flush policy (starting the `EveryMillis`
+    /// background flusher), and touch hint. Every RW builder path ends
+    /// here so `create`, `open`, and `open_or_create` behave alike.
+    fn finish_rw(self, file: File, len: u64) -> Result<MemoryMappedFile> {
+        let map_len = usize::try_from(len).map_err(|_| {
+            MmapIoError::ResizeFailed(format!("File length {len} does not fit in usize"))
+        })?;
+        let huge = builder_huge_pages(&self);
+        let mmap = map_file_rw(&file, map_len, huge)?;
+        let mmap_file = MemoryMappedFile::from_inner(Inner {
+            path: self.path,
+            file,
+            mode: MmapMode::ReadWrite,
+            cached_len: AtomicU64::new(len),
+            map: MapVariant::Rw(RwLock::new(mmap)),
+            flush_policy: self.flush_policy,
+            written_since_last_flush: AtomicU64::new(0),
+            writes_since_last_flush: AtomicU64::new(0),
+            flusher: RwLock::new(None),
+            #[cfg(feature = "hugepages")]
+            huge_pages: huge,
+        });
+
+        // The flusher holds a Weak that must point at the live Arc, so
+        // it can only be attached after the Arc exists.
+        if let FlushPolicy::EveryMillis(ms) = self.flush_policy {
+            start_time_based_flusher(&mmap_file, ms);
+        }
+
+        if self.touch_hint == TouchHint::Eager {
+            log::debug!("Eagerly touching all pages for {len} bytes");
+            if let Err(e) = mmap_file.touch_pages() {
+                // Prewarming is an optimization; never fail the open.
+                log::warn!("Failed to eagerly touch pages: {e}");
+            }
+        }
+        Ok(mmap_file)
+    }
+}
+
+/// Validate the builder size for creating a new RW file.
+fn validated_create_size(size: Option<u64>) -> Result<u64> {
+    let size = size.ok_or_else(|| {
+        MmapIoError::ResizeFailed("Size must be set for create() in ReadWrite mode".into())
+    })?;
+    if size == 0 {
+        return Err(MmapIoError::ResizeFailed(ERR_ZERO_SIZE.into()));
+    }
+    if size > MAX_MMAP_SIZE {
+        return Err(MmapIoError::ResizeFailed(format!(
+            "Size {size} exceeds maximum safe limit of {MAX_MMAP_SIZE} bytes"
+        )));
+    }
+    Ok(size)
+}
+
+/// Open `path` read-write without ever truncating it, creating it at
+/// `size` if it does not exist and extending it to `size` if it is
+/// empty. Returns the file and its length.
+///
+/// The create step uses `create_new`, so a file created by someone else
+/// between our open attempt and our create is opened, not truncated.
+fn open_or_create_rw_file(path: &Path, size: Option<u64>) -> Result<(File, u64)> {
+    let mut opts = OpenOptions::new();
+    opts.read(true).write(true);
+    // Two passes cover the race where another process creates the
+    // file between our failed open and our exclusive create.
+    for _ in 0..2 {
+        match opts.open(path) {
+            Ok(file) => {
+                let len = file.metadata()?.len();
+                if len > 0 {
+                    return Ok((file, len));
+                }
+                let size = validated_create_size(size)?;
+                file.set_len(size)?;
+                return Ok((file, size));
+            }
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+                let size = validated_create_size(size)?;
+                match OpenOptions::new()
+                    .read(true)
+                    .write(true)
+                    .create_new(true)
+                    .open(path)
+                {
+                    Ok(file) => {
+                        file.set_len(size)?;
+                        return Ok((file, size));
+                    }
+                    Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => continue,
+                    Err(e) => return Err(e.into()),
+                }
+            }
+            Err(e) => return Err(e.into()),
+        }
+    }
+    // Created and deleted again by someone else twice in a row.
+    Err(MmapIoError::Io(std::io::Error::other(
+        "file was concurrently created and removed",
+    )))
+}
+
+/// Attach an `EveryMillis(ms)` background flusher to `mmap_file`.
+/// `ms == 0` disables time-based flushing.
+fn start_time_based_flusher(mmap_file: &MemoryMappedFile, ms: u64) {
+    let inner_weak = Arc::downgrade(&mmap_file.inner);
+    let flusher = crate::flush::TimeBasedFlusher::new(ms, move || {
+        // Upgrade the weak ref. Returns None once the mapping has
+        // been dropped; the callback then does nothing.
+        let Some(inner) = inner_weak.upgrade() else {
+            return false;
+        };
+        if inner.written_since_last_flush.load(Ordering::Acquire) == 0 {
+            return false;
+        }
+        MemoryMappedFile { inner }.flush().is_ok()
+    });
+    // Stored on Inner so the worker lives exactly as long as the
+    // mapping; dropping Inner stops it.
+    *mmap_file.inner.flusher.write() = flusher;
 }
 
 // Move this to the top-level with other use statements:

@@ -6,15 +6,21 @@
 
 use mmap_io::flush::FlushPolicy;
 use mmap_io::segment::SegmentMut;
-use mmap_io::{MemoryMappedFile, MmapMode};
+use mmap_io::{MemoryMappedFile, MmapIoError, MmapMode};
 use std::fs;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
+use std::thread;
+use std::time::{Duration, Instant};
 
 fn tmp_path(name: &str) -> PathBuf {
     let mut p = std::env::temp_dir();
     p.push(format!("mmap_io_behavior_{}_{}", name, std::process::id()));
     p
+}
+
+fn read_file(path: &Path) -> Vec<u8> {
+    fs::read(path).expect("read file")
 }
 
 // ---------------------------------------------------------------------
@@ -176,6 +182,117 @@ fn shrink_truncates_file_and_regrow_reads_zeros() {
         "bytes cut off by the shrink must not come back"
     );
     drop(mmap);
+    let _ = fs::remove_file(&path);
+}
+
+// ---------------------------------------------------------------------
+// Builder parity
+// ---------------------------------------------------------------------
+
+fn wait_until(timeout: Duration, mut pred: impl FnMut() -> bool) -> bool {
+    let deadline = Instant::now() + timeout;
+    while Instant::now() < deadline {
+        if pred() {
+            return true;
+        }
+        thread::sleep(Duration::from_millis(10));
+    }
+    pred()
+}
+
+#[test]
+fn builder_open_starts_time_based_flusher() {
+    let path = tmp_path("builder_open_millis");
+    let _ = fs::remove_file(&path);
+    fs::write(&path, vec![0u8; 4096]).expect("seed file");
+    let mmap = MemoryMappedFile::builder(&path)
+        .mode(MmapMode::ReadWrite)
+        .flush_policy(FlushPolicy::EveryMillis(20))
+        .open()
+        .expect("open");
+    mmap.update_region(0, b"hello").expect("write");
+    assert!(
+        wait_until(Duration::from_secs(3), || mmap.pending_bytes() == 0),
+        "EveryMillis flusher never ran for a builder-opened mapping"
+    );
+    drop(mmap);
+    let _ = fs::remove_file(&path);
+}
+
+#[test]
+fn builder_open_or_create_existing_file_defaults_to_read_write() {
+    let path = tmp_path("builder_ooc_rw");
+    let _ = fs::remove_file(&path);
+    fs::write(&path, vec![1u8; 4096]).expect("seed file");
+    let mmap = MemoryMappedFile::builder(&path)
+        .size(1 << 20)
+        .flush_policy(FlushPolicy::EveryMillis(20))
+        .open_or_create()
+        .expect("open_or_create");
+    assert_eq!(mmap.mode(), MmapMode::ReadWrite);
+    assert_eq!(mmap.len(), 4096, "existing file keeps its length");
+    mmap.update_region(0, b"x").expect("write");
+    assert!(wait_until(Duration::from_secs(3), || mmap.pending_bytes() == 0));
+    drop(mmap);
+    let _ = fs::remove_file(&path);
+}
+
+// ---------------------------------------------------------------------
+// open_or_create / create_mmap_async
+// ---------------------------------------------------------------------
+
+#[test]
+fn open_or_create_preserves_existing_data() {
+    let path = tmp_path("ooc_preserve");
+    let _ = fs::remove_file(&path);
+    fs::write(&path, b"keep me").expect("seed file");
+    let mmap = MemoryMappedFile::open_or_create(&path, 4096).expect("open_or_create");
+    assert_eq!(mmap.len(), 7);
+    assert_eq!(mmap.as_slice(0, 7).expect("slice"), b"keep me");
+    drop(mmap);
+    assert_eq!(read_file(&path), b"keep me");
+    let _ = fs::remove_file(&path);
+}
+
+#[test]
+fn open_or_create_sizes_existing_empty_file() {
+    let path = tmp_path("ooc_empty");
+    let _ = fs::remove_file(&path);
+    fs::write(&path, b"").expect("seed empty file");
+    let mmap = MemoryMappedFile::open_or_create(&path, 4096).expect("open_or_create");
+    assert_eq!(mmap.len(), 4096);
+    drop(mmap);
+    let _ = fs::remove_file(&path);
+}
+
+#[test]
+fn open_or_create_rejects_zero_default_for_new_file() {
+    let path = tmp_path("ooc_zero");
+    let _ = fs::remove_file(&path);
+    assert!(matches!(
+        MemoryMappedFile::open_or_create(&path, 0),
+        Err(MmapIoError::ResizeFailed(_))
+    ));
+    assert!(
+        !path.exists(),
+        "a failed open_or_create must not leave a file"
+    );
+}
+
+#[cfg(feature = "async")]
+#[tokio::test(flavor = "multi_thread")]
+async fn create_mmap_async_validates_before_truncating() {
+    use mmap_io::manager::r#async::create_mmap_async;
+    let path = tmp_path("async_create_validate");
+    let _ = fs::remove_file(&path);
+    fs::write(&path, b"precious").expect("seed file");
+    let r = create_mmap_async(&path, 0).await;
+    assert!(matches!(r, Err(MmapIoError::ResizeFailed(_))));
+    assert_eq!(
+        read_file(&path),
+        b"precious",
+        "file truncated before validation"
+    );
     let _ = fs::remove_file(&path);
 }
 

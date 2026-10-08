@@ -106,24 +106,18 @@ pub mod r#async {
 
     /// Create a new file with the specified size asynchronously, then map it RW.
     ///
+    /// Same behavior as [`MemoryMappedFile::create_rw`] (truncates an
+    /// existing file), run on the `blocking` thread pool. The size is
+    /// validated before the file is touched.
+    ///
     /// # Errors
     ///
-    /// Returns errors from the underlying filesystem call or mapping.
+    /// Returns `MmapIoError::ResizeFailed` if `size` is zero or exceeds
+    /// the maximum safe size; otherwise errors from the underlying
+    /// filesystem call or mapping.
     pub async fn create_mmap_async<P: AsRef<Path>>(path: P, size: u64) -> Result<MemoryMappedFile> {
         let path: PathBuf = path.as_ref().to_path_buf();
-        blocking::unblock(move || -> Result<MemoryMappedFile> {
-            let file = fs::OpenOptions::new()
-                .create(true)
-                .write(true)
-                .read(true)
-                .truncate(true)
-                .open(&path)
-                .map_err(MmapIoError::Io)?;
-            file.set_len(size).map_err(MmapIoError::Io)?;
-            drop(file);
-            MemoryMappedFile::open_rw(&path)
-        })
-        .await
+        blocking::unblock(move || MemoryMappedFile::create_rw(&path, size)).await
     }
 
     /// Copy a file asynchronously.

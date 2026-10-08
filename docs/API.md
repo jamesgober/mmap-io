@@ -907,14 +907,16 @@ pub fn open_or_create<P: AsRef<Path>>(path: P, default_size: u64) -> Result<Self
 
 **Description**: Opens `path` for read-write if it exists; creates it at `default_size` bytes otherwise. The classic "open if there, create if not" pattern in one call. Since 0.9.8.
 
+The file is never truncated. A non-empty existing file is mapped at its current length; an existing zero-length file is extended to `default_size`. Creation is exclusive (`create_new`), so if another process creates the file at the same moment, this call opens that file instead of overwriting it. (Before 1.1 an `exists()` check followed by a truncating create could wipe a file created in between.)
+
 **Parameters**:
 - `path`: Path to open or create
-- `default_size`: Size used only on the create path; ignored when the file already exists
+- `default_size`: Size used when the file is created or is empty; ignored for a non-empty existing file
 
 **Returns**: `Result<MemoryMappedFile>` in ReadWrite mode
 
 **Errors**:
-- `MmapIoError::ResizeFailed` if creating and `default_size` is zero
+- `MmapIoError::ResizeFailed` if the file must be created or extended and `default_size` is zero (no file is left behind)
 - `MmapIoError::Io` if the filesystem rejects the call
 
 **Example**:
