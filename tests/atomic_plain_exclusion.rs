@@ -2,6 +2,9 @@
 //! alive at the same time (1.1.0). Disjoint ranges are unaffected, and
 //! copying reads read atomic bytes with atomic loads.
 
+// These tests map real files or anonymous memory; Miri cannot run
+// the mmap family of syscalls.
+#![cfg(not(miri))]
 #![cfg(feature = "atomic")]
 
 use std::sync::atomic::Ordering;

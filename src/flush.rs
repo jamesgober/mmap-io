@@ -143,6 +143,10 @@ mod tests {
     use super::*;
     use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 
+    #[cfg_attr(
+        miri,
+        ignore = "parking_lot_core futex call: Miri rejects &AtomicI32 for the *mut u32 syscall argument (dependency false positive)"
+    )]
     #[test]
     fn drop_stops_and_joins_the_worker() {
         let calls = Arc::new(AtomicUsize::new(0));
@@ -169,6 +173,10 @@ mod tests {
         );
     }
 
+    #[cfg_attr(
+        miri,
+        ignore = "parking_lot_core futex call: Miri rejects &AtomicI32 for the *mut u32 syscall argument (dependency false positive)"
+    )]
     #[test]
     fn drop_with_long_interval_returns_promptly() {
         let flusher = TimeBasedFlusher::new(60_000, || false).expect("flusher");
@@ -177,6 +185,10 @@ mod tests {
         assert!(start.elapsed() < Duration::from_secs(5));
     }
 
+    #[cfg_attr(
+        miri,
+        ignore = "parking_lot_core futex call: Miri rejects &AtomicI32 for the *mut u32 syscall argument (dependency false positive)"
+    )]
     #[test]
     fn drop_on_the_worker_thread_does_not_panic() {
         // The callback drops the flusher itself, so Drop runs on the

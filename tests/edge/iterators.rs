@@ -281,6 +281,7 @@ fn chunks_mut_is_refused_on_read_only_mappings() {
 /// exception, but a zero chunk size returns `Ok(())` before the mode is
 /// checked. Harmless (nothing is written), but the error contract is
 /// not what the docs say.
+#[cfg_attr(miri, ignore = "FFI mmap syscalls are not supported by Miri")]
 #[test]
 fn chunks_mut_zero_chunk_size_still_checks_the_mode() {
     let (path, m, _) = rw(100, 9);

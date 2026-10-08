@@ -7,6 +7,9 @@
 //! nothing reaches the file, flushes are no-ops, and the locking rules
 //! match `ReadWrite`.
 
+// These tests map real files or anonymous memory; Miri cannot run
+// the mmap family of syscalls.
+#![cfg(not(miri))]
 #![cfg(feature = "cow")]
 
 use std::fs;

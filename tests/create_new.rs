@@ -1,5 +1,9 @@
 //! `MemoryMappedFileBuilder::create_new` (1.1.0): exclusive create.
 
+// These tests map real files or anonymous memory; Miri cannot run
+// the mmap family of syscalls.
+#![cfg(not(miri))]
+
 use std::io::ErrorKind;
 use std::sync::{Arc, Barrier};
 use std::thread;

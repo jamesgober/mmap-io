@@ -1,12 +1,12 @@
 //! Raw memory mappings: the thin platform layer under
-//! [`MemoryMappedFile`](crate::MemoryMappedFile).
+//! [`MemoryMappedFile`].
 //!
 //! This module owns the operating-system calls that create, flush and
 //! release a mapping (`mmap` / `msync` / `munmap` on Unix,
 //! `CreateFileMappingW` / `MapViewOfFile` / `FlushViewOfFile` /
 //! `UnmapViewOfFile` on Windows) and nothing else: no locks, no flush
 //! policy, no path bookkeeping. It returns [`std::io::Result`] so it
-//! can be used without [`MmapIoError`](crate::MmapIoError).
+//! can be used without [`MmapIoError`].
 //!
 //! The API follows the shape of the `memmap2` crate so code written
 //! against it ports by renaming types:

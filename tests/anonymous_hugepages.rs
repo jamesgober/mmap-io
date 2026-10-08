@@ -1,6 +1,9 @@
 //! `AnonymousMmap::with_huge_pages` (1.1.0): `MAP_HUGETLB` with a
 //! fallback to base pages plus `MADV_HUGEPAGE`.
 
+// These tests map real files or anonymous memory; Miri cannot run
+// the mmap family of syscalls.
+#![cfg(not(miri))]
 #![cfg(feature = "hugepages")]
 
 use mmap_io::{AnonymousMmap, MmapIoError};

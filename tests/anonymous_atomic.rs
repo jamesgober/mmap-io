@@ -1,5 +1,8 @@
 //! Atomic views on `AnonymousMmap` (1.1.0).
 
+// These tests map real files or anonymous memory; Miri cannot run
+// the mmap family of syscalls.
+#![cfg(not(miri))]
 #![cfg(feature = "atomic")]
 
 use std::sync::atomic::Ordering;

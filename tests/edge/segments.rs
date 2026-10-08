@@ -187,6 +187,7 @@ fn hostile_segment_ranges_are_rejected_with_exact_fields() {
 /// fits in the parent (e.g. after a shrinking resize)". It only checks
 /// the bytes being written, so a short write into a segment whose tail
 /// was cut off still succeeds.
+#[cfg_attr(miri, ignore = "FFI mmap syscalls are not supported by Miri")]
 #[test]
 fn segment_write_rejects_a_segment_cut_by_a_shrink() {
     let path = tmp_path("segcut.bin");

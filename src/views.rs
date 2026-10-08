@@ -543,6 +543,10 @@ mod imp {
             assert!(total <= 100, "slots were not reused: {total}");
         }
 
+        #[cfg_attr(
+            miri,
+            ignore = "parking_lot_core futex call: Miri rejects &AtomicI32 for the *mut u32 syscall argument (dependency false positive)"
+        )]
         #[test]
         fn racing_registrations_never_both_succeed() {
             use std::sync::{Arc, Barrier};

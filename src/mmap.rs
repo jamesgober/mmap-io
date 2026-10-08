@@ -3360,13 +3360,18 @@ mod smaps_tests {
     //! Unit tests for the private `/proc/self/smaps` parsing behind
     //! `is_hugepage_backed`.
 
-    use super::{parse_smaps_kb_field, parse_smaps_range, smaps_hugepage_lookup};
+    use super::{parse_smaps_kb_field, smaps_hugepage_lookup};
 
     const FIELDS: &[&str] = &["AnonHugePages:", "Private_Hugetlb:", "Shared_Hugetlb:"];
 
+    // The fixtures are 64-bit kernel addresses; they do not fit `usize`
+    // on 32-bit targets, where /proc/self/smaps never contains them.
+    #[cfg(target_pointer_width = "64")]
     #[cfg_attr(miri, ignore = "FFI mmap syscalls are not supported by Miri")]
     #[test]
     fn range_headers_parse_and_stat_lines_do_not() {
+        use super::parse_smaps_range;
+
         assert_eq!(
             parse_smaps_range("7f1234567000-7f1234578000 rw-s 00000000 00:00 0 /x"),
             Some((0x7f12_3456_7000, 0x7f12_3457_8000))

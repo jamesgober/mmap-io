@@ -1,5 +1,9 @@
 //! Regression tests for bugs found by the 1.1 test-hardening pass.
 
+// These tests map real files or anonymous memory; Miri cannot run
+// the mmap family of syscalls.
+#![cfg(not(miri))]
+
 use std::sync::Arc;
 use std::thread;
 use std::time::Duration;

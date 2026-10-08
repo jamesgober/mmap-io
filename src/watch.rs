@@ -353,6 +353,7 @@ mod tests {
     /// for `watch` is "another process modified the file": this
     /// helper simulates that intra-process via a separate file
     /// handle.
+    #[cfg_attr(miri, ignore = "FFI mmap syscalls are not supported by Miri")]
     #[test]
     #[cfg(feature = "watch")]
     fn test_watch_accepts_fnmut_with_owned_state() {

@@ -125,6 +125,7 @@ fn zero_length_requests_within_bounds_are_empty() {
 /// end, and API.md says `AnonymousMmap` reads, writes and slices work
 /// identically to `MemoryMappedFile`. `AnonymousMmap` returns
 /// `OutOfBounds` instead.
+#[cfg_attr(miri, ignore = "FFI mmap syscalls are not supported by Miri")]
 #[test]
 fn zero_length_requests_past_the_end_are_accepted() {
     let m = AnonymousMmap::new(100).unwrap();
@@ -204,6 +205,10 @@ fn concurrent_disjoint_writers_and_readers() {
 /// second slice waits behind the queued writer, which waits for the
 /// first slice: a deadlock. API.md documents the recursive behavior for
 /// read views in general.
+#[cfg_attr(
+    miri,
+    ignore = "parking_lot_core futex call: Miri rejects &AtomicI32 for the *mut u32 syscall argument (dependency false positive)"
+)]
 #[test]
 fn nested_read_slices_do_not_deadlock_behind_a_queued_writer() {
     let m = Arc::new(AnonymousMmap::new(4096).unwrap());

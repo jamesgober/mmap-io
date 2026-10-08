@@ -1,6 +1,10 @@
 //! `schedule_flush` / `schedule_flush_range` (1.1.0): start write-back
 //! without waiting. Not durable; `pending_bytes` is left alone.
 
+// These tests map real files or anonymous memory; Miri cannot run
+// the mmap family of syscalls.
+#![cfg(not(miri))]
+
 use std::sync::Arc;
 use std::thread;
 

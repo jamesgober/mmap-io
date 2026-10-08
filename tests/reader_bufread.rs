@@ -1,6 +1,10 @@
 //! `MmapReader` implements `BufRead` (1.1.0): zero-copy on read-only
 //! mappings, a lock-free 4 KiB inline copy on writable ones.
 
+// These tests map real files or anonymous memory; Miri cannot run
+// the mmap family of syscalls.
+#![cfg(not(miri))]
+
 use std::io::{BufRead, Read, Seek, SeekFrom};
 
 use mmap_io::MemoryMappedFile;

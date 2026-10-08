@@ -2,6 +2,10 @@
 //! and `try_update_region` report "would block" instead of waiting, and
 //! otherwise behave like their blocking counterparts.
 
+// These tests map real files or anonymous memory; Miri cannot run
+// the mmap family of syscalls.
+#![cfg(not(miri))]
+
 use std::sync::{mpsc, Arc};
 use std::thread;
 
