@@ -369,6 +369,8 @@ impl mmap_io::mmap::MemoryMappedFile
 pub fn mmap_io::mmap::MemoryMappedFile::current_len(&self) -> mmap_io::errors::Result<u64>
 pub fn mmap_io::mmap::MemoryMappedFile::read_into(&self, offset: u64, buf: &mut [u8]) -> mmap_io::errors::Result<()>
 impl mmap_io::mmap::MemoryMappedFile
+pub fn mmap_io::mmap::MemoryMappedFile::is_cow_writable(&self) -> bool
+impl mmap_io::mmap::MemoryMappedFile
 pub fn mmap_io::mmap::MemoryMappedFile::is_hugepage_backed(&self) -> core::option::Option<bool>
 impl mmap_io::mmap::MemoryMappedFile
 pub fn mmap_io::mmap::MemoryMappedFile::lock(&self, offset: u64, len: u64) -> mmap_io::errors::Result<()>
@@ -377,6 +379,7 @@ pub fn mmap_io::mmap::MemoryMappedFile::unlock(&self, offset: u64, len: u64) -> 
 pub fn mmap_io::mmap::MemoryMappedFile::unlock_all(&self) -> mmap_io::errors::Result<()>
 impl mmap_io::mmap::MemoryMappedFile
 pub fn mmap_io::mmap::MemoryMappedFile::open_cow<P: core::convert::AsRef<std::path::Path>>(path: P) -> mmap_io::errors::Result<Self>
+pub fn mmap_io::mmap::MemoryMappedFile::open_cow_writable<P: core::convert::AsRef<std::path::Path>>(path: P) -> mmap_io::errors::Result<Self>
 impl mmap_io::mmap::MemoryMappedFile
 pub fn mmap_io::mmap::MemoryMappedFile::watch<F>(&self, callback: F) -> mmap_io::errors::Result<mmap_io::watch::WatchHandle> where F: core::ops::function::FnMut(mmap_io::watch::ChangeEvent) + core::marker::Send + 'static
 impl core::clone::Clone for mmap_io::mmap::MemoryMappedFile
@@ -396,6 +399,7 @@ impl !core::panic::unwind_safe::RefUnwindSafe for mmap_io::mmap::MemoryMappedFil
 impl !core::panic::unwind_safe::UnwindSafe for mmap_io::mmap::MemoryMappedFile
 pub struct mmap_io::mmap::MemoryMappedFileBuilder
 impl mmap_io::mmap::MemoryMappedFileBuilder
+pub fn mmap_io::mmap::MemoryMappedFileBuilder::cow_writable(self, enabled: bool) -> Self
 pub fn mmap_io::mmap::MemoryMappedFileBuilder::create(self) -> mmap_io::errors::Result<mmap_io::mmap::MemoryMappedFile>
 pub fn mmap_io::mmap::MemoryMappedFileBuilder::create_new(self) -> mmap_io::errors::Result<mmap_io::mmap::MemoryMappedFile>
 pub fn mmap_io::mmap::MemoryMappedFileBuilder::flush_policy(self, policy: mmap_io::flush::FlushPolicy) -> Self
@@ -896,6 +900,8 @@ impl mmap_io::mmap::MemoryMappedFile
 pub fn mmap_io::mmap::MemoryMappedFile::current_len(&self) -> mmap_io::errors::Result<u64>
 pub fn mmap_io::mmap::MemoryMappedFile::read_into(&self, offset: u64, buf: &mut [u8]) -> mmap_io::errors::Result<()>
 impl mmap_io::mmap::MemoryMappedFile
+pub fn mmap_io::mmap::MemoryMappedFile::is_cow_writable(&self) -> bool
+impl mmap_io::mmap::MemoryMappedFile
 pub fn mmap_io::mmap::MemoryMappedFile::is_hugepage_backed(&self) -> core::option::Option<bool>
 impl mmap_io::mmap::MemoryMappedFile
 pub fn mmap_io::mmap::MemoryMappedFile::lock(&self, offset: u64, len: u64) -> mmap_io::errors::Result<()>
@@ -904,6 +910,7 @@ pub fn mmap_io::mmap::MemoryMappedFile::unlock(&self, offset: u64, len: u64) -> 
 pub fn mmap_io::mmap::MemoryMappedFile::unlock_all(&self) -> mmap_io::errors::Result<()>
 impl mmap_io::mmap::MemoryMappedFile
 pub fn mmap_io::mmap::MemoryMappedFile::open_cow<P: core::convert::AsRef<std::path::Path>>(path: P) -> mmap_io::errors::Result<Self>
+pub fn mmap_io::mmap::MemoryMappedFile::open_cow_writable<P: core::convert::AsRef<std::path::Path>>(path: P) -> mmap_io::errors::Result<Self>
 impl mmap_io::mmap::MemoryMappedFile
 pub fn mmap_io::mmap::MemoryMappedFile::watch<F>(&self, callback: F) -> mmap_io::errors::Result<mmap_io::watch::WatchHandle> where F: core::ops::function::FnMut(mmap_io::watch::ChangeEvent) + core::marker::Send + 'static
 impl core::clone::Clone for mmap_io::mmap::MemoryMappedFile
