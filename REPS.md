@@ -275,12 +275,15 @@ pub async fn delete_mmap_async<P: AsRef<Path>>(path: P) -> Result<()>;
 
 ### 4.3 Hugepages
 
-`hugepages` is a Cargo feature that opts into best-effort huge-page
-backing. The implementation MUST attempt `MAP_HUGETLB` on Linux and
-`FILE_ATTRIBUTE_LARGE_PAGES` on Windows and MUST silently fall back
-to standard 4 KiB pages on failure. `.huge_pages(true)` therefore
-provides NO guarantee of huge-page backing and MUST be documented as
-best-effort.
+`hugepages` is a Cargo feature that opts into a huge-page hint. On
+Linux the implementation issues `madvise(MADV_HUGEPAGE)` on `ReadWrite`
+mappings created or opened with `.huge_pages(true)`, and again after
+every `resize`. It MUST NOT fail the mapping when the hint is refused,
+and MUST NOT pre-fault or dirty the mapping. `MAP_HUGETLB` (which
+needs a hugetlbfs file) and Windows large pages are not used; on
+non-Linux platforms the flag has no effect. `.huge_pages(true)`
+therefore provides NO guarantee of huge-page backing and MUST be
+documented as a hint; `is_hugepage_backed()` reports the outcome.
 
 ## 5. Safety contract
 

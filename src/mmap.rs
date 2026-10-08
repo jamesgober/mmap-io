@@ -763,6 +763,18 @@ impl MemoryMappedFile {
         result
     }
 
+    /// Whether the builder asked for huge pages on this mapping.
+    fn huge_pages(&self) -> bool {
+        #[cfg(feature = "hugepages")]
+        {
+            self.inner.huge_pages
+        }
+        #[cfg(not(feature = "hugepages"))]
+        {
+            false
+        }
+    }
+
     /// Grow the file and remap. Caller holds the write lock.
     fn grow_locked(
         &self,
@@ -774,7 +786,7 @@ impl MemoryMappedFile {
         // Extend first: mapping past end-of-file is invalid. The old
         // mapping stays valid because it only covers the old length.
         self.inner.file.set_len(new_size)?;
-        match map_file_rw(&self.inner.file, new_len) {
+        match map_file_rw(&self.inner.file, new_len, self.huge_pages()) {
             Ok(new_map) => {
                 // Old mapping is dropped (unmapped) here, after the new
                 // one exists, while no other guard can be alive.
@@ -803,7 +815,7 @@ impl MemoryMappedFile {
         // the file and the old mapping untouched. Then truncate; the
         // old mapping's tail now lies past end-of-file, but nothing
         // can touch it: we hold the write lock and replace it next.
-        let new_map = map_file_rw(&self.inner.file, new_len)?;
+        let new_map = map_file_rw(&self.inner.file, new_len, self.huge_pages())?;
         self.inner.file.set_len(new_size)?;
         *map = new_map;
         Ok(())
@@ -824,10 +836,10 @@ impl MemoryMappedFile {
         drop(std::mem::replace(map, MmapMut::map_anon(0)?));
         if let Err(e) = self.inner.file.set_len(new_size) {
             // File unchanged: restore the mapping at its old length.
-            *map = map_file_rw(&self.inner.file, current_len)?;
+            *map = map_file_rw(&self.inner.file, current_len, self.huge_pages())?;
             return Err(e.into());
         }
-        *map = map_file_rw(&self.inner.file, new_len)?;
+        *map = map_file_rw(&self.inner.file, new_len, self.huge_pages())?;
         Ok(())
     }
 
@@ -1365,8 +1377,10 @@ impl MemoryMappedFile {
     }
 }
 
-/// Map `len` bytes of `file` read-write from offset 0.
-fn map_file_rw(file: &File, len: usize) -> Result<MmapMut> {
+/// Map `len` bytes of `file` read-write from offset 0. With `huge`
+/// set (and the `hugepages` feature on), also issue the transparent
+/// huge page hint; see [`advise_huge_pages`].
+fn map_file_rw(file: &File, len: usize, huge: bool) -> Result<MmapMut> {
     // SAFETY: `MmapOptions::map_mut` is `unsafe` because the OS does
     // not stop another process from modifying the file under the
     // mapping (see `create_rw`). Callers pass a `len` no larger than
@@ -1375,154 +1389,60 @@ fn map_file_rw(file: &File, len: usize) -> Result<MmapMut> {
     // mapping goes through the `RwLock` in `MapVariant::Rw`.
     // Reference: https://docs.rs/memmap2/latest/memmap2/struct.MmapOptions.html#method.map_mut
     let map = unsafe { MmapOptions::new().len(len).map_mut(file)? };
+    #[cfg(feature = "hugepages")]
+    if huge {
+        advise_huge_pages(&map);
+    }
+    #[cfg(not(feature = "hugepages"))]
+    let _ = huge;
     Ok(map)
 }
 
-/// Create a memory mapping with optional huge pages support.
+/// Hint the kernel to back `map` with transparent huge pages.
 ///
-/// When `huge` is true on Linux, this function attempts to use actual huge pages
-/// via MAP_HUGETLB first, falling back to Transparent Huge Pages (THP) if that fails.
-///
-/// **Fallback Behavior**: This is a best-effort optimization:
-/// 1. First attempts MAP_HUGETLB for guaranteed huge pages
-/// 2. Falls back to regular mapping with MADV_HUGEPAGE hint
-/// 3. Finally falls back to regular pages if THP is unavailable
-///
-/// The function will silently fall back through these options and never fail
-/// due to huge page unavailability alone.
+/// Linux only: issues `madvise(MADV_HUGEPAGE)` over the whole mapping.
+/// This is a hint, not a request that can fail the mapping. For
+/// file-backed mappings the kernel honors it only where the page cache
+/// of that filesystem can use huge pages (for example tmpfs or shmem
+/// mounted with `huge=`); on most disk filesystems the mapping stays
+/// on base pages. `MAP_HUGETLB` is not used: it needs a hugetlbfs file.
+/// Elsewhere this does nothing. Failures are logged at debug level.
 #[cfg(feature = "hugepages")]
-fn map_mut_with_options(file: &File, len: u64, huge: bool) -> Result<MmapMut> {
-    #[cfg(all(unix, target_os = "linux"))]
+fn advise_huge_pages(map: &MmapMut) {
+    #[cfg(target_os = "linux")]
     {
-        if huge {
-            // First, try to create a mapping that can accommodate huge pages
-            // by aligning to huge page boundaries
-            if let Ok(mmap) = try_create_optimized_mapping(file, len) {
-                log::debug!("Successfully created optimized mapping for huge pages");
-                return Ok(mmap);
-            }
+        if map.is_empty() {
+            return;
         }
-
-        // SAFETY: see `create_rw` for the general justification of
-        // calling `MmapMut::map_mut`. This call path is the
-        // hugepages-feature fallback after the optimized hugepage map
-        // attempt failed; it always maps a regular-page mapping of the
-        // file as-is.
-        let mmap = unsafe { MmapMut::map_mut(file) }.map_err(MmapIoError::Io)?;
-
-        if huge {
-            // Request Transparent Huge Pages (THP) for existing mapping
-            // This is a hint to the kernel - not a guarantee
-            // SAFETY: `madvise(addr, length, MADV_HUGEPAGE)` requires
-            // the same range preconditions as the generic `madvise`
-            // path in `advise.rs`: `addr` page-aligned and the range
-            // within a mapped region. Both are satisfied here:
-            // `mmap.as_ptr()` is the kernel-aligned base of the
-            // freshly created mapping, and `len` is exactly the
-            // mapping length. `MADV_HUGEPAGE` is a Linux extension
-            // that hints the kernel to back the region with huge
-            // pages; it does not access the memory contents.
-            // Reference: https://man7.org/linux/man-pages/man2/madvise.2.html
-            unsafe {
-                let mmap_ptr = mmap.as_ptr() as *mut libc::c_void;
-
-                // MADV_HUGEPAGE: Enable THP for this memory region
-                let ret = libc::madvise(mmap_ptr, len as usize, libc::MADV_HUGEPAGE);
-
-                if ret == 0 {
-                    log::debug!("Successfully requested THP for {} bytes", len);
-                } else {
-                    log::debug!("madvise(MADV_HUGEPAGE) failed, using regular pages");
-                }
-            }
+        // SAFETY: `madvise(addr, len, MADV_HUGEPAGE)` requires `addr`
+        // page-aligned and `[addr, addr + len)` inside a mapping of
+        // this process. `map.as_ptr()` is the base of a mapping that
+        // starts at file offset 0, which `mmap(2)` page-aligns, and
+        // `map.len()` is that mapping's length; `map` is borrowed for
+        // the duration of the call, so the range stays mapped.
+        // MADV_HUGEPAGE only changes the kernel's page-size policy for
+        // the range; it does not read or write the contents.
+        // Reference: https://man7.org/linux/man-pages/man2/madvise.2.html
+        let ret = unsafe {
+            libc::madvise(
+                map.as_ptr() as *mut libc::c_void,
+                map.len(),
+                libc::MADV_HUGEPAGE,
+            )
+        };
+        if ret == 0 {
+            log::debug!("madvise(MADV_HUGEPAGE) accepted for {} bytes", map.len());
+        } else {
+            log::debug!(
+                "madvise(MADV_HUGEPAGE) failed: {}; using base pages",
+                std::io::Error::last_os_error()
+            );
         }
-
-        Ok(mmap)
     }
-    #[cfg(not(all(unix, target_os = "linux")))]
+    #[cfg(not(target_os = "linux"))]
     {
-        // Huge pages are Linux-specific, ignore the flag on other platforms
-        let _ = (len, huge);
-        // SAFETY: see `create_rw`. This is the non-Linux fallback;
-        // huge pages have no effect outside Linux so we just produce
-        // a normal mapping.
-        unsafe { MmapMut::map_mut(file) }.map_err(MmapIoError::Io)
+        let _ = map;
     }
-}
-
-/// Create an optimized mapping that's more likely to use huge pages.
-/// This function tries to create mappings that are aligned and sized
-/// appropriately for huge page usage.
-#[cfg(all(unix, target_os = "linux", feature = "hugepages"))]
-fn try_create_optimized_mapping(file: &File, len: u64) -> Result<MmapMut> {
-    // For files larger than 2MB (typical huge page size), we can try to optimize
-    const HUGE_PAGE_SIZE: u64 = 2 * 1024 * 1024; // 2MB
-
-    if len >= HUGE_PAGE_SIZE {
-        // Create the mapping and immediately advise huge pages
-        // SAFETY: see `create_rw` for the general `MmapMut::map_mut`
-        // contract. This is the first-tier hugepages attempt: we map
-        // the file normally then immediately request THP backing
-        // before any access touches the pages.
-        let mmap = unsafe { MmapMut::map_mut(file) }.map_err(MmapIoError::Io)?;
-
-        // SAFETY: both `madvise` calls below operate on the freshly
-        // created mapping's full extent (`mmap_ptr`, `len`). The base
-        // is page-aligned by `mmap(2)` construction, and `len` is the
-        // mapping length, so `[mmap_ptr, mmap_ptr + len)` is exactly
-        // the mapped region. `MADV_HUGEPAGE` and `MADV_POPULATE_WRITE`
-        // (a Linux 5.14+ flag, defined locally because libc's constant
-        // is gated behind a more recent libc version than our MSRV
-        // permits) both operate on the address range without forming
-        // a Rust reference; failures are non-fatal hints.
-        // References:
-        //   https://man7.org/linux/man-pages/man2/madvise.2.html
-        //   https://man7.org/linux/man-pages/man2/madvise.2.html (MADV_POPULATE_WRITE)
-        unsafe {
-            let mmap_ptr = mmap.as_ptr() as *mut libc::c_void;
-
-            // First try MADV_HUGEPAGE
-            let ret = libc::madvise(mmap_ptr, len as usize, libc::MADV_HUGEPAGE);
-
-            if ret == 0 {
-                // Then try to populate the mapping to encourage huge page allocation
-                // MADV_POPULATE_WRITE is relatively new, so we'll use a fallback
-                #[cfg(target_os = "linux")]
-                {
-                    const MADV_POPULATE_WRITE: i32 = 23; // Define the constant manually
-                    let populate_ret = libc::madvise(mmap_ptr, len as usize, MADV_POPULATE_WRITE);
-
-                    if populate_ret == 0 {
-                        log::debug!("Successfully created and populated optimized mapping");
-                    } else {
-                        log::debug!(
-                            "Optimization successful, populate failed (expected on older kernels)"
-                        );
-                    }
-                }
-                #[cfg(not(target_os = "linux"))]
-                {
-                    log::debug!("Successfully created optimized mapping (populate not available)");
-                }
-            }
-        }
-
-        Ok(mmap)
-    } else {
-        Err(MmapIoError::Io(std::io::Error::new(
-            std::io::ErrorKind::InvalidInput,
-            "File too small for huge page optimization",
-        )))
-    }
-}
-
-#[cfg(not(all(unix, target_os = "linux", feature = "hugepages")))]
-#[allow(dead_code)]
-fn try_create_optimized_mapping(_file: &File, _len: u64) -> Result<MmapMut> {
-    Err(MmapIoError::Io(std::io::Error::new(
-        std::io::ErrorKind::Unsupported,
-        "Huge pages not supported on this platform",
-    )))
 }
 
 #[cfg(feature = "cow")]
@@ -1792,6 +1712,20 @@ fn parse_smaps_kb_field(line: &str, prefixes: &[&str]) -> Option<u64> {
     None
 }
 
+/// The builder's huge-page request (always `false` without the
+/// `hugepages` feature).
+fn builder_huge_pages(builder: &MemoryMappedFileBuilder) -> bool {
+    #[cfg(feature = "hugepages")]
+    {
+        builder.huge_pages
+    }
+    #[cfg(not(feature = "hugepages"))]
+    {
+        let _ = builder;
+        false
+    }
+}
+
 /// Builder for MemoryMappedFile construction with options.
 pub struct MemoryMappedFileBuilder {
     path: PathBuf,
@@ -1828,7 +1762,16 @@ impl MemoryMappedFileBuilder {
         self
     }
 
-    /// Request Huge Pages (Linux MAP_HUGETLB). No-op on non-Linux platforms.
+    /// Ask for transparent huge pages on `ReadWrite` mappings.
+    ///
+    /// On Linux the mapping gets a `madvise(MADV_HUGEPAGE)` hint after
+    /// it is created (and again after every `resize`). The kernel
+    /// decides whether to use huge pages; for files on most disk
+    /// filesystems it will not, while tmpfs/shmem mounted with
+    /// `huge=` can. `MAP_HUGETLB` is not attempted, and nothing is
+    /// pre-faulted. On macOS and Windows the flag has no effect. Use
+    /// [`MemoryMappedFile::is_hugepage_backed`] to see what the kernel
+    /// actually did. Ignored for `ReadOnly` and `CopyOnWrite`.
     #[cfg(feature = "hugepages")]
     pub fn huge_pages(mut self, enable: bool) -> Self {
         self.huge_pages = enable;
@@ -1869,16 +1812,10 @@ impl MemoryMappedFileBuilder {
                     .truncate(true)
                     .open(path_ref)?;
                 file.set_len(size)?;
-                // Map with consideration for huge pages if requested
-                #[cfg(feature = "hugepages")]
-                let mmap = map_mut_with_options(&file, size, self.huge_pages)?;
-                #[cfg(not(feature = "hugepages"))]
-                // SAFETY: see `MemoryMappedFile::create_rw` for the
-                // full justification. Identical preconditions: we just
-                // created/truncated the file and set its length to
-                // `size` via `set_len`; the kernel will produce a
-                // mapping of exactly that length.
-                let mmap = unsafe { MmapMut::map_mut(&file)? };
+                let len = usize::try_from(size).map_err(|_| {
+                    MmapIoError::ResizeFailed(format!("Size {size} does not fit in usize"))
+                })?;
+                let mmap = map_file_rw(&file, len, builder_huge_pages(&self))?;
 
                 // Build the Inner now (without a live flusher), wrap in Arc.
                 // We attach the time-based flusher AFTER the Arc exists so that
@@ -2053,12 +1990,10 @@ impl MemoryMappedFileBuilder {
                 if len == 0 {
                     return Err(MmapIoError::ResizeFailed(ERR_ZERO_LENGTH_FILE.into()));
                 }
-                #[cfg(feature = "hugepages")]
-                let mmap = map_mut_with_options(&file, len, self.huge_pages)?;
-                #[cfg(not(feature = "hugepages"))]
-                // SAFETY: see `MemoryMappedFile::open_rw`. File opened
-                // read+write, `len > 0` verified above.
-                let mmap = unsafe { MmapMut::map_mut(&file)? };
+                let map_len = usize::try_from(len).map_err(|_| {
+                    MmapIoError::ResizeFailed(format!("File length {len} does not fit in usize"))
+                })?;
+                let mmap = map_file_rw(&file, map_len, builder_huge_pages(&self))?;
                 let inner = Inner {
                     path: path_ref.clone(),
                     file,

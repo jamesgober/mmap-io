@@ -170,3 +170,30 @@ fn test_hugepages_disabled() {
     mmap.read_into(0, &mut buf).unwrap();
     assert_eq!(&buf, data);
 }
+
+#[test]
+fn test_hugepages_does_not_prefault_the_file() {
+    // Before 1.1, `.huge_pages(true)` ran madvise(MADV_POPULATE_WRITE)
+    // over the whole file mapping, which write-faulted every page:
+    // the sparse file was fully allocated on disk and every page was
+    // dirtied. The hint must leave the file sparse.
+    use std::os::unix::fs::MetadataExt;
+
+    let dir = tempdir().unwrap();
+    let path = dir.path().join("hugepages_sparse.bin");
+    let size: u64 = 64 * 1024 * 1024;
+
+    let mmap = MemoryMappedFile::builder(&path)
+        .mode(MmapMode::ReadWrite)
+        .size(size)
+        .huge_pages(true)
+        .create()
+        .expect("create");
+
+    let allocated = fs::metadata(&path).unwrap().blocks() * 512;
+    assert!(
+        allocated < size / 4,
+        "huge_pages(true) allocated {allocated} of {size} bytes: the mapping was pre-faulted"
+    );
+    drop(mmap);
+}

@@ -131,7 +131,7 @@ The following optional Cargo features enable extended functionality:
 | `bytes`    | `bytes::Bytes` conversions for the hyper/tower/tonic/axum/reqwest ecosystem.                        |
 | `advise`   | Memory hinting via **`madvise`/`posix_madvise` (Unix)** or **Prefetch (Windows)**.                  |
 | `iterator` | Iterator-based access to memory chunks or pages with zero-copy read access.                         |
-| `hugepages` | Best-effort huge-page mappings on Linux (HugeTLB / Transparent Huge Pages with multi-tier fallback). Use `is_hugepage_backed()` to confirm at runtime.|
+| `hugepages` | Transparent huge page hint (`madvise(MADV_HUGEPAGE)`) on Linux RW mappings; no effect elsewhere. Use `is_hugepage_backed()` to confirm at runtime.|
 | `cow`      | Copy-on-Write mapping mode using private memory views (per-process isolation).                       |
 | `locking`  | Page-level memory locking via **`mlock`/`munlock` (Unix)** or **`VirtualLock` (Windows)**.           |
 | `atomic`   | Atomic views into memory as aligned `u32` / `u64`, with strict alignment checking.                  |
@@ -139,7 +139,7 @@ The following optional Cargo features enable extended functionality:
 
 <br>
 
-- **Huge Pages** (`feature = "hugepages"`): Best-effort large-page mappings on supported platforms to reduce TLB misses. Falls back safely when unavailable or lacking privileges.
+- **Huge Pages** (`feature = "hugepages"`): On Linux, `madvise(MADV_HUGEPAGE)` on `ReadWrite` mappings built with `.huge_pages(true)`. A hint the kernel may ignore (file-backed mappings on most disk filesystems stay on base pages); `MAP_HUGETLB` and Windows large pages are not used.
 
 - **Async-Only Flushing** (`feature = "async"`): Async write helpers auto-flush after each write to ensure post-await visibility across platforms.
 

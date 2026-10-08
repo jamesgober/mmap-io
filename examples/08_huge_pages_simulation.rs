@@ -1,14 +1,14 @@
 //! Example 08: best-effort huge-page mapping.
 //!
-//! `.huge_pages(true)` on the builder asks the kernel to back the
-//! mapping with huge pages (2 MiB on most Linux configs). This
-//! reduces TLB misses for large mappings and improves throughput on
-//! random-access workloads.
+//! `.huge_pages(true)` on the builder issues `madvise(MADV_HUGEPAGE)`
+//! on Linux, asking the kernel to back the mapping with transparent
+//! huge pages (2 MiB on most configs). When honored, this reduces TLB
+//! misses for large mappings.
 //!
-//! It is intentionally best-effort: if `MAP_HUGETLB` fails (lacking
-//! privilege, no huge pages reserved, etc.) the kernel falls back
-//! to standard 4 KiB pages and the mapping still functions
-//! correctly. On non-Linux platforms the flag is a no-op.
+//! It is only a hint. For a file on a typical disk filesystem the
+//! kernel keeps base pages; tmpfs/shmem mounted with `huge=` can use
+//! huge pages. `MAP_HUGETLB` is not used. On non-Linux platforms the
+//! flag has no effect. `is_hugepage_backed()` reports the outcome.
 //!
 //! Run with:
 //!   cargo run --example 08_huge_pages_simulation --features hugepages
@@ -26,7 +26,7 @@ fn main() -> Result<(), mmap_io::MmapIoError> {
     use std::path::PathBuf;
     use std::time::Instant;
 
-    let path = PathBuf::from("example_08_hugepages.bin");
+    let path: PathBuf = std::env::temp_dir().join("example_08_hugepages.bin");
     let _ = std::fs::remove_file(&path);
 
     // 4 MiB is enough to span at least one huge page on every
@@ -37,14 +37,14 @@ fn main() -> Result<(), mmap_io::MmapIoError> {
     let mmap = MemoryMappedFile::builder(&path)
         .mode(MmapMode::ReadWrite)
         .size(size)
-        .huge_pages(true) // best-effort; falls back to 4 KiB pages silently
+        .huge_pages(true) // a hint; the kernel may keep base pages
         .touch_hint(TouchHint::Eager) // prewarm so the first access doesn't pay page-fault cost
         .create()?;
     let setup = started.elapsed();
     println!("Mapping created in {:?} ({} bytes)", setup, mmap.len());
 
-    // Hot write loop. With huge pages active, the TLB miss rate is
-    // dramatically lower than 4 KiB pages for sequential scans over
+    // Hot write loop. If the kernel did use huge pages, the TLB miss
+    // rate is lower than with 4 KiB pages for scans over
     // multi-megabyte regions.
     let started = Instant::now();
     let payload = vec![0xC7u8; 4096];
@@ -61,11 +61,11 @@ fn main() -> Result<(), mmap_io::MmapIoError> {
         (size as f64) / (1024.0 * 1024.0) / write_time.as_secs_f64()
     );
 
+    // Linux reports Some(true/false); other platforms report None.
+    println!("Huge-page backed: {:?}", mmap.is_hugepage_backed());
     println!(
-        "\nNote: huge-page backing is best-effort. mmap-io does not\
-        \ncurrently expose a 'did I actually get huge pages?' query;\
-        \nuse /proc/<pid>/smaps to verify on Linux. The mapping is\
-        \nfunctionally identical whether huge pages were granted or not."
+        "\nNote: huge pages are a hint. The mapping is functionally\
+        \nidentical whether the kernel granted them or not."
     );
 
     drop(mmap);

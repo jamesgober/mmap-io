@@ -29,7 +29,7 @@
 - **Configurable durability.** `FlushPolicy::EveryBytes(N)`, `EveryWrites(N)`, `EveryMillis(N)`, `Always`, or `Manual`. Partial flushes debit the accumulator correctly; the millis policy runs a background flusher with cooperative shutdown bound to mapping lifetime.
 - **Thread-safe.** Interior mutability via `parking_lot::RwLock`. Multiple concurrent readers, one writer at a time. Live atomic views block `resize()` until released so memory under your reference cannot move.
 - **Anonymous mappings.** Process-local memory without a backing file via `AnonymousMmap::new(size)` for shared scratch buffers between threads, large temporary allocations, or as the kernel substrate for IPC patterns.
-- **Cross-platform.** Linux, macOS, Windows. Per-platform fast paths (`MS_ASYNC` flush on Linux, `MADV_HUGEPAGE` on huge-page hints, `posix_fadvise` for OS-level prefetch).
+- **Cross-platform.** Linux, macOS, Windows. Per-platform hooks where they exist (`MADV_HUGEPAGE` for the huge-page hint, `posix_fadvise` for OS-level prefetch on Linux).
 - **Opt-in surface.** Default features are `advise` + `iterator`. Everything else (`async`, `atomic`, `cow`, `locking`, `watch`, `hugepages`) is off by default to keep compile time tight.
 - **MSRV: 1.75.** Pinned and verified in CI.
 
@@ -78,7 +78,7 @@ fn main() -> Result<(), mmap_io::MmapIoError> {
 | `bytes`     | `bytes::Bytes` conversion for plugging into the hyper/tower/tonic/axum/reqwest ecosystem. |
 | `advise`    | Memory hinting via `madvise`/`posix_madvise` (Unix) or `PrefetchVirtualMemory` (Windows).            |
 | `iterator`  | Iterator-based access to memory chunks or pages with zero-copy reads.                                |
-| `hugepages` | Huge Pages via MAP_HUGETLB (Linux) or FILE_ATTRIBUTE_LARGE_PAGES (Windows); falls back to regular pages. |
+| `hugepages` | Transparent huge page hint (`madvise(MADV_HUGEPAGE)`) on Linux RW mappings; no effect on other platforms. |
 | `cow`       | Copy-on-Write mapping mode using private per-process memory views.                                   |
 | `locking`   | Page-level memory locking via `mlock`/`munlock` (Unix) or `VirtualLock` (Windows).                   |
 | `atomic`    | Atomic views into memory as aligned `u32` / `u64` with strict alignment checks.                      |
@@ -401,19 +401,13 @@ See parity tests in the repository that validate this contract on each platform.
 
 ## Huge Pages (`feature = "hugepages"`)
 
-Best-effort huge page support to reduce TLB misses and improve performance for large mappings.
+A hint, not a guarantee. `.huge_pages(true)` on the builder affects `ReadWrite` mappings only:
 
-**Linux**: multi-tier approach for huge page allocation:
+**Linux**: after mapping (and after every `resize`), the crate calls `madvise(MADV_HUGEPAGE)` on the mapping to ask for Transparent Huge Pages. The kernel decides. For file-backed mappings it can only use huge pages where the filesystem's page cache supports them (for example tmpfs/shmem mounted with `huge=`); on most disk filesystems the mapping stays on regular pages. `MAP_HUGETLB` is not used (it requires a file on hugetlbfs), and pages are not pre-faulted.
 
-1. **Tier 1**: Optimized mapping with immediate `MADV_HUGEPAGE` to encourage kernel huge page allocation.
-2. **Tier 2**: Standard mapping with `MADV_HUGEPAGE` hint for Transparent Huge Pages (THP).
-3. **Tier 3**: Silent fallback to regular pages if huge pages are unavailable.
+**macOS / Windows**: no effect. Windows large pages are not used for file mappings.
 
-**Windows**: attempts `FILE_ATTRIBUTE_LARGE_PAGES`. Requires the "Lock Pages in Memory" privilege and system configuration. Falls back to normal pages if unavailable.
-
-**Other platforms**: no-op.
-
-> ⚠️ `.huge_pages(true)` does **NOT guarantee** huge pages will be used. Actual allocation depends on system configuration, available memory, kernel heuristics, and process privileges. The mapping functions correctly regardless of whether huge pages are actually used.
+Use `mmap.is_hugepage_backed()` (Linux) to see what the kernel actually did. The mapping behaves the same either way.
 
 Builder usage:
 
