@@ -2260,27 +2260,34 @@ impl<'a> MappedSlice<'a> {
     }
 
     /// Borrow the underlying byte slice.
+    #[inline]
     #[must_use]
     pub fn as_slice(&self) -> &[u8] {
         match &self.inner {
             MappedSliceInner::Owned(s) => s,
             // SAFETY: `bytes` was derived from `&_guard[range]` at
-            // construction. The mapping it points into cannot be
-            // unmapped, remapped, or written while `_guard` (a read
-            // guard on the mapping's lock) is alive, and `_guard`
-            // lives exactly as long as `self`. The returned borrow is
-            // tied to `&self`, so it cannot outlive the guard.
+            // construction. While `_guard` (a read guard on the
+            // mapping's lock) is alive the mapping cannot be unmapped
+            // or remapped, and no `&mut` into it can exist, because
+            // `resize` and every `&mut`-producing path need the write
+            // lock. `_guard` lives exactly as long as `self`, and the
+            // returned borrow is tied to `&self`, so it cannot outlive
+            // the guard. (Atomic views also hold read guards and may
+            // store to the mapping; docs/SAFETY.md requires callers to
+            // keep atomic and plain-byte regions disjoint.)
             MappedSliceInner::Guarded { bytes, .. } => unsafe { &**bytes },
         }
     }
 
     /// Length of the slice in bytes.
+    #[inline]
     #[must_use]
     pub fn len(&self) -> usize {
         self.as_slice().len()
     }
 
     /// Whether the slice is empty.
+    #[inline]
     #[must_use]
     pub fn is_empty(&self) -> bool {
         self.len() == 0
@@ -2290,12 +2297,14 @@ impl<'a> MappedSlice<'a> {
 impl std::ops::Deref for MappedSlice<'_> {
     type Target = [u8];
 
+    #[inline]
     fn deref(&self) -> &[u8] {
         self.as_slice()
     }
 }
 
 impl AsRef<[u8]> for MappedSlice<'_> {
+    #[inline]
     fn as_ref(&self) -> &[u8] {
         self.as_slice()
     }
