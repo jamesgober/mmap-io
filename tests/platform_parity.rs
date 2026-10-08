@@ -6,17 +6,9 @@
 
 use mmap_io::{MemoryMappedFile, MmapMode};
 use std::fs;
-use std::path::PathBuf;
 
-fn tmp_path(name: &str) -> PathBuf {
-    let mut p = std::env::temp_dir();
-    p.push(format!(
-        "mmap_io_platform_parity_{}_{}",
-        name,
-        std::process::id()
-    ));
-    p
-}
+mod common;
+use common::tmp_path;
 
 #[test]
 fn parity_flush_visibility_full_file() {

@@ -2,13 +2,9 @@
 
 use mmap_io::{MemoryMappedFile, MmapIoError};
 use std::fs;
-use std::path::PathBuf;
 
-fn tmp_path(name: &str) -> PathBuf {
-    let mut p = std::env::temp_dir();
-    p.push(format!("mmap_io_size_test_{}_{}", name, std::process::id()));
-    p
-}
+mod common;
+use common::tmp_path;
 
 #[test]
 fn test_max_size_validation_create() {

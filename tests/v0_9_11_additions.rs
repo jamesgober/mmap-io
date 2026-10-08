@@ -8,13 +8,9 @@
 use mmap_io::{MemoryMappedFile, MmapIoError};
 use std::fs;
 use std::io::{Read, Seek, SeekFrom};
-use std::path::PathBuf;
 
-fn tmp_path(name: &str) -> PathBuf {
-    let mut p = std::env::temp_dir();
-    p.push(format!("mmap_io_v0_9_11_{}_{}", name, std::process::id()));
-    p
-}
+mod common;
+use common::tmp_path;
 
 // ---------------------------------------------------------------------
 // as_slice_bytes: 0.9.6 compat shim

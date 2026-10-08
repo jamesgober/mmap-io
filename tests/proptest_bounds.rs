@@ -23,7 +23,9 @@
 
 use mmap_io::{errors::MmapIoError, MemoryMappedFile};
 use proptest::prelude::*;
-use std::path::PathBuf;
+
+mod common;
+use common::TmpPath;
 
 /// Test file sizes. Kept small enough that 1000+ cases run in a
 /// reasonable time on CI, large enough to span at least a few pages on
@@ -31,22 +33,13 @@ use std::path::PathBuf;
 const MIN_FILE: u64 = 64;
 const MAX_FILE: u64 = 64 * 1024; // 64 KiB
 
-/// Generate a unique-per-call temp path. We avoid `tempfile`'s
-/// per-handle teardown because that interacts poorly with our explicit
-/// mmap drop ordering on Windows.
-fn tmp_path(tag: &str, seed: u64) -> PathBuf {
-    let mut p = std::env::temp_dir();
-    p.push(format!(
-        "mmap_io_proptest_bounds_{}_{}_{}",
-        tag,
-        std::process::id(),
-        seed
-    ));
-    p
+/// A unique path in a private temp dir for this case.
+fn tmp_path(tag: &str, seed: u64) -> TmpPath {
+    common::tmp_path(&format!("{tag}_{seed}"))
 }
 
 /// Build a fresh RW mapping of the given size, filled with zeroes.
-fn rw_mmap(size: u64, tag: &str, seed: u64) -> (MemoryMappedFile, PathBuf) {
+fn rw_mmap(size: u64, tag: &str, seed: u64) -> (MemoryMappedFile, TmpPath) {
     let path = tmp_path(tag, seed);
     let _ = std::fs::remove_file(&path);
     let mmap = MemoryMappedFile::create_rw(&path, size).expect("create_rw");
@@ -55,7 +48,7 @@ fn rw_mmap(size: u64, tag: &str, seed: u64) -> (MemoryMappedFile, PathBuf) {
 
 /// Build a fresh RO mapping by creating an RW file, writing a known
 /// pattern, dropping, then re-opening read-only.
-fn ro_mmap(size: u64, tag: &str, seed: u64) -> (MemoryMappedFile, PathBuf) {
+fn ro_mmap(size: u64, tag: &str, seed: u64) -> (MemoryMappedFile, TmpPath) {
     let path = tmp_path(tag, seed);
     let _ = std::fs::remove_file(&path);
     {

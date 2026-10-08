@@ -14,23 +14,19 @@
 
 use mmap_io::{errors::MmapIoError, MemoryMappedFile};
 use proptest::prelude::*;
-use std::path::PathBuf;
 use std::sync::atomic::Ordering;
+
+mod common;
+use common::TmpPath;
 
 const FILE_SIZE: u64 = 4096; // single page, plenty of room for atomic slots
 
-fn tmp_path(tag: &str, seed: u64) -> PathBuf {
-    let mut p = std::env::temp_dir();
-    p.push(format!(
-        "mmap_io_proptest_atomic_{}_{}_{}",
-        tag,
-        std::process::id(),
-        seed
-    ));
-    p
+/// A unique path in a private temp dir for this case.
+fn tmp_path(tag: &str, seed: u64) -> TmpPath {
+    common::tmp_path(&format!("{tag}_{seed}"))
 }
 
-fn fresh_rw(tag: &str, seed: u64) -> (MemoryMappedFile, PathBuf) {
+fn fresh_rw(tag: &str, seed: u64) -> (MemoryMappedFile, TmpPath) {
     let path = tmp_path(tag, seed);
     let _ = std::fs::remove_file(&path);
     let mmap = MemoryMappedFile::create_rw(&path, FILE_SIZE).expect("create_rw");

@@ -2,18 +2,10 @@
 
 use mmap_io::{flush::FlushPolicy, MemoryMappedFile, MmapMode, TouchHint};
 use std::fs;
-use std::path::PathBuf;
 use std::time::Instant;
 
-fn tmp_path(name: &str) -> PathBuf {
-    let mut p = std::env::temp_dir();
-    p.push(format!(
-        "mmap_io_critical_test_{}_{}",
-        name,
-        std::process::id()
-    ));
-    p
-}
+mod common;
+use common::tmp_path;
 
 // Runs everywhere: `.huge_pages(true)` is a Linux-only hint and a
 // no-op elsewhere, so mapping creation must succeed on every platform.

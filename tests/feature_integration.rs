@@ -1,5 +1,7 @@
 //! Integration tests for all new features.
 
+mod common;
+
 #[cfg(all(
     feature = "advise",
     feature = "iterator",
@@ -9,23 +11,14 @@
     feature = "watch"
 ))]
 mod all_features {
+    use crate::common::tmp_path;
     use mmap_io::{create_mmap, ChangeEvent, MemoryMappedFile, MmapAdvice};
     use std::fs;
-    use std::path::PathBuf;
+
     use std::sync::atomic::{AtomicBool, Ordering};
     use std::sync::Arc;
     use std::thread;
     use std::time::Duration;
-
-    fn tmp_path(name: &str) -> PathBuf {
-        let mut p = std::env::temp_dir();
-        p.push(format!(
-            "mmap_io_integration_test_{}_{}",
-            name,
-            std::process::id()
-        ));
-        p
-    }
 
     #[test]
     fn test_all_features_integration() {
@@ -269,14 +262,10 @@ mod all_features {
     }
 }
 
-/// Temp-dir path for the single-feature tests below (never the CWD).
+/// Private temp path for the single-feature tests below (never the CWD).
 #[cfg(any(feature = "advise", feature = "iterator", feature = "atomic"))]
-fn single_feature_path(name: &str) -> std::path::PathBuf {
-    std::env::temp_dir().join(format!(
-        "mmap_io_single_feature_{}_{}",
-        name,
-        std::process::id()
-    ))
+fn single_feature_path(name: &str) -> common::TmpPath {
+    common::tmp_path(name)
 }
 
 // Test that features can be used independently

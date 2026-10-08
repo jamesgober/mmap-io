@@ -11,13 +11,9 @@
 
 use mmap_io::{flush::FlushPolicy, MemoryMappedFile, MmapMode};
 use std::fs;
-use std::path::PathBuf;
 
-fn tmp_path(name: &str) -> PathBuf {
-    let mut p = std::env::temp_dir();
-    p.push(format!("mmap_io_c1_test_{}_{}", name, std::process::id()));
-    p
-}
+mod common;
+use common::tmp_path;
 
 /// Read the underlying file from a fresh OS handle. This bypasses the
 /// page cache view that the active mmap might be serving, giving us

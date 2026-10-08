@@ -5,13 +5,9 @@ use mmap_io::{
     MmapMode,
 };
 use std::fs;
-use std::path::PathBuf;
 
-fn tmp_path(name: &str) -> PathBuf {
-    let mut p = std::env::temp_dir();
-    p.push(format!("mmap_io_test_{}_{}", name, std::process::id()));
-    p
-}
+mod common;
+use common::tmp_path;
 
 #[test]
 fn create_write_read_flush_ro() {
@@ -113,9 +109,8 @@ fn flush_policy_interval_flushes_automatically() {
         .expect("builder create");
 
     mmap.update_region(10, b"INTV").expect("update");
-    // NO manual flush. Wait long enough for the background thread
-    // to wake up and flush at least once.
-    std::thread::sleep(std::time::Duration::from_millis(300));
+    // NO manual flush. Wait for the background thread to flush.
+    common::wait_for_background_flush(&mmap);
 
     let ro = load_mmap(&path, MmapMode::ReadOnly).expect("open ro");
     let slice = ro.as_slice(10, 4).expect("slice");

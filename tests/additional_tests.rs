@@ -7,14 +7,10 @@ use mmap_io::{
     MmapIoError, MmapMode,
 };
 use std::fs;
-use std::path::PathBuf;
 use std::sync::Arc;
 
-fn tmp_path(name: &str) -> PathBuf {
-    let mut p = std::env::temp_dir();
-    p.push(format!("mmap_io_test_{}_{}", name, std::process::id()));
-    p
-}
+mod common;
+use common::tmp_path;
 
 #[test]
 fn test_resize_operations() {

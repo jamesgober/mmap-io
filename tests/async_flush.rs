@@ -3,17 +3,9 @@
 
 use mmap_io::MemoryMappedFile;
 use std::fs;
-use std::path::PathBuf;
 
-fn tmp_path(name: &str) -> PathBuf {
-    let mut p = std::env::temp_dir();
-    p.push(format!(
-        "mmap_io_async_test_{}_{}",
-        name,
-        std::process::id()
-    ));
-    p
-}
+mod common;
+use common::tmp_path;
 
 #[tokio::test(flavor = "multi_thread")]
 async fn async_update_region_auto_flushes() {

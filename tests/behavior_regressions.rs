@@ -9,16 +9,13 @@ use mmap_io::segment::SegmentMut;
 use mmap_io::{MemoryMappedFile, MmapIoError, MmapMode};
 use std::fs;
 use std::io::{Read, Seek, SeekFrom};
-use std::path::{Path, PathBuf};
+use std::path::Path;
 use std::sync::Arc;
 use std::thread;
 use std::time::{Duration, Instant};
 
-fn tmp_path(name: &str) -> PathBuf {
-    let mut p = std::env::temp_dir();
-    p.push(format!("mmap_io_behavior_{}_{}", name, std::process::id()));
-    p
-}
+mod common;
+use common::tmp_path;
 
 fn read_file(path: &Path) -> Vec<u8> {
     fs::read(path).expect("read file")

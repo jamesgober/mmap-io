@@ -152,7 +152,12 @@ mod tests {
             true
         })
         .expect("flusher");
-        thread::sleep(Duration::from_millis(50));
+        // Wait (bounded) for the callback to run at least once instead
+        // of a fixed sleep, which is too short on a loaded machine.
+        let deadline = Instant::now() + Duration::from_secs(10);
+        while calls.load(Ordering::SeqCst) == 0 && Instant::now() < deadline {
+            thread::sleep(Duration::from_millis(1));
+        }
         drop(flusher);
         let after_drop = calls.load(Ordering::SeqCst);
         assert!(after_drop > 0, "callback never ran");

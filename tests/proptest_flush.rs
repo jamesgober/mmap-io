@@ -13,17 +13,13 @@
 use mmap_io::{flush::FlushPolicy, MemoryMappedFile, MmapMode};
 use proptest::prelude::*;
 use std::io::{Read, Seek, SeekFrom};
-use std::path::PathBuf;
 
-fn tmp_path(tag: &str, seed: u64) -> PathBuf {
-    let mut p = std::env::temp_dir();
-    p.push(format!(
-        "mmap_io_proptest_flush_{}_{}_{}",
-        tag,
-        std::process::id(),
-        seed
-    ));
-    p
+mod common;
+use common::TmpPath;
+
+/// A unique path in a private temp dir for this case.
+fn tmp_path(tag: &str, seed: u64) -> TmpPath {
+    common::tmp_path(&format!("{tag}_{seed}"))
 }
 
 /// Read `len` bytes from `path` at `offset` via a fresh handle (i.e.,

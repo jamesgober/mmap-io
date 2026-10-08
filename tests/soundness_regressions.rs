@@ -17,17 +17,14 @@
 
 use mmap_io::{MemoryMappedFile, MmapIoError};
 use std::fs;
-use std::path::{Path, PathBuf};
+use std::path::Path;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{mpsc, Arc};
 use std::thread;
 use std::time::{Duration, Instant};
 
-fn tmp_path(name: &str) -> PathBuf {
-    let mut p = std::env::temp_dir();
-    p.push(format!("mmap_io_soundness_{}_{}", name, std::process::id()));
-    p
-}
+mod common;
+use common::tmp_path;
 
 fn on_disk_len(path: &Path) -> u64 {
     fs::metadata(path).expect("metadata").len()

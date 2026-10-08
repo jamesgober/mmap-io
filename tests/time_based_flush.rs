@@ -10,15 +10,9 @@
 use mmap_io::{flush::FlushPolicy, MemoryMappedFile, MmapMode};
 use std::fs;
 use std::io::{Read, Seek, SeekFrom};
-use std::path::PathBuf;
-use std::thread;
-use std::time::Duration;
 
-fn tmp_path(name: &str) -> PathBuf {
-    let mut p = std::env::temp_dir();
-    p.push(format!("mmap_io_c2_test_{}_{}", name, std::process::id()));
-    p
-}
+mod common;
+use common::tmp_path;
 
 /// Read the file from a fresh OS handle, bypassing whatever cached
 /// view the active mmap exposes.
@@ -49,9 +43,9 @@ fn time_based_flush_actually_flushes() {
     let payload = b"TIME_BASED_FLUSH_OK";
     mmap.update_region(0, payload).expect("write");
 
-    // Wait long enough for the flusher thread to wake up at least
-    // twice. With interval=100ms, 500ms gives a comfortable margin.
-    thread::sleep(Duration::from_millis(500));
+    // Wait for the flusher thread to flush (it resets pending_bytes)
+    // and for that flush call to return.
+    common::wait_for_background_flush(&mmap);
 
     // Read from disk via a separate handle. If C2 is fixed, the
     // payload is durable; if broken, the kernel page cache may

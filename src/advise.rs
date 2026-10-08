@@ -179,20 +179,18 @@ mod tests {
     use std::fs;
     use std::path::PathBuf;
 
-    fn tmp_path(name: &str) -> PathBuf {
-        let mut p = std::env::temp_dir();
-        p.push(format!(
-            "mmap_io_advise_test_{}_{}",
-            name,
-            std::process::id()
-        ));
-        p
+    /// A path in a fresh private temp dir; the dir is removed when
+    /// the returned `TempDir` drops.
+    fn tmp_path(name: &str) -> (tempfile::TempDir, PathBuf) {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let path = dir.path().join(name);
+        (dir, path)
     }
 
     #[test]
     #[cfg(feature = "advise")]
     fn test_advise_operations() {
-        let path = tmp_path("advise_ops");
+        let (_dir, path) = tmp_path("advise_ops");
         let _ = fs::remove_file(&path);
         let file = create_mmap(&path, 3 * 4096).expect("create");
 
@@ -216,7 +214,7 @@ mod tests {
     #[test]
     #[cfg(feature = "advise")]
     fn test_advise_with_different_modes() {
-        let path = tmp_path("advise_modes");
+        let (_dir, path) = tmp_path("advise_modes");
         let _ = fs::remove_file(&path);
 
         // Create and test with RW mode

@@ -8,18 +8,10 @@ use mmap_io::{
     MmapIoError,
 };
 use std::fs;
-use std::path::PathBuf;
 use std::sync::Arc;
 
-fn tmp_path(name: &str) -> PathBuf {
-    let mut p = std::env::temp_dir();
-    p.push(format!(
-        "mmap_io_segment_resize_test_{}_{}",
-        name,
-        std::process::id()
-    ));
-    p
-}
+mod common;
+use common::tmp_path;
 
 #[test]
 fn segment_remains_valid_when_parent_grows() {

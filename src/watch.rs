@@ -294,14 +294,12 @@ mod tests {
     use std::sync::Arc;
     use std::time::{Duration, Instant};
 
-    fn tmp_path(name: &str) -> PathBuf {
-        let mut p = std::env::temp_dir();
-        p.push(format!(
-            "mmap_io_watch_test_{}_{}",
-            name,
-            std::process::id()
-        ));
-        p
+    /// A path in a fresh private temp dir; the dir is removed when
+    /// the returned `TempDir` drops.
+    fn tmp_path(name: &str) -> (tempfile::TempDir, PathBuf) {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let path = dir.path().join(name);
+        (dir, path)
     }
 
     /// Spin until `pred()` returns true or `timeout` elapses. Returns
@@ -340,7 +338,7 @@ mod tests {
     #[test]
     #[cfg(feature = "watch")]
     fn test_watch_file_changes() {
-        let path = tmp_path("watch_changes");
+        let (_dir, path) = tmp_path("watch_changes");
         let _ = fs::remove_file(&path);
 
         let mmap = create_mmap(&path, 1024).expect("create");
@@ -385,7 +383,7 @@ mod tests {
     #[test]
     #[cfg(feature = "watch")]
     fn test_multiple_watchers() {
-        let path = tmp_path("multi_watch");
+        let (_dir, path) = tmp_path("multi_watch");
         let _ = fs::remove_file(&path);
 
         let mmap = create_mmap(&path, 1024).expect("create");
@@ -431,7 +429,7 @@ mod tests {
     #[test]
     #[cfg(feature = "watch")]
     fn test_watch_handle_drop_stops_watching() {
-        let path = tmp_path("watch_drop");
+        let (_dir, path) = tmp_path("watch_drop");
         let _ = fs::remove_file(&path);
 
         let mmap = create_mmap(&path, 1024).expect("create");

@@ -15,19 +15,11 @@
 //! succeed.
 
 use mmap_io::{errors::MmapIoError, MemoryMappedFile};
-use std::path::PathBuf;
+
+mod common;
+use common::tmp_path;
 
 const SIZE: u64 = 64 * 1024;
-
-fn tmp_path(name: &str) -> PathBuf {
-    let mut p = std::env::temp_dir();
-    p.push(format!(
-        "mmap_io_range_edges_{}_{}",
-        name,
-        std::process::id()
-    ));
-    p
-}
 
 /// Ranges that must be rejected for a mapping of `total` bytes.
 fn hostile_ranges(total: u64) -> Vec<(u64, u64)> {
@@ -68,7 +60,7 @@ fn assert_oob(res: Result<(), MmapIoError>, op: &str, offset: u64, len: u64) {
     }
 }
 
-fn create_dirty(name: &str) -> (PathBuf, MemoryMappedFile) {
+fn create_dirty(name: &str) -> (common::TmpPath, MemoryMappedFile) {
     let path = tmp_path(name);
     let _ = std::fs::remove_file(&path);
     let mmap = MemoryMappedFile::create_rw(&path, SIZE).expect("create_rw");

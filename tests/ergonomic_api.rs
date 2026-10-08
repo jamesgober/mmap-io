@@ -7,13 +7,9 @@ use mmap_io::flush::FlushPolicy;
 use mmap_io::{MemoryMappedFile, MmapIoError, MmapMode};
 use std::fs::{self, OpenOptions};
 use std::io::{Read, Seek, SeekFrom};
-use std::path::PathBuf;
 
-fn tmp_path(name: &str) -> PathBuf {
-    let mut p = std::env::temp_dir();
-    p.push(format!("mmap_io_ergonomic_{}_{}", name, std::process::id()));
-    p
-}
+mod common;
+use common::tmp_path;
 
 #[test]
 fn open_or_create_creates_when_missing() {
