@@ -1066,7 +1066,7 @@ This is complementary to `advise(offset, len, MmapAdvice::WillNeed)`, which oper
 pub fn touch_pages(&self) -> Result<()>
 ```
 
-**Description**: Prewarns (touches) all pages by reading the first byte of each page, forcing the OS to load all pages into physical memory. This eliminates page faults during subsequent access, which is useful for benchmarking and performance-critical sections.
+**Description**: Prewarms (touches) all pages by reading the first byte of each page, forcing the OS to load all pages into physical memory. This eliminates page faults during subsequent access, which is useful for benchmarking and performance-critical sections.
 
 **Returns**: `Result<()>`
 

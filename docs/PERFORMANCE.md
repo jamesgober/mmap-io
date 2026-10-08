@@ -2,148 +2,156 @@
 
 Measured numbers for the public API surface. Run `cargo bench --all-features --bench mmap_bench` to reproduce on your own machine.
 
-The headline wins from the 0.9.5 → 0.9.10 audit work are now backed by real numbers, not just theory:
+Headline numbers (re-measured for 1.1):
 
-- **Iterator zero-copy redesign (audit H1)**: 13-475x faster than the old `chunks_owned()` path depending on chunk size.
-- **Unified `as_slice` on RW (audit H4)**: 15-49x faster than the `read_into` (memcpy) path for sequential reads.
-- **`touch_pages` tight loop (audit H2)**: 1 GiB in 2 ms (≈500 GiB/s effective rate, dominated by RAM bandwidth and cache behaviour).
-- **Microflush optimisation**: sub-100 ns end-to-end for small range flushes.
+- **Iterator zero-copy redesign (audit H1)**: 40-2000x faster than the `chunks_owned()` path depending on chunk size.
+- **Unified `as_slice` on RW (audit H4)**: 30-45x faster than the `read_into` (memcpy) path for sequential reads.
+- **`touch_pages` tight loop (audit H2)**: 1 GiB in about 2.6 ms.
+- **`flush()` is a real, synchronous flush**: roughly 0.4-1.3 ms on the Windows reference machine and 0.9-2 ms on the Linux one for small and medium dirty ranges. Earlier versions of this file reported a "36 ns microflush"; that number measured a flush that never reached the OS (see below).
 
-## Reference machine
+## Reference machines
 
-These numbers are from a Windows 11 development box. Linux numbers are typically 1.2x-2x faster on the syscall-heavy paths (advise, lock, flush) thanks to faster system call entry; the user-space-only paths (`as_slice`, iterator walking, atomic operations) are within noise of the same. Re-run the benches on your target hardware for production sizing.
+Two machines, same hardware. Re-run the benches on your target hardware for production sizing; flush numbers in particular depend on the storage device and filesystem far more than on this crate.
 
-- **OS**: Windows 11 Pro 26200
-- **Toolchain**: stable Rust (1.75 MSRV verified)
-- **Filesystem**: NTFS on SSD
-- **Bench harness**: criterion 0.5 with 30 samples per measurement, 300 ms warm-up, 3 s measurement window
+- **Windows**: Windows 11 Pro 26200, NTFS on SSD.
+- **Linux**: WSL2 Ubuntu on the same box, ext4 on a virtual disk (VHDX) backed by the same SSD. WSL2's virtual disk adds latency to synchronous flushes; bare-metal Linux on an NVMe SSD is typically faster.
+- **Toolchain**: stable Rust (1.75 MSRV verified for the library).
+- **Bench harness**: criterion 0.5 with 30 samples per measurement, 300 ms warm-up, 3 s measurement window.
+
+Unless a table says otherwise, numbers are Windows point estimates.
 
 ## The big wins
 
 ### Iterator zero-copy redesign (audit H1)
 
-The `chunks()` and `pages()` iterators changed in 0.9.7 from yielding `Result<Vec<u8>>` (heap allocation + memcpy per chunk) to yielding `MappedSlice<'a>` (zero-copy borrow into the mapping). The migration aid `chunks_owned()` preserves the old shape for callers that need owned buffers.
+The `chunks()` and `pages()` iterators yield `MappedSlice<'a>` (zero-copy borrow into the mapping) instead of `Result<Vec<u8>>` (heap allocation + memcpy per chunk). The migration aid `chunks_owned()` preserves the old shape for callers that need owned buffers.
 
 Measured against a 16 MiB RO file:
 
 | Chunk size | Zero-copy (`chunks`) | Owned (`chunks_owned`) | Speedup |
 |------------|---------------------|------------------------|---------|
-| 4 KiB      | **25.8 µs**         | 341.2 µs               | **13.2x** |
-| 64 KiB     | **2.0 µs**          | 962.3 µs               | **475x** |
-| page (4 KiB) | **23.9 µs**       | (see 4 KiB row)        | n/a     |
+| 4 KiB      | **7.8 µs**          | 311-458 µs             | **40-60x** |
+| 64 KiB     | **0.49 µs**         | 226-982 µs             | **460-2000x** |
+| page (4 KiB) | **8.6 µs**        | (see 4 KiB row)        | n/a     |
 
-The 64 KiB result is more extreme because the owned-chunk path's allocator overhead grows with the size of each `Vec<u8>` allocation. Zero-copy stays in the low microseconds because it's pure pointer arithmetic; the allocator overhead disappears.
+The owned column varies a lot between runs because it is dominated by the allocator; the zero-copy column is stable. Since 1.1, `MappedSlice` caches its slice pointer at construction instead of re-indexing on every deref, which made the zero-copy rows about 3x faster than in 1.0 (25.8 µs / 2.0 µs / 23.9 µs). On RW mappings each yielded item also takes its own (recursive) read lock, so it stays valid if kept after the iterator is dropped.
 
 ### Unified `as_slice` on RW mappings (audit H4)
 
-Through 0.9.6 RW mappings forced you to use `read_into` (memcpy) for reads. Since 0.9.7 `as_slice` works on every mode and returns a `MappedSlice<'_>` that derefs to `&[u8]`. For sequential scans this eliminates one full memcpy of the data:
+`as_slice` works on every mode and returns a `MappedSlice<'_>` that derefs to `&[u8]`. For sequential scans this eliminates one full memcpy of the data:
 
 | File size | `as_slice` | `read_into` (memcpy) | Speedup |
 |-----------|-----------|----------------------|---------|
-| 1 MiB     | **615 ns** | 19.6 µs              | **32x** |
-| 16 MiB    | **17.2 µs** | 849 µs              | **49x** |
-| 256 MiB   | **1.0 ms** | 14.7 ms              | **15x** |
+| 1 MiB     | **0.34 µs** | 13.7 µs            | **40x** |
+| 16 MiB    | **18.5 µs** | 739 µs             | **40x** |
+| 256 MiB   | **0.45 ms** | 14.7 ms            | **33x** |
 
-The speedup compresses at larger sizes because the underlying memory walk dominates the wall-clock; the memcpy is no longer the bottleneck. But for small / medium reads (the common case) the win is huge.
+The `as_slice` column touches one byte per 4 KiB page, so it measures page-table and TLB behavior; it varies by up to 30% between runs (also between runs of the same build).
 
-Random-access reads see a smaller but still real win:
+Random-access reads (16 MiB RO file):
 
 | Request size | `as_slice` | `read_into` | Speedup |
 |--------------|-----------|-------------|---------|
-| 64 B         | 55 ns     | 53 ns       | ~1x     |
-| 256 B        | 63 ns     | 38 ns       | ~0.6x   |
-| 4 KiB        | **56 ns** | 129 ns      | **2.3x** |
-| 64 KiB       | **38 ns** | 1.29 µs     | **34x** |
+| 64 B         | **11 ns** | 29 ns       | **2.5x** |
+| 256 B        | **11 ns** | 29 ns       | **2.8x** |
+| 4 KiB        | **17 ns** | 69 ns       | **4x**  |
+| 64 KiB       | **16 ns** | 1.1 µs      | **70x** |
 
-At very small request sizes (64-256 B) `read_into` ties or wins because the memcpy is too small to matter and `as_slice` carries the cost of constructing a `MappedSlice`. The crossover is at ~1 KiB; above that, `as_slice` pulls ahead and stays ahead.
+Through 1.0 `read_into` won below about 1 KiB because building a `MappedSlice` cost 50-100 ns. With the cached slice pointer and the inlined accessors, `as_slice` is now ahead at every size.
 
 ### `touch_pages` tight loop (audit H2)
 
-Pre-0.9.7 `touch_pages` called `read_into(offset, &mut buf[..1])` for each page, which acquired the lock, validated bounds, and memcpy'd a byte 262,144 times for a 1 GiB file. The new implementation acquires the lock ONCE and walks the mapping with `ptr::read_volatile` wrapped in `std::hint::black_box`:
+`touch_pages` acquires the lock once and walks the mapping with `ptr::read_volatile` wrapped in `std::hint::black_box`:
 
-| File size | Time   | Effective rate |
-|-----------|--------|----------------|
-| 1 MiB     | 354 ns | 2,800 GiB/s    |
-| 8 MiB     | 9.5 µs | 832 GiB/s      |
-| 32 MiB    | 48 µs  | 670 GiB/s      |
-| 1 GiB     | **2.08 ms** | **481 GiB/s** |
+| File size | Time   |
+|-----------|--------|
+| 1 MiB     | 0.35 µs |
+| 8 MiB     | 9-11 µs |
+| 32 MiB    | 50 µs  |
+| 1 GiB (RW) | **2.6 ms** |
 
-These are not memory-bandwidth measurements. The OS only faults pages that aren't already resident; once they're warm, touching them is bounded by the page-table walk and the single volatile byte read per page (one cache line per stride). The 1 GiB result with the OS already holding the file in the page cache is the realistic upper bound for warm `touch_pages`. Cold runs (when the file isn't in cache) will be bounded by SSD/HDD read rate.
+These are not memory-bandwidth measurements. The OS only faults pages that aren't already resident; once they're warm, touching them is bounded by the page-table walk and the single volatile byte read per page. Cold runs (when the file isn't in cache) are bounded by the storage read rate.
 
-### Microflush optimisation
+## Flush cost
 
-`flush_range` for sub-page-sized regions expands to page-aligned boundaries to batch the underlying `msync` / `FlushViewOfFile` call:
+Since 1.1, `flush()` and `flush_range()` on a ReadWrite mapping always flush synchronously: `msync(MS_SYNC)` on Unix, `FlushViewOfFile` + `FlushFileBuffers` on Windows. Before 1.1 they returned early whenever the crate's dirty-byte counter was zero, and under the default `FlushPolicy::Never` / `Manual` that counter was never incremented, so an explicit flush after `update_region` did nothing. On Linux the non-skipped path used `msync(MS_ASYNC)`, which only schedules writeback. The 1.0 numbers below therefore measure a no-op.
 
-| Flush size | Time  | Effective rate |
-|------------|-------|----------------|
-| 64 B       | 36 ns | 1.6 GiB/s      |
-| 256 B      | 37 ns | 6.4 GiB/s      |
-| 512 B      | 42 ns | 10.8 GiB/s     |
-| 1 KiB      | 40 ns | 23.7 GiB/s     |
-| 2 KiB      | 47 ns | 40.7 GiB/s     |
-| 4 KiB      | 54 ns | 73.0 GiB/s     |
-| 8 KiB      | 72 ns | 112 GiB/s      |
+`flush_range` after a write of the given size (64 KiB file):
 
-The wall-clock is dominated by the syscall round-trip (msync on Linux / FlushViewOfFile on Windows). The fact that the time barely moves between 64 B and 4 KiB tells you the syscall itself is the floor, not the byte count.
+| Range size | 1.0 (no-op) | 1.1 Windows | 1.1 Linux (WSL2) |
+|------------|-------------|-------------|------------------|
+| 64 B       | 36 ns       | 0.43 ms     | 2.1 ms           |
+| 256 B      | 37 ns       | 0.47 ms     | 1.1 ms           |
+| 1 KiB      | 39 ns       | 0.50 ms     | 1.2 ms           |
+| 4 KiB      | 52 ns       | 0.78 ms     | 1.2 ms           |
+| 8 KiB      | 67 ns       | 1.28 ms     | 1.1 ms           |
+
+The time is the storage round-trip, not the byte count: the kernel flushes whole pages, and on Windows `FlushFileBuffers` flushes the whole file's buffers whatever the range. A sub-page range costs the same as a page.
+
+`update_region` of the whole file followed by `flush()`:
+
+| File size | 1.0 (no-op) | 1.1 Windows | 1.1 Linux (WSL2) |
+|-----------|-------------|-------------|------------------|
+| 4 KiB     | 43 ns       | 0.47 ms     | 0.88 ms          |
+| 64 KiB    | 0.59 µs     | 0.44 ms     | 0.87 ms          |
+| 1 MiB     | 16 µs       | 0.87 ms     | 1.75 ms          |
+
+`update_region` alone costs 34 ns / 0.6 µs / 16 µs for the same sizes. Batch writes and flush once per batch; every flush is a synchronous write-back.
 
 ## Atomic operations
 
-`atomic_u64::fetch_add` under N-thread contention, 10,000 ops per thread (60,000 / 100,000 ops total):
+`atomic_u64::fetch_add` under N-thread contention, 10,000 ops per thread:
 
-| Threads | Total time | ns/op | Scaling |
-|---------|-----------|-------|---------|
-| 1       | 100 µs    | 10 ns | baseline |
-| 2       | 171 µs    | 8.5 ns | 0.85x per thread |
-| 4       | 334 µs    | 8.3 ns | 0.83x per thread |
-| 8       | 620 µs    | 7.75 ns | 0.77x per thread |
+| Threads | Total time | ns/op |
+|---------|-----------|-------|
+| 1       | 138 µs    | 13.8 ns |
+| 2       | 196 µs    | 9.8 ns |
+| 4       | 370 µs    | 9.2 ns |
+| 8       | 694 µs    | 8.7 ns |
 
-Scaling is sub-linear because all threads contend on the same cache line. This is exactly how a single shared atomic should behave: the cache-coherence protocol serialises the writes. Spread your counters across separate cache lines if you need higher throughput.
+All threads contend on the same cache line, so the cache-coherence protocol serialises the writes. Spread your counters across separate cache lines if you need higher throughput. Atomic views require a ReadWrite mapping.
 
 ## Sequential writes under different flush policies
 
 4 MiB total write, 64 KiB per `update_region` call:
 
-| Policy                  | Total time | Notes |
-|-------------------------|-----------|-------|
-| `Manual`                | 64 µs     | Fastest: no syscalls in the write loop |
-| `EveryMillis(10)`       | 84 µs     | Background flush thread runs every 10 ms; almost no overhead on the write path |
-| `EveryBytes(64 KiB)`    | **17.3 ms** | Flushes once per `update_region` call (32 flushes for 4 MiB at 64 KiB each); 200x slower |
+| Policy                  | 1.0 Windows | 1.1 Windows | 1.0 Linux | 1.1 Linux (WSL2) | Notes |
+|-------------------------|-------------|-------------|-----------|------------------|-------|
+| `Manual`                | 56 µs       | 52 µs       | 53 µs     | 57 µs            | No syscalls in the write loop |
+| `EveryMillis(10)`       | 71 µs       | 58 µs       | 55 µs     | 80 µs            | Background thread flushes every 10 ms; on Linux each flush now holds the read lock for a synchronous `msync`, which writers wait for |
+| `EveryBytes(64 KiB)`    | 19 ms       | 19.6 ms     | 62 µs     | **58 ms**        | 64 synchronous flushes (one per write) |
 
-The `EveryBytes` policy is much slower than `Manual` because it forces a flush after every write. If you need bounded-by-bytes durability, prefer a larger threshold (1 MiB+) so the flush amortises across more writes.
+`EveryBytes(64 KiB)` flushes after every 64 KiB write. On Windows it was already synchronous in 1.0 (the counter was non-zero, so memmap2's flush ran); on Linux 1.0 used `msync(MS_ASYNC)`, which is why its 62 µs was not a durable flush. If you need bounded-by-bytes durability, prefer a larger threshold (1 MiB+) so each flush covers more writes.
 
 ## File operations
 
-| Operation | Time |
-|-----------|------|
-| `create_rw` 4 KiB | 399 µs |
-| `create_rw` 64 KiB | 237 µs |
-| `create_rw` 1 MiB | 246 µs |
-| `open_cow` 4 MiB | 28.7 µs |
-| `resize` (1 MiB grow + shrink) | 29.4 µs |
-| `advise` (sequential WillNeed) | 23 ns |
-| `read_into_rw` 4 KiB | 39 ns |
-| `read_into_rw` 64 KiB | 540 ns |
-| `read_into_rw` 1 MiB | 14.2 µs |
+| Operation | Windows | Linux (WSL2) |
+|-----------|---------|--------------|
+| `create_rw` 4 KiB - 1 MiB | 0.25-0.7 ms (very noisy) | 13 µs |
+| `open_cow` 4 MiB | 28-63 µs | 2.7 µs |
+| `resize` (1 MiB -> 8 MiB -> 1 MiB) | 77 µs | 6 µs |
+| `advise` (Sequential, 4 MiB) | 11 ns (no-op on Windows) | 74 ns |
+| `read_into_rw` 4 KiB | 82 ns | 24 ns |
+| `read_into_rw` 64 KiB | 0.60 µs | 0.57 µs |
+| `read_into_rw` 1 MiB | 15 µs | 15 µs |
 
-`create_rw` is dominated by Windows file-creation overhead; the actual mmap setup is sub-microsecond. The smallest size (4 KiB) is paradoxically slower because the small file forces extra metadata allocations.
-
-`advise` at 23 ns is the cost of one syscall round-trip. Whether to issue the advice depends on workload: it pays off when the OS prefetcher would otherwise miss your access pattern (random reads especially benefit from `WillNeed` if you can predict the offset).
+`create_rw` on Windows is dominated by file-creation overhead and varies by more than 2x between runs. `resize` on Windows got slower in 1.1 (24 µs in 1.0) because shrinking now really truncates the file: the view is unmapped, the file truncated, and the prefix remapped. In 1.0 a Windows shrink only lowered the cached length, which left the file at its old size and broke a later grow.
 
 ## Notes on reading these numbers
 
-- **Throughput numbers in the criterion HTML report are misleading for partial-touch benchmarks.** When a bench iterates over a 16 MiB file but reads only `slice[0]` from each chunk (1 byte), criterion reports throughput as if all 16 MiB were processed. The wall-clock time is the honest number; throughput is "criterion's framing of the unit-of-work" and depends on how the bench was written.
+- **Throughput numbers in the criterion HTML report are misleading for partial-touch benchmarks.** When a bench iterates over a 16 MiB file but reads only `slice[0]` from each chunk (1 byte), criterion reports throughput as if all 16 MiB were processed. The wall-clock time is the honest number.
 - **Cold vs warm runs differ by an order of magnitude on some metrics.** First access to a file pays page-fault cost; warm access is in the page cache. `touch_pages` exists precisely to convert cold to warm at a controlled moment.
-- **Numbers above are point estimates** (criterion's `point_estimate` field). The confidence intervals are typically ±2-10% of the point estimate; use the criterion HTML reports for tighter analysis.
+- **Numbers above are point estimates** (criterion's `point_estimate` field). Run-to-run variation on these machines was up to 30% for memory-bound benches and over 2x for file creation; use the criterion HTML reports for tighter analysis.
 
 ## Reproducing
 
 ```sh
-# Full suite, save baseline named "0.9.10":
-cargo bench --all-features --bench mmap_bench -- --save-baseline 0.9.10
+# Full suite, save a baseline:
+cargo bench --all-features --bench mmap_bench -- --save-baseline mine
 
 # Compare two baselines:
 cargo install critcmp
-critcmp 0.9.10 your-branch
+critcmp mine your-branch
 ```
 
-CI runs the full bench suite on every push to `main` and PR, uploads the criterion JSON as a build artifact, and (since 0.9.10) compares the PR head against the merge-base on the same runner. A regression of more than 15% on any group fails the check. See `.github/workflows/bench-regression.yml`.
+CI runs the full bench suite on every push to `main` and PR, uploads the criterion results as a build artifact, and compares the PR head against the merge-base on the same runner. A regression of more than 10% on any benchmark (the REPS.md limit) fails the check. See `.github/workflows/bench-regression.yml`.

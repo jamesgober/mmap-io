@@ -7,6 +7,73 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+Bug-fix release. Several of the fixes below are memory-safety bugs reachable from safe code (marked **soundness**); upgrading is recommended for every user. No public items were removed or renamed and no signatures changed; the behavior changes are listed under **Changed**.
+
+### Security
+
+- **`memmap2` >= 0.9.11** ([RUSTSEC-2026-0186](https://rustsec.org/advisories/RUSTSEC-2026-0186.html)). memmap2 before 0.9.11 did not validate `offset` / `len` in `flush_range` and `advise_range`. The memmap2 bump was contributed by **@merces** in #10; the requirement is now `0.9.11` so downstream builds cannot resolve 0.9.0-0.9.10. mmap-io also validates every range itself before calling memmap2 or the kernel, pinned by `tests/range_validation_edges.rs`.
+- **Removed the unused `anyhow` dependency** ([RUSTSEC-2026-0190](https://rustsec.org/advisories/RUSTSEC-2026-0190.html)).
+- **`event-listener` 5.4.1 -> 5.4.2** in `Cargo.lock` ([RUSTSEC-2026-0221](https://rustsec.org/advisories/RUSTSEC-2026-0221.html)). Reached through `blocking` under the `async` feature.
+
+### Fixed
+
+- **Soundness: use-after-free through `chunks()` / `pages()` items.** On RW mappings the read guard lived in the iterator while yielded items were plain borrows, so an item kept after the iterator was dropped pointed into memory that `resize()` could unmap. Every yielded item now holds its own read guard.
+- **Soundness: atomic views on read-only pages.** `atomic_u32` / `atomic_u64` and the slice variants returned views into RO and COW mappings whose safe `store` / `fetch_add` fault the process. They now return `MmapIoError::InvalidMode` unless the mapping is `ReadWrite`.
+- **Soundness: range checks against a stale length.** Accessors read the cached length, validated, and only then took the map lock, so a concurrent `resize()` could make `read_into` / `as_slice` index past the new mapping (panic, or `SIGBUS` on Linux). Every accessor now validates against the length of the mapping its guard protects. `advise()` and `lock()` / `unlock()` keep the guard alive across the syscall instead of releasing it before using the pointer.
+- **Soundness: `resize()` truncated before locking.** A shrink called `set_len` before taking the write lock, so live views of the tail faulted with `SIGBUS`. `resize()` now takes the write lock first.
+- **Soundness: `Send` impls relied on parking_lot internals.** `ChunkIterator`, `AtomicView`, and `AtomicSliceView` claimed parking_lot read guards are `Send`; they are not unless the `send_guard` feature is on. The feature is now enabled and a compile-time assertion guards it.
+- **Explicit `flush()` never flushed.** Under the default `FlushPolicy::Never` / `Manual` the dirty counter was never incremented, and `flush()` / `flush_range()` returned early when it was zero; writes through `as_slice_mut`, `chunks_mut`, atomics, `as_mut_ptr`, and `SegmentMut` never counted under any policy. On Linux the flush path used `msync(MS_ASYNC)`, which only schedules writeback. `flush()` now always performs a synchronous flush on RW mappings (`msync(MS_SYNC)` on Unix, `FlushViewOfFile` + `FlushFileBuffers` on Windows). See **Changed** for the counter semantics and **Performance** for the cost.
+- **`flush_range()` debited the global counter by an unrelated range**, which could suppress the next `EveryBytes` flush. A partial range now leaves the counter unchanged; a range covering the whole mapping resets it.
+- **Windows `resize()` shrink was virtual.** It only lowered the cached length: the file never shrank, and a later grow failed with os error 1224 or exposed the bytes that should have been cut off. The view is now unmapped, the file truncated, and the prefix remapped.
+- **Same-thread deadlock with a queued writer.** Taking a second read view (or calling `read_into`) on a thread that already held one deadlocked once another thread was waiting for the write lock. Read paths now use recursive read locks.
+- **`huge_pages(true)` pre-faulted the whole file.** The builder ran `madvise(MADV_POPULATE_WRITE)` over every mapping of 2 MiB or more, allocating every block of a sparse file and dirtying every page. It now only issues the `MADV_HUGEPAGE` hint.
+- **Builder `open()` ignored `FlushPolicy::EveryMillis` and `TouchHint::Eager`** (no flusher thread was started), and `open_or_create()` inherited that on its open path. All builder RW paths now apply every option.
+- **`open_or_create()` could truncate a file created concurrently** (`exists()` followed by a truncating create). It now opens without truncating and creates with `create_new`.
+- **`create_mmap_async()` truncated the file before validating the size.** It now delegates to `create_rw`, which validates first.
+- **`SegmentMut::write` wrote past the segment** when `data` was longer than the segment. It now returns `OutOfBounds` (segment-relative fields).
+- **`advise()` failed with `EINVAL` on Linux and macOS for offsets that are not page multiples.** The range start is now widened down to a page boundary.
+- **`MmapReader::seek(SeekFrom::End(i64::MIN))` panicked**, and seeking before position 0 silently clamped. Seeking now matches `std::io::Cursor`: `InvalidInput` for negative or overflowing targets, position unchanged.
+- **`utils::align_up(u64::MAX, 4096)` overflowed** (panic in debug, 0 in release). It now saturates to `u64::MAX`.
+- **`TimeBasedFlusher` and `WatchHandle` drop.** Both spawned a throwaway thread to join their worker, so the worker could still run after the drop returned. They now join directly (skipping the join when dropped on the worker itself), and the flusher sleeps on a condition variable instead of waking every 50 ms. `Drop` never panics.
+
+### Changed
+
+- **Zero-length range rule.** A zero-length request is accepted at any offset and does nothing, on every range API. Before, `as_slice`, `as_slice_mut`, `read_into`, and `Segment::new` rejected a zero-length request past the end while `flush_range`, `advise`, and the rest accepted it. Atomic views are not range requests and are unchanged. Documented in the crate docs and `docs/API.md`.
+- **`pending_bytes()` counts every write path under every policy**: `update_region`, `MappedSliceMut` (on drop), `chunks_mut`, atomic views (their size, on drop), and `as_mut_ptr` (the whole mapping). Under `EveryWrites` it now reports bytes, not the call count. It only drives automatic flushes; explicit `flush()` ignores it.
+- **Atomic views require a `ReadWrite` mapping** (`InvalidMode` on RO / COW, see **Fixed**). Checks run in the order mode, alignment, bounds.
+- **`resize()` truncates on Windows** and fails with `MmapIoError::Io` if another independent mapping of the same file is open, since Windows cannot truncate a mapped file. The mapping is restored at its old length in that case.
+- **`open_or_create()` extends an existing zero-length file** to `default_size` instead of failing, and never leaves an empty file behind when it errors. Builder `open_or_create()` defaults to `ReadWrite` on both paths, as documented; it opened existing files read-only before.
+- **`huge_pages(true)` is a hint**: `madvise(MADV_HUGEPAGE)` on Linux RW mappings (including after `resize`), no effect elsewhere. `MAP_HUGETLB` and Windows large pages were documented but never attempted; the docs now say so.
+- **parking_lot's `send_guard` feature is enabled.** parking_lot rejects `send_guard` together with its `deadlock_detection` feature, so a dependency graph that turns on `parking_lot/deadlock_detection` no longer compiles with mmap-io.
+- **`MappedSlice` and `MappedSliceMut` are now `Send`** (additive auto-trait change; `public-api.txt` updated). `MappedSliceMut` gained a `Drop` impl (pending-bytes accounting).
+- **`chunks()`, `pages()`, `chunks_owned()`, `pages_owned()`, and `chunks_mut()` no longer contain unreachable `expect` calls**; their incorrect `# Panics` sections are gone. `ChunkIteratorMut` reads the mapping length under its write lock.
+- **Dependencies:** `thiserror` and `cfg-if` removed (`MmapIoError` implements `Display` / `Error` / `From<io::Error>` by hand with byte-identical messages, pinned by a test); `libc` is a Unix-only dependency; docs.rs metadata drops the redundant `features = ["async"]`.
+- **Internals:** the cached length and the flush counters are `AtomicU64` instead of `RwLock<u64>`; `MappedSlice` caches its slice pointer at construction instead of re-indexing the guard on every deref.
+- **CI:** tests run for the default feature set, all features, no features, and each feature alone on Linux, macOS, and Windows; a new MSRV job builds the library on 1.75 on all three OSes; the bench-regression gate (which could never fail) parses critcmp's table and uses the REPS.md 10% limit; `actions/cache` v6 and `actions/upload-artifact` v7; tool installs no longer come from never-expiring caches.
+
+### Performance
+
+Measured with `cargo bench --all-features --bench mmap_bench` on the reference machines in `docs/PERFORMANCE.md` (Windows 11 / NTFS on SSD, and WSL2 Ubuntu / ext4 on the same SSD), 1.0.0 vs this release. REPS.md section 7 requires flush changes to state their measured cost and any regression above 10% to be justified:
+
+- **Flush paths are much slower because they now flush.** `flush_range` after a small write: 36-67 ns -> 0.43-1.28 ms (Windows), 35-61 ns -> 1.1-2.1 ms (Linux). `update_region` + `flush()`: 43 ns-16 µs -> 0.44-0.87 ms (Windows), 66 ns-14 µs -> 0.87-1.75 ms (Linux). The 1.0 numbers measured a flush that never reached the OS; there was no fast flush to preserve. Justified: the old behavior was a durability bug.
+- **`EveryBytes(64 KiB)` sequential write on Linux: 62 µs -> 58 ms** (`msync(MS_ASYNC)` -> `MS_SYNC`, 64 flushes). Unchanged on Windows (19 ms), where the flush was already synchronous. **`EveryBytes(n)` threshold bench** (one flush per write) on Linux: 0.15-15 µs -> 0.95-1.7 ms. Justified: same reason.
+- **`EveryMillis(10)` sequential write on Linux: 55 µs -> 80 µs**, because the background flush now holds the read lock for a synchronous `msync` that writers wait for. Windows: 71 µs -> 58 µs (noise).
+- **`resize` grow + shrink on Windows: 24 µs -> 77 µs**, because a shrink now really unmaps, truncates, and remaps (1.0 only lowered the cached length, which was the bug). Linux: 6.9 µs -> 6.1 µs.
+- **Faster:** zero-copy `chunks()` / `pages()` about 3x (16 MiB file, 4 KiB chunks: 26 µs -> 8-10 µs), random `as_slice` 4-10x (e.g. 64 B: 95 ns -> 11 ns Windows, 77 ns -> 15 ns Linux), `as_slice` on RO 2.5x (14 ns -> 5.5 ns), small `read_into` 10-25% (one lock acquisition instead of two), from the cached slice pointer, inlined accessors, and the atomic length.
+- **Within noise, flagged for the record:** `sequential_read/as_slice` at 16 MiB measured 1.2-1.45x slower on Linux and 0.9-1.33x on Windows across three reruns, while two runs of the unchanged 1.0 build differed by up to 1.3x on the same benches. The RO `as_slice` path does the same work as in 1.0 (one bounds check, no lock). `create_rw` and `open_cow` on Windows swung more than 2x between runs of the same build.
+
+### Documentation
+
+- **`docs/SAFETY.md` rewritten** around the locking model: who holds which guard, validation under the guard, the per-platform `resize` protocol, every `unsafe` category by function name, and what the crate cannot guarantee (other processes, mixing atomic and plain access to the same bytes, raw pointers).
+- **README, `docs/API.md`, rustdoc, examples:** `flush()` semantics and durability vs visibility; any live read view blocks every write (not only `resize`) and a same-thread write deadlocks; COW mappings are read-only in practice; `TouchHint::Lazy` equals `Never`; async helpers are runtime-agnostic and `update_region_async` allocates; corrected the README iterator example and version strings.
+- **`docs/PERFORMANCE.md`** re-measured for every flush path; the "36 ns microflush" figure measured a flush that never ran.
+- **`REPS.md`:** section 4 matches the real signatures, 4.3 describes the huge-page hint, 5.1 / 5.2 describe the locking and range rules, section 10 lists the actual dependencies, section 11 lists the four fuzz targets and what CI runs on MSRV.
+
+### Notes
+
+- MSRV unchanged at Rust 1.75 (library). The test suite's dev-dependencies (`proptest` 1.11, `half` 2.6 via `criterion`) need a newer toolchain.
+- New regression tests: `tests/soundness_regressions.rs` and `tests/behavior_regressions.rs`, plus unit tests for the flusher shutdown and a hugepages sparse-file test.
+
 <br>
 
 <!-- VERSION: 1.0.0 -->
@@ -847,7 +914,8 @@ impls. Everything is additive; no API breaks.
 - Basic README.
 
 <!-- LINK REFERENCE -->
-[Unreleased]: https://github.com/jamesgober/mmap-io/compare/v0.9.11...HEAD
+[Unreleased]: https://github.com/jamesgober/mmap-io/compare/v1.0.0...HEAD
+[1.0.0]: https://github.com/jamesgober/mmap-io/compare/v0.9.11...v1.0.0
 [0.9.11]: https://github.com/jamesgober/mmap-io/compare/v0.9.10...v0.9.11
 [0.9.10]: https://github.com/jamesgober/mmap-io/compare/v0.9.9...v0.9.10
 [0.9.9]: https://github.com/jamesgober/mmap-io/compare/v0.9.8...v0.9.9
