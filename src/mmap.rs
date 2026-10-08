@@ -233,13 +233,28 @@ impl MemoryMappedFile {
             )));
         }
         let path_ref = path.as_ref();
+        // Remember whether we create the file, so a failure below can
+        // undo it instead of leaving a stray, possibly huge, sparse file.
+        let existed = path_ref.exists();
         let file = OpenOptions::new()
             .create(true)
             .write(true)
             .read(true)
             .truncate(true)
             .open(path_ref)?;
-        file.set_len(size)?;
+        let undo = |file: File, e: std::io::Error| -> MmapIoError {
+            if existed {
+                // Already truncated by the open above; drop the extension.
+                let _ = file.set_len(0);
+            } else {
+                drop(file);
+                let _ = std::fs::remove_file(path_ref);
+            }
+            e.into()
+        };
+        if let Err(e) = file.set_len(size) {
+            return Err(undo(file, e));
+        }
         // SAFETY: `RawMmapMut::map_mut` is `unsafe` because the OS does
         // not prevent another process from concurrently modifying the
         // backing file under the mapping, which would violate Rust's
@@ -255,7 +270,10 @@ impl MemoryMappedFile {
         // Note: `create_rw` convenience ignores huge pages; use builder
         // for that.
         // Contract: `crate::raw::RawMmapMut::map_mut` (see `docs/SAFETY.md`, raw mapping layer).
-        let mmap = unsafe { RawMmapMut::map_mut(&file)? };
+        let mmap = match unsafe { RawMmapMut::map_mut(&file) } {
+            Ok(mmap) => mmap,
+            Err(e) => return Err(undo(file, e)),
+        };
         let inner = Inner {
             path: path_ref.to_path_buf(),
             file,
@@ -580,12 +598,20 @@ impl MemoryMappedFile {
         if data.is_empty() {
             return Ok(());
         }
+        self.update_region_within(offset, data, data.len() as u64)
+    }
+
+    /// Write `data` at `offset` after checking, under the write lock,
+    /// that the whole span `[offset, offset + span)` (with
+    /// `span >= data.len()`) fits the current mapping. Used by
+    /// `SegmentMut::write`, whose segment must still fit as a whole.
+    pub(crate) fn update_region_within(&self, offset: u64, data: &[u8], span: u64) -> Result<()> {
         let lock = self.write_lock("Update region requires ReadWrite or CopyOnWrite mode.")?;
         let len = data.len() as u64;
         {
             let mut guard = lock.write();
-            let (start, end) = slice_range(offset, len, guard.len() as u64)?;
-            guard[start..end].copy_from_slice(data);
+            let (start, _) = slice_range(offset, span.max(len), guard.len() as u64)?;
+            guard[start..start + data.len()].copy_from_slice(data);
         }
         // Apply flush policy after releasing the write lock; flushing
         // only needs a read guard.
@@ -3126,6 +3152,14 @@ impl std::os::windows::io::AsHandle for MemoryMappedFile {
 impl std::os::windows::io::AsRawHandle for MemoryMappedFile {
     fn as_raw_handle(&self) -> std::os::windows::io::RawHandle {
         std::os::windows::io::AsRawHandle::as_raw_handle(&self.inner.file)
+    }
+}
+
+/// Formats the bytes like `[u8]`, matching [`MappedSlice`]'s `Debug`.
+/// Since 1.1.0.
+impl std::fmt::Debug for MappedSliceMut<'_> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        std::fmt::Debug::fmt(&**self, f)
     }
 }
 

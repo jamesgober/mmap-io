@@ -7,7 +7,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
-Bug-fix release. Several of the fixes below are memory-safety bugs reachable from safe code (marked **soundness**); upgrading is recommended for every user. No public items were removed or renamed and no signatures changed; the behavior changes are listed under **Changed**.
+Minor release: security fixes, soundness fixes, a first-party mapping layer, and new APIs. memmap2 is replaced by the in-house `mmap_io::raw` layer (closing RUSTSEC-2026-0186 for this crate); several fixes below are memory-safety bugs reachable from safe code (marked **soundness**), including run-time exclusion of atomic and plain views of the same bytes, so upgrading is recommended for every user. New: non-blocking `try_` accessors, writable copy-on-write mappings, `schedule_flush` (write-back without waiting), atomic views and huge pages on `AnonymousMmap`, `BufRead` for `MmapReader`, `MemoryMappedFileBuilder::create_new`, `FnMut` watch callbacks, and memmap2-style additions to `raw`. Everything is additive: no public items were removed or renamed and no signatures changed (one trait bound was relaxed); the behavior changes are listed under **Changed**.
 
 ### Security
 
@@ -25,6 +25,7 @@ Bug-fix release. Several of the fixes below are memory-safety bugs reachable fro
 - **`MmapReader` implements `std::io::BufRead`.** On `ReadOnly` mappings `fill_buf` returns the rest of the mapping zero-copy, so `lines()`, `read_until` and `split` work on the mapped memory directly. On `ReadWrite` / `CopyOnWrite` mappings lending mapped bytes would require holding a read guard between calls (blocking writers, deadlocking a write on the reader's thread), so `fill_buf` copies up to 4 KiB into a buffer inside the reader (through `read_into`, atomic-view aware) and holds no lock. The buffer is inline rather than heap-allocated so `MmapReader` keeps no drop glue: code that drops the mapping after the reader's last use still compiles. Its auto traits are unchanged. `tests/reader_bufread.rs`.
 - **`MemoryMappedFileBuilder::create_new()`**: like `create()`, but fails with `MmapIoError::Io` (`ErrorKind::AlreadyExists`) instead of truncating an existing file (exclusive create: `O_EXCL` / `CREATE_NEW`). Requires `ReadWrite` mode (`InvalidMode` otherwise); size and mode are checked before the filesystem is touched, and a file it created is removed again if sizing or mapping fails. Applies every builder option like `create()`. `tests/create_new.rs`, including a race where exactly one of several threads wins.
 - **`AnonymousMmap::with_huge_pages(size)`** (feature `hugepages`) and **`AnonymousMmap::is_hugepage_backed()`**. On Linux `with_huge_pages` tries `MAP_HUGETLB` first and, when the kernel refuses (no reserved huge pages, the common case), falls back to a normal mapping with `madvise(MADV_HUGEPAGE)`; the fallback never fails the call. Windows large pages need `SeLockMemoryPrivilege` and are not attempted; on Windows and macOS it is the same as `new`. `is_hugepage_backed` reports what the kernel did, as on `MemoryMappedFile`. `tests/anonymous_hugepages.rs` (fallback path exercised on Linux).
+- **`impl Debug for MappedSliceMut`**, formatting the bytes like `MappedSlice`'s `Debug`.
 
 ### Fixed
 
@@ -47,11 +48,16 @@ Bug-fix release. Several of the fixes below are memory-safety bugs reachable fro
 - **`MmapReader::seek(SeekFrom::End(i64::MIN))` panicked**, and seeking before position 0 silently clamped. Seeking now matches `std::io::Cursor`: `InvalidInput` for negative or overflowing targets, position unchanged.
 - **`utils::align_up(u64::MAX, 4096)` overflowed** (panic in debug, 0 in release). It now saturates to `u64::MAX`.
 - **`TimeBasedFlusher` and `WatchHandle` drop.** Both spawned a throwaway thread to join their worker, so the worker could still run after the drop returned. They now join directly (skipping the join when dropped on the worker itself), and the flusher sleeps on a condition variable instead of waking every 50 ms. `Drop` never panics.
+- **`utils::ensure_in_bounds` / `slice_range` accepted overflowing ranges when `total == u64::MAX`.** The saturated end compared equal to `total`, so `slice_range` then overflowed computing the end (panic in debug builds, wrapped range in release). Both now use `checked_add` and return `OutOfBounds` on overflow. Found by the `bounds_checks` fuzz target.
+- **`AnonymousMmap` rejected zero-length requests past the end**, unlike every other range API. `read_into`, `update_region`, `as_slice`, `as_mut_slice` (and the new `try_` methods) now accept a zero-length request at any offset and do nothing.
+- **`AnonymousMmap` read paths used fair read locks**, so a thread holding one view deadlocked taking a second one while a writer was queued. They now use recursive read locks, as `MemoryMappedFile` does (also for the new atomic views).
+- **`SegmentMut::write` succeeded on a segment cut off by a shrinking `resize`** when `data` alone still fit the parent. The whole segment is now validated against the current mapping length under the write lock, and the write returns `OutOfBounds` as documented.
+- **`chunks_mut(0)` on a read-only mapping returned `Ok`**; the mode is now checked before the zero-chunk-size shortcut, so it returns `InvalidMode` like every other chunk size.
+- **`create_rw` left the file behind when sizing or mapping failed.** A file it created is removed again; a pre-existing file (already truncated by `create_rw`'s open) is set back to length 0 instead of staying extended.
 
 ### Changed
 
 - **Atomic and plain views of the same bytes are refused at run time** (see **Fixed**). `as_slice`, `try_as_slice` and `Segment::as_slice` return `InvalidMode` for a range that overlaps a live atomic view; `atomic_u32` / `atomic_u64` and the slice variants return `InvalidMode` for a range that overlaps a live `MappedSlice` or iterator item, or a live atomic view of the other element size (checked after alignment and bounds). Iterator items that overlap a live atomic view are owned copies (one allocation). Code that keeps atomic and plain regions disjoint, as 1.0 required, is unaffected. With the `atomic` feature on, each RW / COW plain view costs one extra lock round trip (see **Performance**).
-- **`AnonymousMmap` read paths use recursive read locks** like `MemoryMappedFile`, so a thread holding a view cannot deadlock behind a queued writer.
 - **`MmapMode::CopyOnWrite` mappings are writable.** `open_cow` (and builder / `from_file` with `CopyOnWrite`) now maps the file privately writable (`MAP_PRIVATE` / `PAGE_WRITECOPY` through `raw::RawMmapOptions::map_copy`) instead of read-only. `update_region`, `as_slice_mut`, `SegmentMut`, `chunks_mut`, `as_mut_ptr` and the atomic views work and write private pages: visible through the mapping and its clones, never written to the file, lost on drop. They returned `InvalidMode` before. `flush` / `flush_range` stay `Ok` no-ops (ranges validated), `pending_bytes()` stays 0, `resize` still returns `InvalidMode`. COW mappings now take the same locks as `ReadWrite`, so a live view blocks the write methods; `as_slice_bytes` returns `InvalidMode` on COW (it cannot guard a plain `&[u8]` against writers); `advise(.., DontNeed)` on COW takes the write lock, because on Linux it discards the private copies (the range reads the file again). Covered by `tests/cow_writable.rs` (writes never reach the file, read back with `std::fs::read`).
 - **`advise` and `lock` / `unlock` go through the raw layer** (`madvise` / `PrefetchVirtualMemory`, `mlock` / `VirtualLock`), and `lock` / `unlock` widen the start down to a page boundary like `advise`. Error variants and messages are unchanged.
 - **Zero-length range rule.** A zero-length request is accepted at any offset and does nothing, on every range API. Before, `as_slice`, `as_slice_mut`, `read_into`, and `Segment::new` rejected a zero-length request past the end while `flush_range`, `advise`, and the rest accepted it. Atomic views are not range requests and are unchanged. Documented in the crate docs and `docs/API.md`.
@@ -89,7 +95,7 @@ Measured with `cargo bench --all-features --bench mmap_bench` on the reference m
 ### Notes
 
 - MSRV unchanged at Rust 1.75 (library). The test suite's dev-dependencies (`proptest` 1.11, `half` 2.6 via `criterion`) need a newer toolchain.
-- New regression tests: `tests/soundness_regressions.rs` and `tests/behavior_regressions.rs`, plus unit tests for the flusher shutdown and a hugepages sparse-file test.
+- New regression tests: `tests/soundness_regressions.rs`, `tests/behavior_regressions.rs` and `tests/v1_1_regressions.rs`, plus unit tests for the flusher shutdown and a hugepages sparse-file test.
 
 <br>
 

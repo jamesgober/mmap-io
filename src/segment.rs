@@ -213,7 +213,9 @@ impl SegmentMut {
     /// segment. The error fields are segment-relative: `offset` is 0,
     /// `len` is `data.len()`, and `total` is the segment length.
     /// Returns `MmapIoError::OutOfBounds` if the segment no longer fits
-    /// in the parent (e.g. after a shrinking resize).
+    /// in the parent (e.g. after a shrinking resize), even when `data`
+    /// alone would still fit (since 1.1.0; the fields then describe the
+    /// whole segment against the parent's length).
     /// Returns `MmapIoError::InvalidMode` if the parent is not in
     /// `ReadWrite` mode.
     pub fn write(&self, data: &[u8]) -> Result<()> {
@@ -225,7 +227,14 @@ impl SegmentMut {
                 total: self.len,
             });
         }
-        self.parent.update_region(self.offset, data)
+        if data.is_empty() {
+            return Ok(());
+        }
+        // The whole segment must still fit the parent (checked under the
+        // write lock), not only the bytes being written: a segment cut
+        // off by a shrinking resize is invalid even where `data` fits.
+        self.parent
+            .update_region_within(self.offset, data, self.len)
     }
 
     /// Length of the segment.

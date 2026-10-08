@@ -80,7 +80,11 @@ fn anonymous_offset_at_end_with_zero_len_ok() {
 #[test]
 fn anonymous_offset_past_end_errors() {
     let mmap = AnonymousMmap::new(64).expect("anon");
-    let err = mmap.read_into(65, &mut [0u8; 0]).unwrap_err();
+    // Since 1.1.0 a zero-length request is accepted at any offset (the
+    // crate-wide rule); a non-empty one past the end still errors.
+    mmap.read_into(65, &mut [0u8; 0])
+        .expect("zero-length past the end is a no-op");
+    let err = mmap.read_into(65, &mut [0u8; 1]).unwrap_err();
     assert!(matches!(err, MmapIoError::OutOfBounds { .. }));
 }
 

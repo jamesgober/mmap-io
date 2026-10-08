@@ -58,6 +58,11 @@ fn validated_len(size: u64) -> Result<usize> {
 
 /// Process-local anonymous memory mapping (no backing file).
 ///
+/// Range rule (same as `MemoryMappedFile`, since 1.1.0): a zero-length
+/// request is accepted at any offset and does nothing; any other
+/// request must satisfy `offset + len <= len()` or it fails with
+/// [`MmapIoError::OutOfBounds`].
+///
 /// Created via [`AnonymousMmap::new`]. The mapping is RW; pages are
 /// zero-initialized by the kernel on first touch. Memory is released
 /// when the value is dropped.
@@ -225,6 +230,9 @@ impl AnonymousMmap {
     /// Returns [`MmapIoError::OutOfBounds`] if the range exceeds the
     /// mapping length.
     pub fn read_into(&self, offset: u64, buf: &mut [u8]) -> Result<()> {
+        if buf.is_empty() {
+            return Ok(());
+        }
         let (start, _end) = slice_range(offset, buf.len() as u64, self.len)?;
         // Recursive: a thread that already holds a view must not
         // deadlock behind a queued writer.
@@ -247,6 +255,9 @@ impl AnonymousMmap {
     /// Returns [`MmapIoError::OutOfBounds`] if the range exceeds the
     /// mapping length.
     pub fn update_region(&self, offset: u64, data: &[u8]) -> Result<()> {
+        if data.is_empty() {
+            return Ok(());
+        }
         let (start, end) = slice_range(offset, data.len() as u64, self.len)?;
         let mut guard = self.map.write();
         guard[start..end].copy_from_slice(data);
@@ -266,6 +277,9 @@ impl AnonymousMmap {
     /// Returns [`MmapIoError::InvalidMode`] if the range overlaps a live
     /// atomic view (see `MemoryMappedFile::as_slice`).
     pub fn as_slice(&self, offset: u64, len: u64) -> Result<MappedSlice<'_>> {
+        if len == 0 {
+            return Ok(MappedSlice::owned(&[]));
+        }
         let (start, end) = slice_range(offset, len, self.len)?;
         let guard = self.map.read_recursive();
         let reg = self.views.register_plain(start, end)?;
@@ -283,7 +297,11 @@ impl AnonymousMmap {
     /// Returns [`MmapIoError::OutOfBounds`] if the range exceeds the
     /// mapping length.
     pub fn as_mut_slice(&self, offset: u64, len: u64) -> Result<MappedSliceMut<'_>> {
-        let (start, end) = slice_range(offset, len, self.len)?;
+        let (start, end) = if len == 0 {
+            (0, 0)
+        } else {
+            slice_range(offset, len, self.len)?
+        };
         let guard = self.map.write();
         Ok(MappedSliceMut::guarded(guard, start..end))
     }
@@ -313,6 +331,9 @@ impl AnonymousMmap {
     /// # Ok::<(), mmap_io::MmapIoError>(())
     /// ```
     pub fn try_as_slice(&self, offset: u64, len: u64) -> Result<Option<MappedSlice<'_>>> {
+        if len == 0 {
+            return Ok(Some(MappedSlice::owned(&[])));
+        }
         let (start, end) = slice_range(offset, len, self.len)?;
         let Some(guard) = self.map.try_read_recursive() else {
             return Ok(None);
@@ -346,7 +367,11 @@ impl AnonymousMmap {
     /// # Ok::<(), mmap_io::MmapIoError>(())
     /// ```
     pub fn try_as_mut_slice(&self, offset: u64, len: u64) -> Result<Option<MappedSliceMut<'_>>> {
-        let (start, end) = slice_range(offset, len, self.len)?;
+        let (start, end) = if len == 0 {
+            (0, 0)
+        } else {
+            slice_range(offset, len, self.len)?
+        };
         Ok(self
             .map
             .try_write()
@@ -375,6 +400,9 @@ impl AnonymousMmap {
     /// # Ok::<(), mmap_io::MmapIoError>(())
     /// ```
     pub fn try_update_region(&self, offset: u64, data: &[u8]) -> Result<bool> {
+        if data.is_empty() {
+            return Ok(true);
+        }
         let (start, end) = slice_range(offset, data.len() as u64, self.len)?;
         let Some(mut guard) = self.map.try_write() else {
             return Ok(false);

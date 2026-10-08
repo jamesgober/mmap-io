@@ -306,12 +306,14 @@ impl<'a> ChunkIteratorMut<'a> {
     where
         F: FnMut(u64, &mut [u8]) -> std::result::Result<(), E>,
     {
-        if self.chunk_size == 0 {
-            return Ok(Ok(()));
-        }
+        // Mode first: a read-only mapping is an error even when there is
+        // nothing to iterate.
         let lock = self
             .mmap
             .write_lock("chunks_mut requires a ReadWrite or CopyOnWrite mapping")?;
+        if self.chunk_size == 0 {
+            return Ok(Ok(()));
+        }
         let mut guard = lock.write();
         let total = guard.len();
         let mut offset = 0usize;

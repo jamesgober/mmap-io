@@ -127,15 +127,15 @@ pub fn align_up(value: u64, alignment: u64) -> u64 {
 /// Returns `MmapIoError::OutOfBounds` if the range exceeds bounds.
 #[inline]
 pub fn ensure_in_bounds(offset: u64, len: u64, total: u64) -> Result<()> {
-    // Use a single saturating-add comparison rather than two branches.
-    // `offset > total` is implied by `offset + len > total` when
-    // `len == 0` is paired with `offset > total`; in the common case
-    // (len > 0) the saturating_add catches both overflow and OOB.
-    let end = offset.saturating_add(len);
-    if end > total || offset > total {
-        return Err(MmapIoError::OutOfBounds { offset, len, total });
+    // `checked_add`, not `saturating_add`: with `total == u64::MAX` a
+    // saturated end would compare equal to `total` and let an
+    // overflowing `offset + len` through (and `slice_range` would then
+    // overflow computing the end). An overflowing range is always out
+    // of bounds.
+    match offset.checked_add(len) {
+        Some(end) if end <= total => Ok(()),
+        _ => Err(MmapIoError::OutOfBounds { offset, len, total }),
     }
-    Ok(())
 }
 
 /// Compute a safe byte slice range for a given total length, returning start..end as usize tuple.
@@ -151,10 +151,13 @@ pub fn ensure_in_bounds(offset: u64, len: u64, total: u64) -> Result<()> {
 /// caller passes a `total` larger than the address space).
 #[inline]
 pub fn slice_range(offset: u64, len: u64, total: u64) -> Result<(usize, usize)> {
-    ensure_in_bounds(offset, len, total)?;
-    // `offset + len <= total` was checked without overflow above.
-    match (usize::try_from(offset), usize::try_from(offset + len)) {
+    let oob = || MmapIoError::OutOfBounds { offset, len, total };
+    let end = offset
+        .checked_add(len)
+        .filter(|&end| end <= total)
+        .ok_or_else(oob)?;
+    match (usize::try_from(offset), usize::try_from(end)) {
         (Ok(start), Ok(end)) => Ok((start, end)),
-        _ => Err(MmapIoError::OutOfBounds { offset, len, total }),
+        _ => Err(oob()),
     }
 }
