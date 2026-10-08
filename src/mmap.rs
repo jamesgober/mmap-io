@@ -925,6 +925,135 @@ impl MemoryMappedFile {
         }
     }
 
+    /// Start writing the whole mapping back to the file **without
+    /// waiting** for the write to finish. Not durable: when this
+    /// returns, the data may still be only in memory, and a crash or
+    /// power loss can lose it. Call [`flush`](Self::flush) when the data
+    /// must survive a crash. Since 1.1.0.
+    ///
+    /// Use it to get write-back started early (for example after a
+    /// batch of writes, before a later `flush()`), so the durable flush
+    /// has less left to do, or to keep dirty memory from piling up
+    /// without paying for a synchronous flush. Equivalent to
+    /// [`schedule_flush_range`](Self::schedule_flush_range) over the
+    /// whole mapping; see there for the platform behavior.
+    ///
+    /// [`pending_bytes`](Self::pending_bytes) is not reset: nothing is
+    /// known to be durable afterwards. `ReadOnly` and `CopyOnWrite`
+    /// mappings have nothing to write back; the call is an `Ok` no-op.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`MmapIoError::FlushFailed`] if the OS rejects the
+    /// request.
+    ///
+    /// # Example
+    ///
+    /// ```
+    /// use mmap_io::MemoryMappedFile;
+    ///
+    /// let dir = tempfile::tempdir()?;
+    /// let mmap = MemoryMappedFile::create_rw(dir.path().join("log.bin"), 1 << 20)?;
+    /// mmap.update_region(0, b"batch of records")?;
+    /// mmap.schedule_flush()?; // write-back started, not durable yet
+    /// // ... more work ...
+    /// mmap.flush()?; // durable
+    /// # Ok::<(), Box<dyn std::error::Error>>(())
+    /// ```
+    pub fn schedule_flush(&self) -> Result<()> {
+        match &self.inner.map {
+            MapVariant::Ro(_) | MapVariant::Cow(_) => Ok(()),
+            MapVariant::Rw(lock) => {
+                let guard = lock.read_recursive();
+                let len = guard.len();
+                self.schedule_mapped(&guard, 0, len)
+            }
+        }
+    }
+
+    /// Start writing `[offset, offset + len)` back to the file
+    /// **without waiting** for the write to finish. Not durable; see
+    /// [`schedule_flush`](Self::schedule_flush). Since 1.1.0.
+    ///
+    /// The range is validated like [`flush_range`](Self::flush_range):
+    /// against the mapping under its read guard, a zero-length range is
+    /// accepted at any offset and does nothing, and on `ReadOnly` /
+    /// `CopyOnWrite` mappings the range is validated and nothing else
+    /// happens. [`pending_bytes`](Self::pending_bytes) is not changed.
+    ///
+    /// # Platform behavior
+    ///
+    /// - **Linux**: `sync_file_range(SYNC_FILE_RANGE_WRITE)` on the
+    ///   backing file. This queues the dirty pages for write-out right
+    ///   away; it does not wait, does not write metadata, and does not
+    ///   flush the device cache. (Linux treats `msync(MS_ASYNC)` as a
+    ///   no-op, which is why it is not used.)
+    /// - **macOS and other Unix**: `msync(MS_ASYNC)` over the page
+    ///   range, which schedules write-back and returns.
+    /// - **Windows**: `FlushViewOfFile` without `FlushFileBuffers`: the
+    ///   pages are handed to the file system cache, and the call does
+    ///   not wait for the disk.
+    ///
+    /// The kernel works in whole pages, so neighbouring bytes on the
+    /// same pages may be written as well.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`MmapIoError::OutOfBounds`] if the range exceeds the
+    /// mapping length.
+    /// Returns [`MmapIoError::FlushFailed`] if the OS rejects the
+    /// request.
+    ///
+    /// # Example
+    ///
+    /// ```
+    /// use mmap_io::MemoryMappedFile;
+    ///
+    /// let dir = tempfile::tempdir()?;
+    /// let mmap = MemoryMappedFile::create_rw(dir.path().join("a.bin"), 64 * 1024)?;
+    /// mmap.update_region(4096, b"segment")?;
+    /// mmap.schedule_flush_range(4096, 7)?;
+    /// assert!(mmap.schedule_flush_range(64 * 1024, 1).is_err());
+    /// # Ok::<(), Box<dyn std::error::Error>>(())
+    /// ```
+    pub fn schedule_flush_range(&self, offset: u64, len: u64) -> Result<()> {
+        if len == 0 {
+            return Ok(());
+        }
+        match &self.inner.map {
+            MapVariant::Ro(_) | MapVariant::Cow(_) => {
+                let map = self.map_read();
+                slice_range(offset, len, map.len() as u64)?;
+                Ok(())
+            }
+            MapVariant::Rw(lock) => {
+                let guard = lock.read_recursive();
+                let (start, end) = slice_range(offset, len, guard.len() as u64)?;
+                self.schedule_mapped(&guard, start, end - start)
+            }
+        }
+    }
+
+    /// Start non-durable write-back of `[start, start + count)` of the
+    /// RW mapping `map`, which the caller holds a guard on and has
+    /// validated the range against.
+    fn schedule_mapped(&self, map: &RawMmapMut, start: usize, count: usize) -> Result<()> {
+        if count == 0 {
+            return Ok(());
+        }
+        #[cfg(target_os = "linux")]
+        let result = {
+            // Managed mappings start at file offset 0, so mapping
+            // offsets are file offsets. `map` is unused: the request
+            // goes to the file, whose page cache the mapping shares.
+            let _ = map;
+            crate::raw::start_writeback(&self.inner.file, start as u64, count as u64)
+        };
+        #[cfg(not(target_os = "linux"))]
+        let result = map.flush_async_range(start, count);
+        result.map_err(|e| MmapIoError::FlushFailed(format!("schedule_flush: {e}")))
+    }
+
     /// Resize (grow or shrink) the mapped file (RW only). This remaps the file internally.
     ///
     /// The whole operation runs under the mapping's write lock, so it

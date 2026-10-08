@@ -47,6 +47,7 @@ Complete reference for public-facing APIs. Each item lists its signature, parame
   - [try_as_slice / try_as_slice_mut / try_update_region](#try_as_slice--try_as_slice_mut--try_update_region) (1.1.0)
   - [flush](#flush-1)
   - [flush_range](#flush_range)
+  - [schedule_flush / schedule_flush_range](#schedule_flush--schedule_flush_range) (1.1.0)
   - [resize](#resize)
   - [len](#len)
   - [is_empty](#is_empty)
@@ -881,6 +882,44 @@ pub fn flush_range(&self, offset: u64, len: u64) -> Result<()>
 **Errors**:
 - `MmapIoError::OutOfBounds` if range exceeds file bounds
 - `MmapIoError::FlushFailed` if flush operation fails
+
+<br>
+
+### schedule_flush / schedule_flush_range
+
+*(Since 1.1.0)*
+
+```rust
+pub fn schedule_flush(&self) -> Result<()>
+pub fn schedule_flush_range(&self, offset: u64, len: u64) -> Result<()>
+```
+
+**Description**: Start writing dirty pages back to the file **without waiting** for the write to finish. **Not durable**: when these return, the data may still be only in memory, and a crash or power loss can lose it. Only `flush()` / `flush_range()` make data durable. Use them to get write-back going early (for example after each batch, with a durable `flush()` at a commit point), or to keep dirty memory from piling up without paying for a synchronous flush. `pending_bytes()` is not changed.
+
+| Platform | Call |
+|----------|------|
+| Linux | `sync_file_range(SYNC_FILE_RANGE_WRITE)` on the backing file: queues the dirty pages for write-out at once; no wait, no metadata, no device cache flush. (Linux treats `msync(MS_ASYNC)` as a no-op, so it is not used.) |
+| macOS, other Unix | `msync(MS_ASYNC)`: schedules write-back and returns. |
+| Windows | `FlushViewOfFile` without `FlushFileBuffers`: hands the pages to the file system cache and returns without waiting for the disk. |
+
+The range is validated like `flush_range` (under the read guard; zero-length accepted at any offset; widened to whole pages by the kernel). On `ReadOnly` and `CopyOnWrite` mappings there is nothing to write back: the range is validated and the call returns `Ok`.
+
+**Errors**:
+- `MmapIoError::OutOfBounds` if the range exceeds the mapping length
+- `MmapIoError::FlushFailed` if the OS rejects the request
+
+**Example**:
+```rust
+let mmap = MemoryMappedFile::create_rw("journal.bin", 1 << 20)?;
+for (i, record) in records.iter().enumerate() {
+    let off = (i * 64) as u64;
+    mmap.update_region(off, record)?;
+    mmap.schedule_flush_range(off, 64)?; // start write-back, keep going
+}
+mmap.flush()?; // commit point: durable
+```
+
+Measured cost: see `docs/PERFORMANCE.md` ("Starting write-back without waiting").
 
 <br>
 
@@ -2364,6 +2403,7 @@ See [SAFETY.md](SAFETY.md) for the full locking model.
 <br>
 
 ### Flushing Behavior
+- `schedule_flush()` / `schedule_flush_range()` (1.1) start write-back and return without waiting; they are not durable.
 - `flush()` / `flush_range()` are synchronous: `msync(MS_SYNC)` on Unix, `FlushViewOfFile` + `FlushFileBuffers` on Windows. On macOS, `msync` does not issue `F_FULLFSYNC`; call `File::sync_all` on a separate handle if you need the drive cache flushed too.
 - Visibility is not durability: other mappings and `std::fs` readers of the same file see writes at once through the page cache. Flushing is what makes them survive a crash.
 - Async helpers flush after each async write.

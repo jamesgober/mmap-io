@@ -304,10 +304,20 @@ References:
 
 ## Flushing
 
-The crate has no `unsafe` on the flush path. `flush()` and
-`flush_range()` call memmap2, which issues `msync(MS_SYNC)` on Unix
-and `FlushViewOfFile` + `FlushFileBuffers` on Windows, while holding a
-read guard so the mapping cannot be replaced during the call.
+The managed layer has no `unsafe` on the flush path. `flush()` and
+`flush_range()` call the raw layer, which issues `msync(MS_SYNC)` on
+Unix and `FlushViewOfFile` + `FlushFileBuffers` on Windows over a range
+validated by `range::flush_span`, while holding a read guard so the
+mapping cannot be replaced during the call.
+
+`schedule_flush()` / `schedule_flush_range()` (1.1) hold the same read
+guard and validate the range the same way. On Linux they call
+`sync_file_range(SYNC_FILE_RANGE_WRITE)` on the backing file
+descriptor (`raw::unix::start_writeback`): the call takes an fd and two
+integers, touches no memory, and only queues already-dirty page-cache
+pages for write-out. Elsewhere they use the raw layer's
+`flush_async_range` (`msync(MS_ASYNC)` / `FlushViewOfFile`). Neither
+is durable.
 
 ### 9. View registry (`src/views.rs`)
 

@@ -98,6 +98,19 @@ The time is the storage round-trip, not the byte count: the kernel flushes whole
 
 `update_region` alone costs 34 ns / 0.6 µs / 16 µs for the same sizes. Batch writes and flush once per batch; every flush is a synchronous write-back.
 
+## Starting write-back without waiting
+
+`schedule_flush_range` (1.1) starts write-back and returns; it is not durable. `flush_range` waits for durability. Each iteration rewrites the range first (`update_region`), so there is always something dirty; the `write only` column is that write alone. Criterion medians, 1.1.
+
+| Range | `flush_range` Windows | `schedule_flush_range` Windows | write only Windows | `flush_range` Linux (WSL2) | `schedule_flush_range` Linux (WSL2) | write only Linux |
+|-------|----------------------:|-------------------------------:|-------------------:|---------------------------:|------------------------------------:|-----------------:|
+| 4 KiB | 6.0 ms | 297 µs | 66 ns | 4.68 ms | 282 ns | 80 ns |
+| 1 MiB | 4.8 ms | 2.06 ms | 178 µs | 6.77 ms | 34.3 µs | 22.7 µs |
+
+- **Linux**: `sync_file_range(SYNC_FILE_RANGE_WRITE)` queues the pages and returns: about 0.2 µs for one page, 12 µs for 256 pages, versus milliseconds for the durable flush. Unlike `msync(MS_ASYNC)` (a no-op on Linux), it really starts write-out: `tests/schedule_flush.rs` watches the mapping's dirty page count in `/proc/self/smaps` drop right after the call, while without it 16 MiB stayed dirty for the full 5 s observed.
+- **Windows**: `FlushViewOfFile` hands the pages to the cache manager and skips `FlushFileBuffers`, so it is about 2.5-20x cheaper than the durable flush here, but it still issues the writes synchronously to the file system cache and is not free.
+- These Windows flush numbers are higher than the `flush_range` table above (0.4-1.3 ms) because the machine was under other load during this run; compare columns within one table, not across tables.
+
 ## Atomic operations
 
 `atomic_u64::fetch_add` under N-thread contention, 10,000 ops per thread:

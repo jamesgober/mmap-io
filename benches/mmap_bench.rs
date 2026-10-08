@@ -570,6 +570,94 @@ fn bench_cow_open(b: &mut Criterion) {
 #[cfg(not(feature = "cow"))]
 fn bench_cow_open(_: &mut Criterion) {}
 
+/// Durable `flush_range` versus non-durable `schedule_flush_range`
+/// (1.1) after dirtying the range. Each iteration rewrites the range so
+/// there is always something to write back.
+fn bench_schedule_flush(b: &mut Criterion) {
+    let mut group = b.benchmark_group("schedule_vs_flush");
+    for &size in &[4096usize, 1024 * 1024] {
+        group.throughput(Throughput::Bytes(size as u64));
+        let path = tmp_path(&format!("sched_{size}"));
+        let _ = fs::remove_file(&path);
+        let mmap = MemoryMappedFile::create_rw(&path, size as u64).expect("create_rw");
+        let mut fill = 0u8;
+        group.bench_with_input(BenchmarkId::new("flush_range", size), &size, |ben, &sz| {
+            ben.iter(|| {
+                fill = fill.wrapping_add(1);
+                mmap.update_region(0, &vec![fill; sz]).expect("write");
+                mmap.flush_range(0, sz as u64).expect("flush_range");
+            });
+        });
+        group.bench_with_input(
+            BenchmarkId::new("schedule_flush_range", size),
+            &size,
+            |ben, &sz| {
+                ben.iter(|| {
+                    fill = fill.wrapping_add(1);
+                    mmap.update_region(0, &vec![fill; sz]).expect("write");
+                    mmap.schedule_flush_range(0, sz as u64).expect("schedule");
+                });
+            },
+        );
+        group.bench_with_input(BenchmarkId::new("write_only", size), &size, |ben, &sz| {
+            ben.iter(|| {
+                fill = fill.wrapping_add(1);
+                mmap.update_region(0, &vec![fill; sz]).expect("write");
+            });
+        });
+        mmap.flush().expect("final flush");
+        drop(mmap);
+        let _ = fs::remove_file(&path);
+    }
+    group.finish();
+}
+
+/// Plain views of a ReadWrite mapping: every one takes the read guard
+/// and (since 1.1, with the `atomic` feature) registers its range so it
+/// can be excluded from atomic views. Measures that per-view cost.
+fn bench_rw_views(b: &mut Criterion) {
+    let mut group = b.benchmark_group("rw_views");
+    let file_size: usize = 16 * 1024 * 1024;
+    let path = tmp_path("rw_views_16mb");
+    let _ = fs::remove_file(&path);
+    let rw = MemoryMappedFile::create_rw(&path, file_size as u64).expect("create_rw");
+    rw.update_region(0, &vec![0x5Au8; file_size]).expect("seed");
+
+    group.bench_function("as_slice_64", |ben| {
+        let mut rng = XorShift64::new(0xFACE);
+        ben.iter(|| {
+            let off = rng.next_u64() % (file_size as u64 - 64);
+            let s = rw.as_slice(off, 64).expect("as_slice");
+            criterion::black_box(s[0]);
+        });
+    });
+    group.bench_function("read_into_64", |ben| {
+        let mut rng = XorShift64::new(0xFACE);
+        let mut buf = [0u8; 64];
+        ben.iter(|| {
+            let off = rng.next_u64() % (file_size as u64 - 64);
+            rw.read_into(off, &mut buf).expect("read_into");
+            criterion::black_box(buf[0]);
+        });
+    });
+    #[cfg(feature = "iterator")]
+    {
+        group.throughput(Throughput::Bytes(file_size as u64));
+        group.bench_function("chunks_4096", |ben| {
+            ben.iter(|| {
+                let mut total: u64 = 0;
+                for c in rw.chunks(4096) {
+                    total = total.wrapping_add(c[0] as u64);
+                }
+                criterion::black_box(total);
+            });
+        });
+    }
+    group.finish();
+    drop(rw);
+    let _ = fs::remove_file(&path);
+}
+
 fn criterion_config() -> Criterion {
     Criterion::default()
         .sample_size(30)
@@ -595,7 +683,9 @@ criterion_group! {
         bench_touch_pages,
         bench_microflush_overhead,
         bench_advise,
-        bench_cow_open
+        bench_cow_open,
+        bench_schedule_flush,
+        bench_rw_views
 }
 
 criterion_main!(mmap_benches);

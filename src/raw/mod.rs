@@ -245,6 +245,15 @@ pub(crate) unsafe fn lock_span(addr: *mut u8, count: usize, lock: bool) -> io::R
     unsafe { os::lock(addr, count, lock) }
 }
 
+/// Start write-back of the dirty page-cache pages of `file` in
+/// `[offset, offset + len)` without waiting
+/// (`sync_file_range(SYNC_FILE_RANGE_WRITE)`). Not durable. Linux only;
+/// used by `MemoryMappedFile::schedule_flush_range`.
+#[cfg(target_os = "linux")]
+pub(crate) fn start_writeback(file: &File, offset: u64, len: u64) -> io::Result<()> {
+    os::start_writeback(file, offset, len)
+}
+
 /// One OS mapping, or the empty placeholder.
 ///
 /// Invariants:

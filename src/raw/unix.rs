@@ -413,6 +413,36 @@ pub(crate) unsafe fn lock(addr: *mut u8, count: usize, lock: bool) -> io::Result
     }
 }
 
+/// Start write-back of the dirty page-cache pages of `file` in
+/// `[offset, offset + len)` without waiting for it to finish
+/// (`sync_file_range(SYNC_FILE_RANGE_WRITE)`). Not durable: no
+/// completion wait, no metadata, no device cache flush.
+#[cfg(target_os = "linux")]
+pub(crate) fn start_writeback(file: &File, offset: u64, len: u64) -> io::Result<()> {
+    let invalid = || {
+        io::Error::new(
+            io::ErrorKind::InvalidInput,
+            format!("write-back range {offset} + {len} does not fit in off64_t"),
+        )
+    };
+    let off = libc::off64_t::try_from(offset).map_err(|_| invalid())?;
+    let n = libc::off64_t::try_from(len).map_err(|_| invalid())?;
+    // SAFETY: `sync_file_range` takes a file descriptor, two integers
+    // and a flag word; no pointers. The fd is borrowed from a live
+    // `File` for the duration of the call. SYNC_FILE_RANGE_WRITE only
+    // starts write-out of pages that are already dirty in the page
+    // cache (the dirty pages of a shared file mapping are among them);
+    // it does not touch the mapped memory. Errors come back via errno.
+    // Reference: https://man7.org/linux/man-pages/man2/sync_file_range.2.html
+    let rc =
+        unsafe { libc::sync_file_range(file.as_raw_fd(), off, n, libc::SYNC_FILE_RANGE_WRITE) };
+    if rc == 0 {
+        Ok(())
+    } else {
+        Err(io::Error::last_os_error())
+    }
+}
+
 /// Release a mapping. Errors are ignored: this runs from `Drop`, and
 /// `munmap` can only fail on arguments this module never produces.
 ///
