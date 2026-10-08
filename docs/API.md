@@ -38,6 +38,7 @@ Complete reference for public-facing APIs. Each item lists its signature, parame
   - [open_rw](#open_rw)
   - [open_cow](#open_cow) (feature = "cow")
   - [open_or_create](#open_or_create) (0.9.8)
+  - [builder create_new](#builder-create_new) (1.1.0)
   - [from_file](#from_file) (0.9.8)
   - [unmap](#unmap) (0.9.8)
   - [as_slice](#as_slice)
@@ -1030,6 +1031,49 @@ The file is never truncated. A non-empty existing file is mapped at its current 
 ```rust
 use mmap_io::MemoryMappedFile;
 let mmap = MemoryMappedFile::open_or_create("data.bin", 1024 * 1024)?;
+```
+
+<br>
+
+### builder create_new
+
+*(Since 1.1.0)*
+
+```rust
+impl MemoryMappedFileBuilder {
+    pub fn create_new(self) -> Result<MemoryMappedFile>;
+}
+```
+
+**Description**: Like the builder's `create()`, but never touches an existing file: the file is created exclusively (`O_CREAT | O_EXCL` on Unix, `CREATE_NEW` on Windows), sized to `size` (sparse) and mapped `ReadWrite` with every builder option applied (flush policy including the `EveryMillis` flusher, touch hint, huge pages). Of several threads or processes racing to create the same path, exactly one succeeds. Size and mode are validated before the filesystem is touched; if sizing or mapping the new file fails, the file is removed again (best effort).
+
+| `create()` | `create_new()` | `open_or_create()` |
+|------------|----------------|--------------------|
+| truncates an existing file to `size` | fails with `AlreadyExists` if the file exists | opens an existing file as-is |
+
+**Errors**:
+- `MmapIoError::Io` with `ErrorKind::AlreadyExists` if the path exists (the file is left untouched)
+- `MmapIoError::ResizeFailed` if `size` is missing, zero, or above the maximum
+- `MmapIoError::InvalidMode` if the mode is not `ReadWrite`
+- `MmapIoError::Io` for other create / size / map failures
+
+**Example**:
+```rust
+use mmap_io::{MemoryMappedFile, MmapIoError};
+use mmap_io::flush::FlushPolicy;
+
+match MemoryMappedFile::builder("journal.bin")
+    .size(64 * 1024 * 1024)
+    .flush_policy(FlushPolicy::EveryBytes(1 << 20))
+    .create_new()
+{
+    Ok(mmap) => { /* fresh journal: write the header */ }
+    Err(MmapIoError::Io(e)) if e.kind() == std::io::ErrorKind::AlreadyExists => {
+        /* someone else created it: open it instead */
+    }
+    Err(e) => return Err(e),
+}
+# Ok::<(), MmapIoError>(())
 ```
 
 <br>

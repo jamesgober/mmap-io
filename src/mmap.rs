@@ -2313,6 +2313,79 @@ impl MemoryMappedFileBuilder {
         }
     }
 
+    /// Like [`create`](Self::create), but fail if the file already
+    /// exists instead of truncating it. Since 1.1.0.
+    ///
+    /// The file is created with an exclusive create (`O_CREAT | O_EXCL`
+    /// on Unix, `CREATE_NEW` on Windows), so of several threads or
+    /// processes racing to create the same path exactly one succeeds
+    /// and nobody's data is truncated. The new file is sized to
+    /// `size` (sparse) and mapped `ReadWrite` with every builder option
+    /// applied (flush policy including the `EveryMillis` flusher, touch
+    /// hint, huge pages), exactly as `create` does.
+    ///
+    /// The mode must be `ReadWrite` (the default); a new, empty file
+    /// cannot be opened read-only or copy-on-write. Size and mode are
+    /// checked before anything touches the filesystem. If sizing or
+    /// mapping the new file fails, the file is removed again (best
+    /// effort) so no half-created file is left behind.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`MmapIoError::Io`] with `ErrorKind::AlreadyExists` if
+    /// the path exists (the existing file is left untouched).
+    /// Returns [`MmapIoError::ResizeFailed`] if `size` was not set, is
+    /// zero, or exceeds the maximum safe size.
+    /// Returns [`MmapIoError::InvalidMode`] if the mode is not
+    /// `ReadWrite`.
+    /// Returns [`MmapIoError::Io`] if creating, sizing, or mapping the
+    /// file fails for another reason.
+    ///
+    /// # Example
+    ///
+    /// ```
+    /// use mmap_io::{MemoryMappedFile, MmapIoError};
+    ///
+    /// let dir = tempfile::tempdir()?;
+    /// let path = dir.path().join("fresh.bin");
+    /// let mmap = MemoryMappedFile::builder(&path).size(4096).create_new()?;
+    /// assert_eq!(mmap.len(), 4096);
+    ///
+    /// // A second create_new on the same path refuses to truncate it.
+    /// let err = MemoryMappedFile::builder(&path).size(4096).create_new().unwrap_err();
+    /// assert!(matches!(err, MmapIoError::Io(ref e) if e.kind() == std::io::ErrorKind::AlreadyExists));
+    /// # Ok::<(), Box<dyn std::error::Error>>(())
+    /// ```
+    pub fn create_new(self) -> Result<MemoryMappedFile> {
+        let mode = self.mode.unwrap_or(MmapMode::ReadWrite);
+        if mode != MmapMode::ReadWrite {
+            return Err(MmapIoError::InvalidMode(
+                "create_new creates a new ReadWrite mapping; open existing files with open()",
+            ));
+        }
+        let size = validated_create_size(self.size)?;
+        let file = OpenOptions::new()
+            .read(true)
+            .write(true)
+            .create_new(true)
+            .open(&self.path)?;
+        let path = self.path.clone();
+        let result = match file.set_len(size) {
+            Ok(()) => self.finish_rw(file, size),
+            Err(e) => {
+                drop(file);
+                Err(e.into())
+            }
+        };
+        if result.is_err() {
+            // We created the file exclusively a moment ago and it holds
+            // no data: remove it rather than leave a stray file. The
+            // handle is closed by now (Windows cannot delete open files).
+            let _ = std::fs::remove_file(&path);
+        }
+        result
+    }
+
     /// Open an existing file with provided mode (size ignored).
     ///
     /// The mode defaults to `ReadOnly`. For `ReadWrite`, the
