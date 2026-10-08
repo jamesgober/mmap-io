@@ -1887,7 +1887,7 @@ fn map_file_cow(file: &File, len: u64) -> Result<RawMmapMut> {
 /// on base pages. `MAP_HUGETLB` is not used: it needs a hugetlbfs file.
 /// Elsewhere this does nothing. Failures are logged at debug level.
 #[cfg(feature = "hugepages")]
-fn advise_huge_pages(map: &RawMmapMut) {
+pub(crate) fn advise_huge_pages(map: &RawMmapMut) {
     #[cfg(target_os = "linux")]
     {
         if map.is_empty() {
@@ -2152,7 +2152,7 @@ impl MemoryMappedFile {
 }
 
 #[cfg(target_os = "linux")]
-fn smaps_hugepage_lookup(base: usize) -> Option<bool> {
+pub(crate) fn smaps_hugepage_lookup(base: usize) -> Option<bool> {
     use std::io::BufRead;
     let file = std::fs::File::open("/proc/self/smaps").ok()?;
     let reader = std::io::BufReader::new(file);

@@ -42,6 +42,20 @@ const MAX_MMAP_SIZE: u64 = 128 * (1 << 40); // 128 TB
 #[cfg(target_pointer_width = "32")]
 const MAX_MMAP_SIZE: u64 = 2 * (1 << 30); // 2 GB
 
+/// Validate a requested anonymous mapping size and convert it to `usize`.
+fn validated_len(size: u64) -> Result<usize> {
+    if size == 0 {
+        return Err(MmapIoError::ResizeFailed(ERR_ZERO_SIZE.into()));
+    }
+    if size > MAX_MMAP_SIZE {
+        return Err(MmapIoError::ResizeFailed(format!(
+            "Size {size} exceeds maximum safe limit of {MAX_MMAP_SIZE} bytes"
+        )));
+    }
+    usize::try_from(size)
+        .map_err(|_| MmapIoError::ResizeFailed(format!("Size {size} does not fit in usize")))
+}
+
 /// Process-local anonymous memory mapping (no backing file).
 ///
 /// Created via [`AnonymousMmap::new`]. The mapping is RW; pages are
@@ -80,22 +94,109 @@ impl AnonymousMmap {
     /// - [`MmapIoError::Io`] if the kernel rejects the allocation
     ///   (out of address space, out of memory, etc.).
     pub fn new(size: u64) -> Result<Self> {
-        if size == 0 {
-            return Err(MmapIoError::ResizeFailed(ERR_ZERO_SIZE.into()));
+        let len = validated_len(size)?;
+        Ok(Self::from_raw(RawMmapMut::map_anon(len)?, size))
+    }
+
+    /// Allocate an anonymous RW mapping of `size` bytes backed by huge
+    /// pages where the platform allows it. Since 1.1.0, feature
+    /// `hugepages`.
+    ///
+    /// - **Linux**: first tries explicit huge pages (`MAP_HUGETLB`,
+    ///   default huge page size). That needs pages reserved by the
+    ///   administrator (`vm.nr_hugepages`, 0 on most systems); when the
+    ///   kernel refuses, it falls back to a normal mapping with the
+    ///   transparent huge page hint (`madvise(MADV_HUGEPAGE)`), which the
+    ///   kernel honors when THP is enabled (`always` or `madvise` in
+    ///   `/sys/kernel/mm/transparent_hugepage/enabled`) and 2 MiB-aligned
+    ///   runs are available. The fallback never fails the call.
+    /// - **Windows**: large pages need the `SeLockMemoryPrivilege`
+    ///   privilege, which ordinary processes do not hold; they are not
+    ///   attempted, and this is the same as [`new`](Self::new).
+    /// - **macOS and other platforms**: the same as `new`.
+    ///
+    /// The mapping behaves exactly like one from `new`; only its page
+    /// size differs. Use [`is_hugepage_backed`](Self::is_hugepage_backed)
+    /// to see what the kernel did (transparent huge pages appear only
+    /// after the memory is touched). With `MAP_HUGETLB` the OS mapping is
+    /// rounded up to whole huge pages; [`len`](Self::len) still reports
+    /// `size`.
+    ///
+    /// # Errors
+    ///
+    /// Same as [`new`](Self::new): [`MmapIoError::ResizeFailed`] for a
+    /// zero or oversized `size`, [`MmapIoError::Io`] if even the normal
+    /// fallback mapping cannot be created.
+    ///
+    /// # Example
+    ///
+    /// ```
+    /// use mmap_io::AnonymousMmap;
+    ///
+    /// let big = AnonymousMmap::with_huge_pages(4 * 1024 * 1024)?;
+    /// big.update_region(0, b"scratch")?;
+    /// assert_eq!(big.len(), 4 * 1024 * 1024);
+    /// // Some(true) / Some(false) on Linux, None elsewhere.
+    /// let _ = big.is_hugepage_backed();
+    /// # Ok::<(), mmap_io::MmapIoError>(())
+    /// ```
+    #[cfg(feature = "hugepages")]
+    pub fn with_huge_pages(size: u64) -> Result<Self> {
+        let len = validated_len(size)?;
+        let map = match crate::raw::RawMmapOptions::new().len(len).huge().map_anon() {
+            Ok(map) => map,
+            Err(e) => {
+                log::debug!(
+                    "MAP_HUGETLB refused for {len} bytes ({e}); using base pages with \
+                     MADV_HUGEPAGE"
+                );
+                let map = RawMmapMut::map_anon(len)?;
+                crate::mmap::advise_huge_pages(&map);
+                map
+            }
+        };
+        Ok(Self::from_raw(map, size))
+    }
+
+    /// Report whether the kernel currently backs this mapping with huge
+    /// pages. Since 1.1.0.
+    ///
+    /// Same contract as `MemoryMappedFile::is_hugepage_backed`:
+    /// `Some(true)` if any part of the mapping uses huge pages
+    /// (transparent or `MAP_HUGETLB`), `Some(false)` if none does, and
+    /// `None` on platforms without a queryable status (everything but
+    /// Linux) or if `/proc/self/smaps` cannot be read. Transparent huge
+    /// pages are only allocated when memory is first touched, and the
+    /// kernel may change the backing over time.
+    ///
+    /// # Example
+    ///
+    /// ```
+    /// let m = mmap_io::AnonymousMmap::new(4096)?;
+    /// if cfg!(not(target_os = "linux")) {
+    ///     assert_eq!(m.is_hugepage_backed(), None);
+    /// }
+    /// # Ok::<(), mmap_io::MmapIoError>(())
+    /// ```
+    #[must_use]
+    pub fn is_hugepage_backed(&self) -> Option<bool> {
+        #[cfg(target_os = "linux")]
+        {
+            let base = RawMmapMut::as_ptr(&self.map.read_recursive()) as usize;
+            crate::mmap::smaps_hugepage_lookup(base)
         }
-        if size > MAX_MMAP_SIZE {
-            return Err(MmapIoError::ResizeFailed(format!(
-                "Size {size} exceeds maximum safe limit of {MAX_MMAP_SIZE} bytes"
-            )));
+        #[cfg(not(target_os = "linux"))]
+        {
+            None
         }
-        let len_usize = usize::try_from(size)
-            .map_err(|_| MmapIoError::ResizeFailed(format!("Size {size} does not fit in usize")))?;
-        let mmap = RawMmapMut::map_anon(len_usize)?;
-        Ok(Self {
-            map: RwLock::new(mmap),
+    }
+
+    fn from_raw(map: RawMmapMut, size: u64) -> Self {
+        Self {
+            map: RwLock::new(map),
             len: size,
             views: ViewRegistry::new(),
-        })
+        }
     }
 
     /// Length of the mapping in bytes.

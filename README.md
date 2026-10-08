@@ -78,7 +78,7 @@ fn main() -> Result<(), mmap_io::MmapIoError> {
 | `bytes`     | `bytes::Bytes` conversion for plugging into the hyper/tower/tonic/axum/reqwest ecosystem. |
 | `advise`    | Memory hinting via `madvise`/`posix_madvise` (Unix) or `PrefetchVirtualMemory` (Windows).            |
 | `iterator`  | Iterator-based access to memory chunks or pages with zero-copy reads.                                |
-| `hugepages` | Transparent huge page hint (`madvise(MADV_HUGEPAGE)`) on Linux RW mappings; no effect on other platforms. |
+| `hugepages` | Transparent huge page hint (`madvise(MADV_HUGEPAGE)`) on Linux RW mappings, and `AnonymousMmap::with_huge_pages` (`MAP_HUGETLB` with a fallback to the hint); no effect on other platforms. |
 | `cow`       | Copy-on-Write mapping mode: writable private per-process views whose changes never reach the file.  |
 | `locking`   | Page-level memory locking via `mlock`/`munlock` (Unix) or `VirtualLock` (Windows).                   |
 | `atomic`    | Atomic views into memory as aligned `u32` / `u64` with strict alignment checks.                      |
@@ -424,6 +424,17 @@ let mmap = MemoryMappedFile::builder("hp.bin")
     .size(2 * 1024 * 1024) // 2MB - typical huge page size
     .huge_pages(true) // best-effort optimization
     .create()?;
+```
+
+**Anonymous memory** (since 1.1.0): `AnonymousMmap::with_huge_pages(size)` asks Linux for explicit huge pages (`MAP_HUGETLB`). Those must be reserved by the administrator (`vm.nr_hugepages`), which most systems do not do; when the kernel refuses, the call falls back to normal pages with the `MADV_HUGEPAGE` hint instead of failing, so with Transparent Huge Pages enabled (`always` or `madvise`) the memory usually still ends up on huge pages. Windows large pages require `SeLockMemoryPrivilege` and are not attempted; on Windows and macOS it is the same as `AnonymousMmap::new`.
+
+```rust
+#[cfg(feature = "hugepages")]
+{
+    let scratch = mmap_io::AnonymousMmap::with_huge_pages(64 * 1024 * 1024)?;
+    scratch.update_region(0, b"hot data")?;
+    println!("huge pages: {:?}", scratch.is_hugepage_backed());
+}
 ```
 
 ## Safety Notes

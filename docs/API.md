@@ -144,7 +144,7 @@ The following optional Cargo features enable extended functionality:
 | `bytes`    | `bytes::Bytes` conversions for the hyper/tower/tonic/axum/reqwest ecosystem.                        |
 | `advise`   | Memory hinting via **`madvise`/`posix_madvise` (Unix)** or **Prefetch (Windows)**.                  |
 | `iterator` | Iterator-based access to memory chunks or pages with zero-copy read access.                         |
-| `hugepages` | Transparent huge page hint (`madvise(MADV_HUGEPAGE)`) on Linux RW mappings; no effect elsewhere. Use `is_hugepage_backed()` to confirm at runtime.|
+| `hugepages` | Transparent huge page hint (`madvise(MADV_HUGEPAGE)`) on Linux RW mappings; `AnonymousMmap::with_huge_pages` (1.1.0: `MAP_HUGETLB`, falling back to the hint). No effect elsewhere. Use `is_hugepage_backed()` to confirm at runtime.|
 | `cow`      | Copy-on-Write mapping mode using private memory views (per-process isolation).                       |
 | `locking`  | Page-level memory locking via **`mlock`/`munlock` (Unix)** or **`VirtualLock` (Windows)**.           |
 | `atomic`   | Atomic views into memory as aligned `u32` / `u64`, with strict alignment checking.                  |
@@ -152,7 +152,7 @@ The following optional Cargo features enable extended functionality:
 
 <br>
 
-- **Huge Pages** (`feature = "hugepages"`): On Linux, `madvise(MADV_HUGEPAGE)` on `ReadWrite` mappings built with `.huge_pages(true)`. A hint the kernel may ignore (file-backed mappings on most disk filesystems stay on base pages); `MAP_HUGETLB` and Windows large pages are not used.
+- **Huge Pages** (`feature = "hugepages"`): On Linux, `madvise(MADV_HUGEPAGE)` on `ReadWrite` mappings built with `.huge_pages(true)`. A hint the kernel may ignore (file-backed mappings on most disk filesystems stay on base pages); `MAP_HUGETLB` is not used for files (it needs hugetlbfs). For anonymous memory, `AnonymousMmap::with_huge_pages` (1.1.0) tries `MAP_HUGETLB` and falls back to the hint. Windows large pages (which need `SeLockMemoryPrivilege`) are never used.
 
 - **Async-Only Flushing** (`feature = "async"`): Async write helpers auto-flush after each write to ensure post-await visibility across platforms.
 
@@ -281,6 +281,8 @@ assert_eq!(&buf, b"hello");
 | Method | Signature | Notes |
 |--------|-----------|-------|
 | `new` | `fn new(size: u64) -> Result<Self>` | Allocate `size` bytes. Errors on zero/oversized. |
+| `with_huge_pages` | `fn with_huge_pages(size: u64) -> Result<Self>` | 1.1.0, feature `hugepages`. Linux: `MAP_HUGETLB`, falling back to base pages + `MADV_HUGEPAGE` when no huge pages are reserved. Windows (needs `SeLockMemoryPrivilege`, not attempted) and macOS: same as `new`. |
+| `is_hugepage_backed` | `fn is_hugepage_backed(&self) -> Option<bool>` | 1.1.0. Linux: from `/proc/self/smaps`; `None` elsewhere. |
 | `len` | `fn len(&self) -> u64` | Length in bytes. |
 | `is_empty` | `fn is_empty(&self) -> bool` | Always `false` for a constructed mapping. |
 | `read_into` | `fn read_into(&self, offset: u64, buf: &mut [u8]) -> Result<()>` | Copy bytes out of the mapping. |
