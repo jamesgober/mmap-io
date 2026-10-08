@@ -435,11 +435,12 @@ let mmap = MemoryMappedFile::builder("hp.bin")
 
 ## ⚠️ Unsafe Code Disclaimer
 
-This crate uses `unsafe` internally to manage raw memory mappings (`mmap` on Unix, `MapViewOfFile` on Windows, through `memmap2`). Public APIs are memory-safe within one process. However:
+This crate uses `unsafe` internally to manage raw memory mappings (`mmap` on Unix, `MapViewOfFile` on Windows, through its own `mmap_io::raw` layer). Public APIs are memory-safe within one process. However:
 
-- **You must not modify or truncate the file from another process** while it is mapped here; readers can see torn data or crash with `SIGBUS`.
-- **Do not mix atomic and plain access to the same bytes**: reading bytes through a `MappedSlice` while another thread stores to them through an atomic view is a data race.
-- **Raw pointers** from `as_ptr` / `as_mut_ptr` are invalidated by `resize()`.
+- **You must not modify or truncate the file from another process** (or through a second, independent `MemoryMappedFile` of the same file) while it is mapped here; readers can see torn data or crash with `SIGBUS`.
+- **Raw pointers** from `as_ptr` / `as_mut_ptr` are invalidated by `resize()`, and must not be used to write bytes that a `MappedSlice` or an atomic view covers.
+
+Atomic and plain access to the same bytes is checked at run time since 1.1.0: a `MappedSlice` over bytes covered by a live atomic view (or the reverse) is refused with `InvalidMode`, and copying reads (`read_into`, `read_bytes`, `MmapReader`) read those bytes with atomic loads. Disjoint ranges, such as atomic counters in a header next to plain data, are unaffected.
 
 All unsafe logic is documented in the source and footguns are marked with caution.
 

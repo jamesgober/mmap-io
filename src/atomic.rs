@@ -31,16 +31,34 @@
 //! # Mixing atomic and plain access
 //!
 //! An atomic view and a [`MappedSlice`](crate::MappedSlice) both hold
-//! read guards, so they can be alive at the same time. Reading bytes
-//! through a `MappedSlice` that another thread is concurrently storing
-//! to through an atomic view is a data race under the Rust memory
-//! model; keep atomic regions and plain-byte regions disjoint, or use
-//! the atomic view for every access to those bytes.
+//! read guards. If they covered the same bytes, an atomic store would
+//! race with the slice's plain reads, which is undefined behavior in
+//! the Rust memory model. Since 1.1.0 the mapping tracks the byte
+//! ranges of its live views and refuses the overlapping combinations
+//! with [`MmapIoError::InvalidMode`]:
+//!
+//! - creating an atomic view over bytes covered by a live
+//!   `MappedSlice` or iterator item (a `chunks()` / `pages()` iterator
+//!   created with no atomic view alive covers the whole mapping until
+//!   it and all its items are dropped);
+//! - creating a `MappedSlice` (`as_slice`, `Segment::as_slice`) over
+//!   bytes covered by a live atomic view;
+//! - creating an atomic view over bytes covered by a live atomic view
+//!   of the other element size (mixed-size atomic access).
+//!
+//! Disjoint ranges are unaffected, so a header of atomic counters next
+//! to plain data works as before. Copying reads (`read_into`,
+//! `read_bytes`, `std::io::Read` on `MmapReader`, owned iterators) are
+//! never refused: bytes under a live atomic view are read with atomic
+//! loads of that view's element size. Overlapping atomic views of the
+//! same element size are allowed (same-size atomic accesses to the
+//! same bytes are fine).
 
 use crate::errors::{MmapIoError, Result};
 use crate::mmap::MemoryMappedFile;
 use crate::raw::RawMmapMut;
-use parking_lot::RwLockReadGuard;
+use crate::views::{AtomicReg, ViewRegistry};
+use parking_lot::{RwLock, RwLockReadGuard};
 use std::marker::PhantomData;
 use std::ops::Deref;
 use std::sync::atomic::{AtomicU32, AtomicU64, Ordering};
@@ -49,7 +67,7 @@ use std::sync::atomic::{AtomicU32, AtomicU64, Ordering};
 /// implementor has the same size and alignment as its integer type
 /// and accepts every bit pattern, which the pointer cast in
 /// [`view_parts`] relies on.
-trait AtomicCell: Sync + private::Sealed {}
+pub(crate) trait AtomicCell: Sync + private::Sealed {}
 impl AtomicCell for AtomicU32 {}
 impl AtomicCell for AtomicU64 {}
 mod private {
@@ -71,6 +89,7 @@ mod private {
 /// lock, and `resize()` / `update_region()` (which need the write
 /// lock) block until the view is dropped.
 pub struct AtomicView<'a, T> {
+    _reg: AtomicReg<'a>,
     _guard: RwLockReadGuard<'a, RawMmapMut>,
     ptr: *const T,
     /// The mapping's pending-bytes counter (`None` when writes are not
@@ -93,7 +112,8 @@ impl<T> Drop for AtomicView<'_, T> {
 // - The read guard is Send (this crate enables parking_lot's
 //   `send_guard` feature; the compile-time assertion
 //   `_ASSERT_GUARDS_SEND_SYNC` in mmap.rs fails the build otherwise)
-//   and Sync (`RawMmapMut` is Sync).
+//   and Sync (`RawMmapMut` is Sync). The registration is a shared
+//   reference to the `Sync` view registry plus an id.
 // - The pointer targets memory owned by the guarded mapping, which
 //   stays mapped while the guard is alive, wherever the guard lives.
 // - `T: Sync` is required, so handing `&T` to another thread is sound.
@@ -120,6 +140,7 @@ impl<T> Deref for AtomicView<'_, T> {
 ///
 /// See [`AtomicView`] for lifetime / resize semantics.
 pub struct AtomicSliceView<'a, T> {
+    _reg: AtomicReg<'a>,
     _guard: RwLockReadGuard<'a, RawMmapMut>,
     ptr: *const T,
     len: usize,
@@ -156,22 +177,29 @@ impl<T> Deref for AtomicSliceView<'_, T> {
     }
 }
 
+/// The parts every atomic view holds: its registration, the read guard,
+/// and a pointer to the first element.
+pub(crate) type ViewParts<'a, T> = (AtomicReg<'a>, RwLockReadGuard<'a, RawMmapMut>, *const T);
+
 /// Validate a request for `count` consecutive `T` values at `offset`
-/// and return the read guard plus a pointer to the first element.
+/// of the writable mapping behind `lock`, register it in `views`, and
+/// return the registration, the read guard, and a pointer to the first
+/// element.
 ///
-/// Checks run in this order: mapping mode (`InvalidMode` for RO),
-/// alignment (`Misaligned`), bounds (`OutOfBounds`). Bounds are
-/// checked against the mapping length read under the returned guard,
-/// so a concurrent `resize()` cannot invalidate the result.
-fn view_parts<T: AtomicCell>(
-    mapping: &MemoryMappedFile,
+/// Checks run in this order (after the caller's mode check): alignment
+/// (`Misaligned`), bounds (`OutOfBounds`), overlap with live views
+/// (`InvalidMode`). Bounds are checked against the mapping length read
+/// under the returned guard, so a concurrent `resize()` cannot
+/// invalidate the result.
+pub(crate) fn view_parts<'a, T: AtomicCell>(
+    lock: &'a RwLock<RawMmapMut>,
+    views: &'a ViewRegistry,
     offset: u64,
     count: usize,
-) -> Result<(RwLockReadGuard<'_, RawMmapMut>, *const T)> {
+) -> Result<ViewParts<'a, T>> {
     let align = std::mem::align_of::<T>() as u64;
     let size = std::mem::size_of::<T>() as u64;
 
-    let lock = mapping.write_lock("atomic views require a ReadWrite or CopyOnWrite mapping")?;
     if offset % align != 0 {
         return Err(MmapIoError::Misaligned {
             required: align,
@@ -186,9 +214,11 @@ fn view_parts<T: AtomicCell>(
     if offset.saturating_add(len) > total {
         return Err(MmapIoError::OutOfBounds { offset, len, total });
     }
-    // `offset <= total`, and `total` came from a `usize`, so the cast
-    // is lossless.
+    // `offset + len <= total`, and `total` came from a `usize`, so the
+    // casts are lossless.
     let start = offset as usize;
+    let end = (offset + len) as usize;
+    let reg = views.register_atomic(start, end, size as usize)?;
     // SAFETY: `start + len <= guard.len()` was checked above against
     // the length of the mapping that `guard` keeps mapped, so
     // `as_ptr().add(start)` stays within (or one past the end of) the
@@ -199,11 +229,56 @@ fn view_parts<T: AtomicCell>(
     //      trait), which have the same size and layout as `u32`/`u64`
     //      and accept every bit pattern; `size == align` for both, so
     //      every element of a `count`-long run is also aligned.
-    //   3. The bytes are writable: only RW and COW mappings (both
-    //      mapped PROT_READ|PROT_WRITE) reach this point.
+    //   3. The bytes are writable: only writable mappings (RW and COW
+    //      file mappings, anonymous mappings, all PROT_READ|PROT_WRITE)
+    //      reach this point.
+    //   4. No plain `&[u8]` over these bytes is alive, and none can be
+    //      created while the view lives: `reg` registered the range in
+    //      `views`, which refused it if a plain view overlapped.
     // Reference: https://doc.rust-lang.org/std/sync/atomic/struct.AtomicU64.html
-    let ptr = unsafe { guard.as_ptr().add(start) }.cast::<T>();
-    Ok((guard, ptr))
+    let ptr = unsafe { RawMmapMut::as_ptr(&guard).add(start) }.cast::<T>();
+    Ok((reg, guard, ptr))
+}
+
+/// Build an [`AtomicView`] from its parts.
+pub(crate) fn single<'a, T>(
+    parts: ViewParts<'a, T>,
+    pending: Option<&'a AtomicU64>,
+) -> AtomicView<'a, T> {
+    let (reg, guard, ptr) = parts;
+    AtomicView {
+        _reg: reg,
+        _guard: guard,
+        ptr,
+        pending,
+        _marker: PhantomData,
+    }
+}
+
+/// Build an [`AtomicSliceView`] of `len` elements from its parts.
+pub(crate) fn slice<'a, T>(
+    parts: ViewParts<'a, T>,
+    len: usize,
+    pending: Option<&'a AtomicU64>,
+) -> AtomicSliceView<'a, T> {
+    let (reg, guard, ptr) = parts;
+    AtomicSliceView {
+        _reg: reg,
+        _guard: guard,
+        ptr,
+        len,
+        pending,
+        _marker: PhantomData,
+    }
+}
+
+impl MemoryMappedFile {
+    /// Lock and view registry for an atomic view; `InvalidMode` on a
+    /// read-only mapping.
+    fn atomic_parts<T: AtomicCell>(&self, offset: u64, count: usize) -> Result<ViewParts<'_, T>> {
+        let lock = self.write_lock("atomic views require a ReadWrite or CopyOnWrite mapping")?;
+        view_parts(lock, &self.inner.views, offset, count)
+    }
 }
 
 impl MemoryMappedFile {
@@ -236,20 +311,17 @@ impl MemoryMappedFile {
     /// # Errors
     ///
     /// Returns [`MmapIoError::InvalidMode`] if the mapping is
-    /// `ReadOnly`.
+    /// `ReadOnly`, or (since 1.1.0) if the range overlaps a live
+    /// `MappedSlice` / iterator item, or a live atomic view of the other
+    /// element size (see the module docs).
     /// Returns [`MmapIoError::Misaligned`] if the offset is not
     /// 8-byte aligned.
     /// Returns [`MmapIoError::OutOfBounds`] if `offset + 8` exceeds
     /// the file's current length.
     #[cfg(feature = "atomic")]
     pub fn atomic_u64(&self, offset: u64) -> Result<AtomicView<'_, AtomicU64>> {
-        let (guard, ptr) = view_parts::<AtomicU64>(self, offset, 1)?;
-        Ok(AtomicView {
-            _guard: guard,
-            ptr,
-            pending: self.pending_counter(),
-            _marker: PhantomData,
-        })
+        let parts = self.atomic_parts::<AtomicU64>(offset, 1)?;
+        Ok(single(parts, self.pending_counter()))
     }
 
     /// Get an atomic view of a `u32` value at the specified offset.
@@ -263,20 +335,17 @@ impl MemoryMappedFile {
     /// # Errors
     ///
     /// Returns [`MmapIoError::InvalidMode`] if the mapping is
-    /// `ReadOnly`.
+    /// `ReadOnly`, or (since 1.1.0) if the range overlaps a live
+    /// `MappedSlice` / iterator item, or a live atomic view of the other
+    /// element size (see the module docs).
     /// Returns [`MmapIoError::Misaligned`] if the offset is not
     /// 4-byte aligned.
     /// Returns [`MmapIoError::OutOfBounds`] if `offset + 4` exceeds
     /// the file's current length.
     #[cfg(feature = "atomic")]
     pub fn atomic_u32(&self, offset: u64) -> Result<AtomicView<'_, AtomicU32>> {
-        let (guard, ptr) = view_parts::<AtomicU32>(self, offset, 1)?;
-        Ok(AtomicView {
-            _guard: guard,
-            ptr,
-            pending: self.pending_counter(),
-            _marker: PhantomData,
-        })
+        let parts = self.atomic_parts::<AtomicU32>(offset, 1)?;
+        Ok(single(parts, self.pending_counter()))
     }
 
     /// Get a slice view of `count` `AtomicU64` values starting at
@@ -292,7 +361,9 @@ impl MemoryMappedFile {
     /// # Errors
     ///
     /// Returns [`MmapIoError::InvalidMode`] if the mapping is
-    /// `ReadOnly`.
+    /// `ReadOnly`, or (since 1.1.0) if the range overlaps a live
+    /// `MappedSlice` / iterator item, or a live atomic view of the other
+    /// element size (see the module docs).
     /// Returns [`MmapIoError::Misaligned`] if the offset is not
     /// 8-byte aligned.
     /// Returns [`MmapIoError::OutOfBounds`] if the requested range
@@ -303,14 +374,8 @@ impl MemoryMappedFile {
         offset: u64,
         count: usize,
     ) -> Result<AtomicSliceView<'_, AtomicU64>> {
-        let (guard, ptr) = view_parts::<AtomicU64>(self, offset, count)?;
-        Ok(AtomicSliceView {
-            _guard: guard,
-            ptr,
-            len: count,
-            pending: self.pending_counter(),
-            _marker: PhantomData,
-        })
+        let parts = self.atomic_parts::<AtomicU64>(offset, count)?;
+        Ok(slice(parts, count, self.pending_counter()))
     }
 
     /// Get a slice view of `count` `AtomicU32` values starting at
@@ -323,7 +388,9 @@ impl MemoryMappedFile {
     /// # Errors
     ///
     /// Returns [`MmapIoError::InvalidMode`] if the mapping is
-    /// `ReadOnly`.
+    /// `ReadOnly`, or (since 1.1.0) if the range overlaps a live
+    /// `MappedSlice` / iterator item, or a live atomic view of the other
+    /// element size (see the module docs).
     /// Returns [`MmapIoError::Misaligned`] if the offset is not
     /// 4-byte aligned.
     /// Returns [`MmapIoError::OutOfBounds`] if the requested range
@@ -334,14 +401,8 @@ impl MemoryMappedFile {
         offset: u64,
         count: usize,
     ) -> Result<AtomicSliceView<'_, AtomicU32>> {
-        let (guard, ptr) = view_parts::<AtomicU32>(self, offset, count)?;
-        Ok(AtomicSliceView {
-            _guard: guard,
-            ptr,
-            len: count,
-            pending: self.pending_counter(),
-            _marker: PhantomData,
-        })
+        let parts = self.atomic_parts::<AtomicU32>(offset, count)?;
+        Ok(slice(parts, count, self.pending_counter()))
     }
 }
 

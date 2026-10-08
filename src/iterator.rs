@@ -2,11 +2,23 @@
 //!
 //! [`ChunkIterator`] and [`PageIterator`] yield [`MappedSlice<'a>`]
 //! items that borrow directly from the underlying mapping (no
-//! allocation, no copy). On RW mappings the iterator holds a read
-//! guard for its entire lifetime, which blocks any concurrent
-//! `resize()` until iteration completes, and every yielded item holds
-//! its own read guard as well, so an item kept after the iterator is
-//! dropped still blocks `resize()` until the item itself is dropped.
+//! allocation, no copy). On RW and COW mappings the iterator holds a
+//! read guard for its entire lifetime, which blocks any concurrent
+//! `resize()` and write until iteration completes, and every yielded
+//! item keeps that guard alive as well, so an item kept after the
+//! iterator is dropped still blocks writers until the item itself is
+//! dropped.
+//!
+//! # Atomic views
+//!
+//! Plain byte views and atomic views of the same bytes must not
+//! coexist (see `crate::atomic`). Every item of a RW or COW mapping is
+//! registered as a plain view of its own range while it lives, so an
+//! atomic view over that range cannot be created meanwhile (it returns
+//! `InvalidMode`); other ranges are unaffected. An item whose range
+//! overlaps a live atomic view when it is produced is an owned copy
+//! (one allocation) read with atomic loads for the atomic elements,
+//! instead of a zero-copy borrow.
 //!
 //! The owned variants ([`ChunkIteratorOwned`], [`PageIteratorOwned`])
 //! yield `Result<Vec<u8>>` for callers that genuinely need owned
@@ -17,6 +29,7 @@ use crate::errors::Result;
 use crate::mmap::{MapVariant, MappedSlice, MemoryMappedFile};
 use crate::raw::RawMmapMut;
 use crate::utils::page_size;
+use crate::views::ViewRegistry;
 use parking_lot::{RwLock, RwLockReadGuard};
 use std::marker::PhantomData;
 
@@ -25,11 +38,13 @@ enum ChunkSource<'a> {
     /// RO mapping: the underlying `RawMmap` is never remapped or
     /// written, so a plain borrow is valid for `'a`.
     Shared(&'a [u8]),
-    /// RW or COW mapping. `pin` keeps the length stable for the iterator's
-    /// lifetime (so `ExactSizeIterator` stays accurate); each yielded
-    /// item takes its own recursive read guard from `lock`.
+    /// RW or COW mapping. `pin` keeps the length stable for the
+    /// iterator's lifetime (so `ExactSizeIterator` stays accurate);
+    /// each item takes its own recursive read guard from `lock` and a
+    /// plain registration in `views` (or becomes a snapshot).
     Locked {
         lock: &'a RwLock<RawMmapMut>,
+        views: &'a ViewRegistry,
         pin: RwLockReadGuard<'a, RawMmapMut>,
     },
 }
@@ -37,10 +52,11 @@ enum ChunkSource<'a> {
 /// Iterator over fixed-size chunks of a memory-mapped file.
 ///
 /// Yields [`MappedSlice<'a>`] items that borrow directly from the
-/// mapped region. On RW mappings the iterator holds the read lock for
-/// its lifetime and every yielded item holds its own read guard, so
-/// `resize()` from another thread blocks until the iterator AND every
-/// item it produced have been dropped.
+/// mapped region. On RW and COW mappings the iterator holds the read
+/// lock for its lifetime and every yielded item keeps a read guard, so
+/// `resize()` and writes from another thread block until the iterator
+/// AND every item it produced have been dropped. See the module docs
+/// for how the iterator interacts with atomic views.
 ///
 /// Calling a write method (`update_region`, `as_slice_mut`, `resize`,
 /// `chunks_mut`) on the same thread while the iterator or one of its
@@ -80,6 +96,7 @@ impl<'a> ChunkIterator<'a> {
             MapVariant::Ro(m) => ChunkSource::Shared(&m[..]),
             MapVariant::Rw(lock) | MapVariant::Cow(lock) => ChunkSource::Locked {
                 lock,
+                views: &mmap.inner.views,
                 // Recursive so a caller that already holds a view on
                 // this thread cannot deadlock behind a queued writer.
                 pin: lock.read_recursive(),
@@ -110,12 +127,28 @@ impl<'a> Iterator for ChunkIterator<'a> {
         self.current_offset = end;
         match &self.source {
             ChunkSource::Shared(s) => Some(MappedSlice::owned(&s[start..end])),
-            // The item gets its own guard: it may outlive the iterator
-            // (and the pin guard), and must keep `resize()` out for as
-            // long as it lives. `end <= total_len` was read under the
-            // pin guard, which is still held, so the range is valid.
-            ChunkSource::Locked { lock, .. } => {
-                Some(MappedSlice::guarded(lock.read_recursive(), start..end))
+            // The item gets its own guard and registration: it may
+            // outlive the iterator (and the pin guard), and must keep
+            // writers and atomic views of its bytes out for as long as
+            // it lives. `end <= total_len` was read under the pin guard,
+            // which is still held, so the range is valid.
+            ChunkSource::Locked { lock, views, .. } => {
+                let guard = lock.read_recursive();
+                Some(match views.register_plain(start, end) {
+                    Ok(reg) => MappedSlice::guarded(guard, reg, start..end),
+                    Err(_) => {
+                        // Overlaps a live atomic view: copy instead of
+                        // lending `&[u8]` to bytes that may be stored to.
+                        let mut copy = vec![0u8; end - start].into_boxed_slice();
+                        // SAFETY: `[start, end)` lies within the mapping
+                        // `guard` holds a read guard on (checked against
+                        // `total_len` above), and every atomic view of
+                        // this mapping registers in `views`, which is
+                        // `copy_out`'s contract.
+                        unsafe { views.copy_out(RawMmapMut::as_ptr(&guard), start, &mut copy) };
+                        MappedSlice::snapshot(copy)
+                    }
+                })
             }
         }
     }
@@ -358,9 +391,14 @@ impl MemoryMappedFile {
     /// `chunk_size` (final chunk may be shorter). A `chunk_size` of
     /// zero yields nothing.
     ///
-    /// For RW mappings, the iterator and every item it yields hold a
-    /// read guard; concurrent `resize()` blocks until all of them are
-    /// dropped.
+    /// For RW and COW mappings, the iterator and every item it yields
+    /// hold a read guard; concurrent `resize()` and writes block until
+    /// all of them are dropped.
+    ///
+    /// Atomic views (since 1.1.0): while an item is alive, an atomic
+    /// view over its bytes cannot be created (`InvalidMode`). An item
+    /// that overlaps a live atomic view when it is produced is an owned
+    /// copy, read with atomic loads, instead of a zero-copy borrow.
     ///
     /// # Examples
     ///

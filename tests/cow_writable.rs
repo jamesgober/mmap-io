@@ -8,7 +8,6 @@ use std::fs;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::thread;
-use std::time::Duration;
 
 use mmap_io::{MemoryMappedFile, MmapIoError, MmapMode};
 
@@ -261,7 +260,7 @@ fn dontneed_on_cow_waits_for_views_and_keeps_memory_sound() {
         let cow = Arc::clone(&cow);
         thread::spawn(move || cow.advise(0, 4096, MmapAdvice::DontNeed))
     };
-    thread::sleep(Duration::from_millis(150));
+    thread::sleep(std::time::Duration::from_millis(150));
     assert!(!worker.is_finished(), "DontNeed ran while a view was alive");
     assert!(
         view.iter().all(|&b| b == 0xEE),

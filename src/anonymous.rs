@@ -32,6 +32,7 @@ use parking_lot::RwLock;
 use crate::errors::{MmapIoError, Result};
 use crate::mmap::{MappedSlice, MappedSliceMut};
 use crate::utils::slice_range;
+use crate::views::ViewRegistry;
 
 // Mirrors the same constants used in `mmap.rs`. Kept module-local so a
 // future refactor of one does not silently drift the other.
@@ -64,6 +65,8 @@ const MAX_MMAP_SIZE: u64 = 2 * (1 << 30); // 2 GB
 pub struct AnonymousMmap {
     map: RwLock<RawMmapMut>,
     len: u64,
+    /// Live plain and atomic views; see `crate::views`.
+    views: ViewRegistry,
 }
 
 impl AnonymousMmap {
@@ -93,6 +96,7 @@ impl AnonymousMmap {
         Ok(Self {
             map: RwLock::new(mmap),
             len: size,
+            views: ViewRegistry::new(),
         })
     }
 
@@ -114,18 +118,30 @@ impl AnonymousMmap {
     /// Copy `buf.len()` bytes from the mapping starting at `offset`
     /// into `buf`.
     ///
+    /// Bytes under a live atomic view are read with atomic loads, so
+    /// the copy never races with concurrent atomic stores.
+    ///
     /// # Errors
     ///
     /// Returns [`MmapIoError::OutOfBounds`] if the range exceeds the
     /// mapping length.
     pub fn read_into(&self, offset: u64, buf: &mut [u8]) -> Result<()> {
-        let (start, end) = slice_range(offset, buf.len() as u64, self.len)?;
-        let guard = self.map.read();
-        buf.copy_from_slice(&guard[start..end]);
+        let (start, _end) = slice_range(offset, buf.len() as u64, self.len)?;
+        // Recursive: a thread that already holds a view must not
+        // deadlock behind a queued writer.
+        let guard = self.map.read_recursive();
+        // SAFETY: `[start, end)` lies within the mapping (checked
+        // against `self.len`, which never changes), `guard` is a read
+        // guard held for the call, and every atomic view of this
+        // mapping registers in `self.views`: `copy_out`'s contract.
+        unsafe { self.views.copy_out(RawMmapMut::as_ptr(&guard), start, buf) };
         Ok(())
     }
 
     /// Write `data.len()` bytes into the mapping starting at `offset`.
+    ///
+    /// Takes the write lock, so it waits for every live view; calling
+    /// it on a thread that holds one deadlocks.
     ///
     /// # Errors
     ///
@@ -148,10 +164,13 @@ impl AnonymousMmap {
     ///
     /// Returns [`MmapIoError::OutOfBounds`] if the range exceeds the
     /// mapping length.
+    /// Returns [`MmapIoError::InvalidMode`] if the range overlaps a live
+    /// atomic view (see `MemoryMappedFile::as_slice`).
     pub fn as_slice(&self, offset: u64, len: u64) -> Result<MappedSlice<'_>> {
         let (start, end) = slice_range(offset, len, self.len)?;
-        let guard = self.map.read();
-        Ok(MappedSlice::guarded(guard, start..end))
+        let guard = self.map.read_recursive();
+        let reg = self.views.register_plain(start, end)?;
+        Ok(MappedSlice::guarded(guard, reg, start..end))
     }
 
     /// Borrow a mutable slice of the mapping.
@@ -185,8 +204,8 @@ impl AnonymousMmap {
         // This expression itself only takes a read lock and reads the
         // mapping's base address; the read guard is dropped on return,
         // which is the entire point of marking the function unsafe.
-        let guard = self.map.read();
-        guard.as_ptr()
+        let guard = self.map.read_recursive();
+        RawMmapMut::as_ptr(&guard)
     }
 
     /// Raw mutable pointer to the start of the mapping.

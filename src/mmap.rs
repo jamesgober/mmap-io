@@ -29,6 +29,7 @@ use parking_lot::{RwLock, RwLockReadGuard, RwLockWriteGuard};
 
 use crate::errors::{MmapIoError, Result};
 use crate::utils::slice_range;
+use crate::views::{PlainReg, ViewRegistry};
 
 // Error message constants
 const ERR_ZERO_SIZE: &str = "Size must be greater than zero";
@@ -88,6 +89,10 @@ pub struct Inner {
     // here so the worker thread's lifetime is bound to the mapping;
     // Drop signals shutdown. See C2 fix in .dev/AUDIT.md.
     pub(crate) flusher: RwLock<Option<crate::flush::TimeBasedFlusher>>,
+    // Live views of a writable (RW / COW) mapping, so an atomic view and
+    // a plain byte view of the same bytes can never coexist. See
+    // `crate::views`. Unused for RO mappings, which have no atomics.
+    pub(crate) views: ViewRegistry,
     // Huge pages preference (builder-set), effective on supported platforms
     #[cfg(feature = "hugepages")]
     pub(crate) huge_pages: bool,
@@ -261,6 +266,7 @@ impl MemoryMappedFile {
             written_since_last_flush: AtomicU64::new(0),
             writes_since_last_flush: AtomicU64::new(0),
             flusher: RwLock::new(None),
+            views: ViewRegistry::new(),
             #[cfg(feature = "hugepages")]
             huge_pages: false,
         };
@@ -298,6 +304,7 @@ impl MemoryMappedFile {
             written_since_last_flush: AtomicU64::new(0),
             writes_since_last_flush: AtomicU64::new(0),
             flusher: RwLock::new(None),
+            views: ViewRegistry::new(),
             #[cfg(feature = "hugepages")]
             huge_pages: false,
         };
@@ -337,6 +344,7 @@ impl MemoryMappedFile {
             written_since_last_flush: AtomicU64::new(0),
             writes_since_last_flush: AtomicU64::new(0),
             flusher: RwLock::new(None),
+            views: ViewRegistry::new(),
             #[cfg(feature = "hugepages")]
             huge_pages: false,
         };
@@ -390,17 +398,30 @@ impl MemoryMappedFile {
     /// A zero-length request returns an empty slice at any offset
     /// without taking the lock.
     ///
+    /// # Atomic views
+    ///
+    /// On `ReadWrite` and `CopyOnWrite` mappings a `MappedSlice` and an
+    /// atomic view of the same bytes cannot be alive at the same time:
+    /// an atomic store would race with the slice's plain reads. A
+    /// request that overlaps a live atomic view returns
+    /// [`MmapIoError::InvalidMode`]; read those bytes through the
+    /// atomic view, or copy them with [`read_into`](Self::read_into),
+    /// which reads them atomically. Ranges next to an atomic view are
+    /// unaffected.
+    ///
     /// # Errors
     ///
     /// Returns [`MmapIoError::OutOfBounds`] if `offset + len` exceeds
     /// the file's current length.
+    /// Returns [`MmapIoError::InvalidMode`] if the range overlaps a
+    /// live atomic view (since 1.1.0).
     pub fn as_slice(&self, offset: u64, len: u64) -> Result<MappedSlice<'_>> {
         if len == 0 {
             return Ok(MappedSlice::owned(&[]));
         }
         let map = self.map_read();
         let (start, end) = slice_range(offset, len, map.len() as u64)?;
-        Ok(map.into_slice(start..end))
+        map.into_view(&self.inner.views, start..end)
     }
 
     /// Migration shim that mirrors the 0.9.6 `as_slice` signature:
@@ -458,8 +479,16 @@ impl MemoryMappedFile {
     /// file's current length.
     #[cfg(feature = "bytes")]
     pub fn read_bytes(&self, offset: u64, len: u64) -> Result<bytes::Bytes> {
-        let slice = self.as_slice(offset, len)?;
-        Ok(bytes::Bytes::copy_from_slice(slice.as_slice()))
+        if len == 0 {
+            return Ok(bytes::Bytes::new());
+        }
+        // Validate before allocating, then copy under the same guard
+        // (bytes under live atomic views are read atomically).
+        let map = self.map_read();
+        let (start, end) = slice_range(offset, len, map.len() as u64)?;
+        let mut buf = vec![0u8; end - start];
+        map.copy_to(&self.inner.views, start, &mut buf);
+        Ok(bytes::Bytes::from(buf))
     }
 
     /// Construct an `io::Read` + `io::Seek` cursor over the
@@ -919,7 +948,7 @@ impl MemoryMappedFile {
         // reference to the mapped memory, only one volatile byte read
         // per page.
         let map = self.map_read();
-        touch_range_with_ptr(map.base_ptr(), 0, map.len(), crate::utils::page_size());
+        self.touch_locked(&map, 0, map.len(), crate::utils::page_size());
         Ok(())
     }
 
@@ -944,8 +973,24 @@ impl MemoryMappedFile {
         // the mapping, so the page holding byte `end - 1` is mapped.
         let page_sz = crate::utils::page_size();
         let first_page = start - start % page_sz;
-        touch_range_with_ptr(map.base_ptr(), first_page, end - first_page, page_sz);
+        self.touch_locked(&map, first_page, end - first_page, page_sz);
         Ok(())
+    }
+
+    /// Touch `[start, start + len)` of the mapping `map` gives access
+    /// to; the range must be inside it.
+    fn touch_locked(&self, map: &MapRead<'_>, start: usize, len: usize, page_sz: usize) {
+        match map {
+            MapRead::Shared(_) => touch_range_with_ptr(map.base_ptr(), start, len, page_sz),
+            // SAFETY: the range is inside the mapping (caller contract)
+            // and `map` holds its read guard for the call, which is
+            // `ViewRegistry::touch`'s contract. Bytes under live atomic
+            // views are touched with atomic loads instead of plain
+            // volatile reads.
+            MapRead::Guarded(_) => unsafe {
+                self.inner.views.touch(map.base_ptr(), start, len, page_sz)
+            },
+        }
     }
 }
 
@@ -1032,6 +1077,7 @@ impl MemoryMappedFile {
                     written_since_last_flush: AtomicU64::new(0),
                     writes_since_last_flush: AtomicU64::new(0),
                     flusher: RwLock::new(None),
+                    views: ViewRegistry::new(),
                     #[cfg(feature = "hugepages")]
                     huge_pages: false,
                 };
@@ -1055,6 +1101,7 @@ impl MemoryMappedFile {
                     written_since_last_flush: AtomicU64::new(0),
                     writes_since_last_flush: AtomicU64::new(0),
                     flusher: RwLock::new(None),
+                    views: ViewRegistry::new(),
                     #[cfg(feature = "hugepages")]
                     huge_pages: false,
                 };
@@ -1078,6 +1125,7 @@ impl MemoryMappedFile {
                     written_since_last_flush: AtomicU64::new(0),
                     writes_since_last_flush: AtomicU64::new(0),
                     flusher: RwLock::new(None),
+                    views: ViewRegistry::new(),
                     #[cfg(feature = "hugepages")]
                     huge_pages: false,
                 };
@@ -1388,12 +1436,40 @@ impl<'a> MapRead<'a> {
         }
     }
 
-    /// Turn this access into a `MappedSlice` over `range`. The range
-    /// must have been validated against `self.len()`.
-    pub(crate) fn into_slice(self, range: std::ops::Range<usize>) -> MappedSlice<'a> {
+    /// Turn this access into a `MappedSlice` over `range`, registering
+    /// it as a plain view in `views` for RW / COW mappings. The range
+    /// must have been validated against `self.len()` and be non-empty.
+    ///
+    /// # Errors
+    ///
+    /// `InvalidMode` if the range overlaps a live atomic view.
+    pub(crate) fn into_view(
+        self,
+        views: &'a ViewRegistry,
+        range: std::ops::Range<usize>,
+    ) -> Result<MappedSlice<'a>> {
         match self {
-            MapRead::Shared(s) => MappedSlice::owned(&s[range]),
-            MapRead::Guarded(g) => MappedSlice::guarded(g, range),
+            MapRead::Shared(s) => Ok(MappedSlice::owned(&s[range])),
+            MapRead::Guarded(g) => {
+                let reg = views.register_plain(range.start, range.end)?;
+                Ok(MappedSlice::guarded(g, reg, range))
+            }
+        }
+    }
+
+    /// Copy `dst.len()` bytes at mapping offset `start` into `dst`.
+    /// The range must have been validated against `self.len()`. On RW /
+    /// COW mappings bytes under a live atomic view are read with atomic
+    /// loads.
+    pub(crate) fn copy_to(&self, views: &ViewRegistry, start: usize, dst: &mut [u8]) {
+        match self {
+            MapRead::Shared(s) => dst.copy_from_slice(&s[start..start + dst.len()]),
+            // SAFETY: `copy_out` needs the mapping valid for
+            // `[start, start + dst.len())` and a read guard held for the
+            // call: the caller validated the range against `self.len()`,
+            // and `g` is that read guard. Atomic views of this mapping
+            // all register in `views` (see `crate::atomic`).
+            MapRead::Guarded(g) => unsafe { views.copy_out(RawMmapMut::as_ptr(g), start, dst) },
         }
     }
 }
@@ -1595,6 +1671,7 @@ impl MemoryMappedFile {
             written_since_last_flush: AtomicU64::new(0),
             writes_since_last_flush: AtomicU64::new(0),
             flusher: RwLock::new(None),
+            views: ViewRegistry::new(),
             #[cfg(feature = "hugepages")]
             huge_pages: false,
         };
@@ -1675,6 +1752,11 @@ impl MemoryMappedFile {
     /// Length is `buf.len()`; performs bounds checks. An empty `buf`
     /// is accepted at any offset.
     ///
+    /// The range may overlap live atomic views: those bytes are read
+    /// with atomic loads of the view's element size, so the copy never
+    /// races with concurrent atomic stores (each element is copied
+    /// whole, but the buffer as a whole is not one atomic snapshot).
+    ///
     /// # Performance
     ///
     /// - **Time Complexity**: O(n) where n is buf.len()
@@ -1689,8 +1771,8 @@ impl MemoryMappedFile {
             return Ok(());
         }
         let map = self.map_read();
-        let (start, end) = slice_range(offset, buf.len() as u64, map.len() as u64)?;
-        buf.copy_from_slice(&map[start..end]);
+        let (start, _end) = slice_range(offset, buf.len() as u64, map.len() as u64)?;
+        map.copy_to(&self.inner.views, start, buf);
         Ok(())
     }
 }
@@ -1999,6 +2081,7 @@ impl MemoryMappedFileBuilder {
                     written_since_last_flush: AtomicU64::new(0),
                     writes_since_last_flush: AtomicU64::new(0),
                     flusher: RwLock::new(None),
+                    views: ViewRegistry::new(),
                     #[cfg(feature = "hugepages")]
                     huge_pages: false,
                 }))
@@ -2029,6 +2112,7 @@ impl MemoryMappedFileBuilder {
                     written_since_last_flush: AtomicU64::new(0),
                     writes_since_last_flush: AtomicU64::new(0),
                     flusher: RwLock::new(None),
+                    views: ViewRegistry::new(),
                     #[cfg(feature = "hugepages")]
                     huge_pages: false,
                 }))
@@ -2060,6 +2144,7 @@ impl MemoryMappedFileBuilder {
             written_since_last_flush: AtomicU64::new(0),
             writes_since_last_flush: AtomicU64::new(0),
             flusher: RwLock::new(None),
+            views: ViewRegistry::new(),
             #[cfg(feature = "hugepages")]
             huge_pages: huge,
         });
@@ -2164,6 +2249,25 @@ fn start_time_based_flusher(mmap_file: &MemoryMappedFile, ms: u64) {
     *mmap_file.inner.flusher.write() = flusher;
 }
 
+/// Raw pointer to `guard[range]` without forming a reference to the
+/// whole mapping (another part of it may be under a live atomic view).
+///
+/// # Panics
+///
+/// Panics if `range` is not within the mapping.
+fn sub_slice_ptr(guard: &RawMmapMut, range: std::ops::Range<usize>) -> *const [u8] {
+    assert!(
+        range.start <= range.end && range.end <= guard.len(),
+        "range checked by the caller"
+    );
+    // `wrapping_add` stays in bounds (asserted above) and avoids
+    // `unsafe`; the pointer is only dereferenced by `MappedSlice`.
+    std::ptr::slice_from_raw_parts(
+        guard.as_ptr().wrapping_add(range.start),
+        range.end - range.start,
+    )
+}
+
 /// Wrapper for a mutable slice that holds a write lock guard,
 /// ensuring exclusive access for the lifetime of the slice.
 ///
@@ -2247,11 +2351,14 @@ impl std::ops::DerefMut for MappedSliceMut<'_> {
 
 /// Wrapper for an immutable slice into a memory-mapped file.
 ///
-/// For RO and COW mappings this is a thin wrapper around a `&[u8]`
-/// borrowed directly from the underlying immutable mapping. For RW
+/// For RO mappings this is a thin wrapper around a `&[u8]` borrowed
+/// directly from the underlying immutable mapping. For RW and COW
 /// mappings this also holds the `RwLock` read guard for its lifetime,
 /// blocking any concurrent `resize()` (and every write, which also
-/// needs the write lock) while the slice is alive.
+/// needs the write lock) while the slice is alive, and it keeps atomic
+/// views off its bytes (creating an overlapping atomic view returns
+/// `InvalidMode`). Iterator items that overlap a live atomic view are
+/// owned copies instead (see `MemoryMappedFile::chunks`).
 ///
 /// Implements [`Deref<Target = [u8]>`] and [`AsRef<[u8]>`], so callers
 /// can use it as a byte slice directly: indexing, iteration,
@@ -2261,26 +2368,37 @@ pub struct MappedSlice<'a> {
 }
 
 enum MappedSliceInner<'a> {
-    /// RO / COW: the mapping is immutable; we lend a direct slice.
+    /// RO: the mapping is immutable; we lend a direct slice.
     Owned(&'a [u8]),
-    /// RW: the read guard keeps the mapping alive (and prevents
-    /// `resize()` and writes from running) for the slice's lifetime.
+    /// RW / COW: the read guard keeps the mapping alive (and prevents
+    /// `resize()` and writes from running) for the slice's lifetime,
+    /// and the registration keeps atomic views off these bytes.
     /// `bytes` is computed once at construction so `Deref` does no
     /// range arithmetic or bounds checks.
     Guarded {
+        _reg: PlainReg<'a>,
         _guard: RwLockReadGuard<'a, RawMmapMut>,
         bytes: *const [u8],
     },
+    /// Owned copy of the bytes, used for iterator items (and reader
+    /// buffers) that overlap a live atomic view: those bytes cannot be
+    /// lent as `&[u8]`, so they are copied with atomic loads instead.
+    // Only built by the iterators, when atomic views can exist.
+    #[cfg_attr(not(all(feature = "atomic", feature = "iterator")), allow(dead_code))]
+    Snapshot(Box<[u8]>),
 }
 
 // SAFETY: `MappedSlice` only ever hands out `&[u8]` to bytes that no
-// one can mutate while it lives (RO/COW mappings are immutable; for RW
-// the held read guard excludes every writer). `Owned` holds a `&[u8]`,
-// which is `Send + Sync`. `Guarded` holds a parking_lot read guard,
-// which is `Send` because this crate enables parking_lot's
-// `send_guard` feature (checked at compile time by
-// `_ASSERT_GUARDS_SEND_SYNC` below) and `Sync` because `RawMmapMut` is
-// `Sync`; the raw `bytes` pointer is only a cached view of memory
+// one can mutate while it lives: RO mappings are immutable; for RW and
+// COW the held read guard excludes every writer and the plain-view
+// registration excludes atomic views of the same bytes. `Owned` holds
+// a `&[u8]` and `Snapshot` a `Box<[u8]>`, both `Send + Sync`.
+// `Guarded` holds a parking_lot read guard, which is `Send` because
+// this crate enables parking_lot's `send_guard` feature (checked at
+// compile time by `_ASSERT_GUARDS_SEND_SYNC` below) and `Sync` because
+// `RawMmapMut` is `Sync`, plus a `PlainReg` (a shared reference to the
+// `Sync` registry and two indices, or nothing without the `atomic`
+// feature). The raw `bytes` pointer is only a cached view of memory
 // owned by that guarded mapping, so moving or sharing it across
 // threads is no different from moving or sharing the guard itself.
 unsafe impl Send for MappedSlice<'_> {}
@@ -2308,8 +2426,8 @@ impl<'a> MappedSlice<'a> {
         }
     }
 
-    /// Construct a `MappedSlice` that holds a read guard for its
-    /// lifetime. Used for RW paths to keep the mapping stable.
+    /// Construct a `MappedSlice` that holds a read guard and a plain
+    /// view registration for its lifetime. Used for RW / COW paths.
     ///
     /// # Panics
     ///
@@ -2317,14 +2435,25 @@ impl<'a> MappedSlice<'a> {
     /// validate the range against `guard.len()` first.
     pub(crate) fn guarded(
         guard: RwLockReadGuard<'a, RawMmapMut>,
+        reg: PlainReg<'a>,
         range: std::ops::Range<usize>,
     ) -> Self {
-        let bytes: *const [u8] = &guard[range];
+        let bytes = sub_slice_ptr(&guard, range);
         Self {
             inner: MappedSliceInner::Guarded {
+                _reg: reg,
                 _guard: guard,
                 bytes,
             },
+        }
+    }
+
+    /// Construct an owned copy (see `MappedSliceInner::Snapshot`).
+    // Only called by the iterators, when atomic views can exist.
+    #[cfg_attr(not(all(feature = "atomic", feature = "iterator")), allow(dead_code))]
+    pub(crate) fn snapshot(bytes: Box<[u8]>) -> Self {
+        Self {
+            inner: MappedSliceInner::Snapshot(bytes),
         }
     }
 
@@ -2341,10 +2470,13 @@ impl<'a> MappedSlice<'a> {
             // `resize` and every `&mut`-producing path need the write
             // lock. `_guard` lives exactly as long as `self`, and the
             // returned borrow is tied to `&self`, so it cannot outlive
-            // the guard. (Atomic views also hold read guards and may
-            // store to the mapping; docs/SAFETY.md requires callers to
-            // keep atomic and plain-byte regions disjoint.)
+            // the guard. Atomic views also hold read guards, but the
+            // `PlainReg` stored next to the guard makes the registry
+            // refuse any atomic view overlapping these bytes for as long
+            // as the slice lives (and the slice was only created because
+            // no such view existed), so nothing stores to them.
             MappedSliceInner::Guarded { bytes, .. } => unsafe { &**bytes },
+            MappedSliceInner::Snapshot(b) => b,
         }
     }
 

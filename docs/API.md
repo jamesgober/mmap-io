@@ -1455,7 +1455,40 @@ it into `MmapIoError::Io(...)` before returning.
 > alignment, bounds. Dropping a view adds its size to
 > `pending_bytes()`. Do not read the same bytes through a
 > `MappedSlice` while another thread stores to them atomically; that
-> is a data race.
+> would be a data race, so since 1.1 the mapping refuses it at run
+> time (see "Atomic and plain views" below).
+
+#### Atomic and plain views
+
+Since 1.1.0 each writable mapping tracks the byte ranges of its live views. An atomic view and a plain byte view (`MappedSlice` from `as_slice` / `try_as_slice` / `Segment::as_slice`, or an iterator item) of the same bytes cannot be alive at the same time, because an atomic store racing with a plain read is undefined behavior:
+
+| Live view | New request over overlapping bytes | Result |
+|-----------|------------------------------------|--------|
+| atomic view | `as_slice`, `try_as_slice`, `Segment::as_slice` | `InvalidMode` |
+| atomic view | `chunks()` / `pages()` item | owned copy (atomic loads), not a borrow |
+| atomic view | `read_into`, `read_bytes`, `MmapReader`, `touch_pages` | allowed; atomic bytes read with atomic loads |
+| `MappedSlice` / iterator item | any atomic view | `InvalidMode` |
+| `AtomicU64` view | `AtomicU32` view (or the reverse) | `InvalidMode` (mixed-size access) |
+| `AtomicU64` view | `AtomicU64` view | allowed |
+
+Disjoint ranges never conflict: counters in a header next to plain data work as before. The checks cover one mapping and its clones; an independent `MemoryMappedFile` of the same file, another process, or raw pointers are not tracked. Without the `atomic` feature nothing is tracked and plain views cost what they did in 1.0. With it, each RW / COW plain view adds one small lock round trip (numbers in `docs/PERFORMANCE.md`).
+
+```rust
+use std::sync::atomic::Ordering;
+use mmap_io::MemoryMappedFile;
+
+let mmap = MemoryMappedFile::create_rw("state.bin", 4096)?;
+let counter = mmap.atomic_u64(0)?;          // header: bytes 0..8
+counter.fetch_add(1, Ordering::SeqCst);
+let body = mmap.as_slice(8, 64)?;           // disjoint: fine
+assert!(mmap.as_slice(0, 16).is_err());     // overlaps the counter
+let mut header = [0u8; 16];
+mmap.read_into(0, &mut header)?;            // copies, counter read atomically
+# drop(body);
+# Ok::<(), mmap_io::MmapIoError>(())
+```
+
+<br>
 
 #### atomic_u64
 
@@ -2262,7 +2295,7 @@ We expose only safe public APIs, but the following safety considerations apply:
 - Another process must not truncate or modify the file while it is mapped here; readers can see torn data or receive `SIGBUS`.
 - `as_slice_mut()` is only allowed in `ReadWrite` mode.
 - Raw pointers from `as_ptr()` / `as_mut_ptr()` are invalidated by `resize()`.
-- Do not read bytes through a `MappedSlice` while another thread stores to the same bytes through an atomic view.
+- A `MappedSlice` and an atomic view of the same bytes cannot be alive together: since 1.1.0 the second one is refused with `InvalidMode` (see [Atomic and plain views](#atomic-and-plain-views)). Copying reads (`read_into`, `read_bytes`, `MmapReader`) are never refused and read atomic bytes with atomic loads.
 
 See [SAFETY.md](SAFETY.md) for the full locking model.
 

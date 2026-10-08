@@ -79,6 +79,7 @@ pub mod mmap;
 pub mod raw;
 pub mod segment;
 pub mod utils;
+mod views;
 
 /// Provides functions for flushing memory-mapped file changes to disk.
 pub mod flush;

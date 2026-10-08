@@ -116,13 +116,23 @@ with its `deadlock_detection` feature at compile time.)
 Iterator items take their own recursive read guard, so a chunk kept
 after its iterator is dropped still pins the mapping.
 
+On RW and COW mappings the slice also holds a `PlainReg`, its entry in
+the mapping's view registry (category 9), so no atomic view of its
+bytes can exist while it lives. The slice pointer is computed with
+`RawMmapMut::as_ptr` plus an offset (`sub_slice_ptr`) rather than by
+indexing `&guard[..]`, so no `&[u8]` over the whole mapping (which
+could cover bytes under a live atomic view elsewhere) is ever formed.
+A fourth variant, `Snapshot(Box<[u8]>)`, is an owned copy used for
+iterator items that overlap a live atomic view.
+
 ### 3. Atomic views (`src/atomic.rs`)
 
 `view_parts` casts `guard.as_ptr().add(offset)` to `*const AtomicU32`
 or `*const AtomicU64`. It is sound because:
 
-1. Only `ReadWrite` mappings are accepted; RO and COW mappings return
-   `InvalidMode`, since a safe `store` on a read-only page faults.
+1. Only writable mappings are accepted (`ReadWrite`, `CopyOnWrite`
+   since 1.1, and `AnonymousMmap`); RO mappings return `InvalidMode`,
+   since a safe `store` on a read-only page faults.
 2. The offset is checked to be a multiple of the type's alignment, and
    the mapping base is page-aligned.
 3. `offset + count * size_of::<T>()` is checked against the guarded
@@ -130,6 +140,10 @@ or `*const AtomicU64`. It is sound because:
 4. `T` is restricted by a sealed trait to `AtomicU32` / `AtomicU64`,
    which have the layout of `u32` / `u64` and accept every bit
    pattern; `size == align`, so every element of a run is aligned.
+5. The range is registered in the mapping's view registry (category
+   9), which refuses it if a plain view of any of its bytes, or an
+   atomic view of the other element size, is alive, and keeps such
+   views from being created until the atomic view is dropped.
 
 The view keeps the read guard for its lifetime. `AtomicView` and
 `AtomicSliceView` are `Send + Sync` for `T: Sync`, on the same
@@ -292,16 +306,67 @@ The crate has no `unsafe` on the flush path. `flush()` and
 and `FlushViewOfFile` + `FlushFileBuffers` on Windows, while holding a
 read guard so the mapping cannot be replaced during the call.
 
+### 9. View registry (`src/views.rs`)
+
+An atomic view and a plain view (`MappedSlice`, iterator item) both
+hold read guards, so the lock alone would let them cover the same
+bytes. An atomic store would then race with the slice's non-atomic
+reads, and a `&[u8]` asserts that its bytes do not change at all while
+it lives: undefined behavior. Two atomic views of different element
+sizes over the same bytes are mixed-size atomic accesses, also
+undefined. Before 1.1 this was only documented; since 1.1 each
+writable mapping (RW, COW, `AnonymousMmap`) carries a `ViewRegistry`
+that records the byte range of every live plain and atomic view and
+refuses:
+
+- a plain view overlapping a live atomic view (`as_slice`,
+  `Segment::as_slice`, `try_as_slice` return `InvalidMode`; iterator
+  items become owned snapshots instead);
+- an atomic view overlapping a live plain view, or a live atomic view
+  of the other element size (`InvalidMode`).
+
+Disjoint ranges never conflict. Copying reads (`read_into`,
+`read_bytes`, `MmapReader`, snapshots) do not register; they hold the
+registry's atomic-set read lock for the copy, so no atomic view can
+appear under them, and read bytes under an existing atomic view with
+atomic loads of that view's element size (`copy_out`). `touch_pages`
+does the same per page.
+
+Registration protocol: plain views go into per-thread shards
+(`Mutex<Slab>`) and then load an `atomic_live` counter; only when it
+is non-zero do they read-lock the atomic set and check for overlap.
+Atomic views write-lock the atomic set, increment the counter, then
+lock and scan every shard. Because both sides take the plain view's
+shard mutex, one of them goes first: if the plain view does, the
+atomic scan sees it; if the atomic view does, its increment
+happens-before the plain view's counter load, which sends the plain
+view to the locked check. At most one of a conflicting pair succeeds
+(rarely both fail, which is a spurious `InvalidMode`, never an
+overlap). The module docs carry the full argument; unit tests race the
+two sides.
+
+Without the `atomic` feature no atomic view can exist and the registry
+compiles to nothing, so plain views cost exactly what they did in 1.0.
+With it, each RW / COW plain view costs one shard lock to register and
+one to deregister (see `docs/PERFORMANCE.md`).
+
+What it does not cover: raw pointers (`as_ptr` / `as_mut_ptr`), and
+other `MemoryMappedFile` values that map the same file independently
+(another `open_rw` of the same path, or another process). Those are
+separate mappings with separate registries, the same class as
+cross-process modification.
+
 ## What the crate cannot guarantee
 
 - **Other processes.** If another process writes to or truncates the
   file, readers here can see torn data or receive `SIGBUS`. Callers
   that share a file across processes must coordinate (REPS.md 5.1).
-- **Atomic and plain access to the same bytes.** An `AtomicView` and a
-  `MappedSlice` both hold read guards and can coexist. Reading bytes
-  through the slice while another thread stores to them through the
-  atomic view is a data race under the Rust memory model. Keep
-  atomic regions and plain-byte regions disjoint.
+- **Atomic and plain access through independent mappings.** Within
+  one mapping (and its clones) the view registry (category 9) keeps
+  atomic and plain views of the same bytes apart. Two independently
+  opened mappings of the same file, or a raw pointer, are not covered:
+  an atomic store through one and a plain read through the other is a
+  data race, like cross-process access.
 - **Raw pointers** from `as_ptr` / `as_mut_ptr` follow the caller's
   contract above; the crate cannot check it.
 
@@ -319,6 +384,8 @@ read guard so the mapping cannot be replaced during the call.
   atomic views are sound on them; `as_slice_bytes` (an unguarded
   `&[u8]`) is refused on them, and `advise(DontNeed)`, which discards
   private pages, takes the write lock.
+- **Atomic vs plain views** (documented as a caller obligation
+  through 1.0): enforced at run time by the view registry since 1.1.
 - **1.1 review**: iterator items outliving their guard
   (use-after-free on `resize`), atomic views on read-only pages,
   validation against a length read before the lock, truncation before
