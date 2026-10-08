@@ -109,9 +109,8 @@ async fn test_time_based_flushing() {
     mmap.update_region(0, b"time-based flush test")
         .expect("write");
 
-    // For now, just test that the policy is set correctly
-    // (Time-based flushing background thread implementation is complex)
-    // We'll test manual flush instead
+    // The background flusher is covered by tests/time_based_flush.rs;
+    // here an explicit flush must work alongside the policy.
     mmap.flush().expect("manual flush");
 
     // Open a new read-only mapping to verify
@@ -121,28 +120,4 @@ async fn test_time_based_flushing() {
     assert_eq!(&buf[..21], b"time-based flush test");
 
     fs::remove_file(&path).expect("cleanup");
-}
-
-fn main() {
-    println!("Running touch_pages functionality tests...");
-
-    test_touch_pages_basic();
-    println!("✓ Basic touch_pages test passed");
-
-    test_touch_pages_range();
-    println!("✓ Touch pages range test passed");
-
-    test_microflush_optimization();
-    println!("✓ Microflush optimization test passed");
-
-    #[cfg(feature = "async")]
-    {
-        let rt = tokio::runtime::Runtime::new().unwrap();
-        rt.block_on(async {
-            test_time_based_flushing();
-        });
-        println!("✓ Time-based flushing test passed");
-    }
-
-    println!("All tests passed! 🎉");
 }

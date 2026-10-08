@@ -8,7 +8,6 @@
     feature = "atomic",
     feature = "watch"
 ))]
-#[allow(clippy::permissions_set_readonly_false)]
 mod all_features {
     use mmap_io::{create_mmap, ChangeEvent, MemoryMappedFile, MmapAdvice};
     use std::fs;
@@ -270,32 +269,44 @@ mod all_features {
     }
 }
 
+/// Temp-dir path for the single-feature tests below (never the CWD).
+#[cfg(any(feature = "advise", feature = "iterator", feature = "atomic"))]
+fn single_feature_path(name: &str) -> std::path::PathBuf {
+    std::env::temp_dir().join(format!(
+        "mmap_io_single_feature_{}_{}",
+        name,
+        std::process::id()
+    ))
+}
+
 // Test that features can be used independently
 #[cfg(feature = "advise")]
 #[test]
 fn test_advise_only() {
     use mmap_io::{create_mmap, MmapAdvice};
-    let path = "test_advise_only.tmp";
-    let _ = std::fs::remove_file(path);
+    let path = single_feature_path("advise_only");
+    let _ = std::fs::remove_file(&path);
 
-    let mmap = create_mmap(path, 4096).expect("create");
+    let mmap = create_mmap(&path, 4096).expect("create");
     mmap.advise(0, 4096, MmapAdvice::Normal).expect("advise");
 
-    std::fs::remove_file(path).expect("cleanup");
+    drop(mmap);
+    std::fs::remove_file(&path).expect("cleanup");
 }
 
 #[cfg(feature = "iterator")]
 #[test]
 fn test_iterator_only() {
     use mmap_io::create_mmap;
-    let path = "test_iterator_only.tmp";
-    let _ = std::fs::remove_file(path);
+    let path = single_feature_path("iterator_only");
+    let _ = std::fs::remove_file(&path);
 
-    let mmap = create_mmap(path, 4096).expect("create");
+    let mmap = create_mmap(&path, 4096).expect("create");
     let count = mmap.chunks(1024).count();
     assert_eq!(count, 4);
 
-    std::fs::remove_file(path).expect("cleanup");
+    drop(mmap);
+    std::fs::remove_file(&path).expect("cleanup");
 }
 
 #[cfg(feature = "atomic")]
@@ -304,10 +315,10 @@ fn test_atomic_only() {
     use mmap_io::create_mmap;
     use std::sync::atomic::Ordering;
 
-    let path = "test_atomic_only.tmp";
-    let _ = std::fs::remove_file(path);
+    let path = single_feature_path("atomic_only");
+    let _ = std::fs::remove_file(&path);
 
-    let mmap = create_mmap(path, 64).expect("create");
+    let mmap = create_mmap(&path, 64).expect("create");
     let atomic = mmap.atomic_u64(0).expect("atomic");
     atomic.store(42, Ordering::SeqCst);
 

@@ -19,8 +19,10 @@
 //! - No `flush` (volatile memory; nothing to persist).
 //! - No `path` (there is no path).
 //!
-//! Everything else (read, write, slice access, atomic views if the
-//! `atomic` feature is enabled) works identically.
+//! - No atomic views (`atomic_u64` and friends exist only on
+//!   `MemoryMappedFile`).
+//!
+//! Reads, writes, and slice access work the same way.
 //!
 //! [`MemoryMappedFile`]: crate::mmap::MemoryMappedFile
 

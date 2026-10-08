@@ -8,11 +8,12 @@ pub enum TouchHint {
     /// and improve first-access latency. Useful for benchmarking scenarios
     /// where you want consistent timing without page fault overhead.
     Eager,
-    /// Touch pages lazily on first access (same as Never for now).
+    /// Same as `Never`: pages are faulted in by the OS on first
+    /// access. No separate lazy prefetch is performed; the variant is
+    /// kept for API compatibility.
     Lazy,
 }
 
-/// Low-level memory-mapped file abstraction with safe, concurrent access.
 use std::{
     fs::{File, OpenOptions},
     path::{Path, PathBuf},
@@ -24,7 +25,7 @@ use memmap2::{Mmap, MmapMut, MmapOptions};
 
 use crate::flush::FlushPolicy;
 
-use parking_lot::RwLock;
+use parking_lot::{RwLock, RwLockReadGuard, RwLockWriteGuard};
 
 use crate::errors::{MmapIoError, Result};
 use crate::utils::slice_range;
@@ -50,7 +51,11 @@ pub enum MmapMode {
     ReadOnly,
     /// Read-write mapping.
     ReadWrite,
-    /// Copy-on-Write mapping (private). Writes affect this mapping only; the underlying file remains unchanged.
+    /// Copy-on-write mode (`open_cow`, feature `cow`). The file is
+    /// mapped privately, so the underlying file can never be changed
+    /// through it. Writable copy-on-write is not implemented: every
+    /// write method returns [`MmapIoError::InvalidMode`], `flush` is a
+    /// no-op, and in practice this mode behaves like `ReadOnly`.
     CopyOnWrite,
 }
 
@@ -1473,8 +1478,14 @@ fn advise_huge_pages(map: &MmapMut) {
 
 #[cfg(feature = "cow")]
 impl MemoryMappedFile {
-    /// Open an existing file and memory-map it copy-on-write (private).
-    /// Changes through this mapping are visible only within this process; the underlying file remains unchanged.
+    /// Open an existing file and memory-map it in copy-on-write mode.
+    ///
+    /// The mapping is exposed read-only: writes through it are not
+    /// supported (every write method returns
+    /// [`MmapIoError::InvalidMode`]), so it currently behaves like
+    /// [`open_ro`](Self::open_ro) and the underlying file is never
+    /// modified through it. The mode is reserved for a writable
+    /// private mapping in a future release.
     ///
     /// # Errors
     ///
@@ -1490,29 +1501,17 @@ impl MemoryMappedFile {
         // SAFETY: `MmapOptions::map` carries the same cross-process
         // aliasing hazard as `Mmap::map`: another process modifying
         // the backing file can produce torn reads. The crate marks
-        // this as out-of-scope per REPS.md section 5.1. Within this
-        // process, no `&mut [u8]` ever points into a COW mapping
-        // (phase-1 COW is read-only at the Rust API level), so the
-        // aliasing rules are trivially satisfied.
+        // this as out-of-scope per REPS.md section 5.1. `map` creates
+        // a read-only mapping (PROT_READ / FILE_MAP_READ), and the
+        // crate never hands out `&mut [u8]` into a COW mapping, so the
+        // aliasing rules are trivially satisfied within the process.
         // `opts.len(len as usize)` constrains the mapping to the file
         // size we just queried; `len > 0` is verified above.
         // Reference: https://docs.rs/memmap2/latest/memmap2/struct.MmapOptions.html#method.map
         let mmap = unsafe {
             let mut opts = MmapOptions::new();
             opts.len(len as usize);
-            #[cfg(unix)]
-            {
-                // memmap2 currently does not expose a stable .private() on all Rust/MSRV combos.
-                // On Unix, map() of a read-only file yields an immutable mapping; for COW semantics
-                // we rely on platform-specific behavior when writing is disallowed here in phase-1.
-                // When writable COW is introduced, we will use platform flags via memmap2 internals.
-                opts.map(&file)?
-            }
-            #[cfg(not(unix))]
-            {
-                // On Windows, memmap2 maps with appropriate WRITECOPY semantics internally for private mappings.
-                opts.map(&file)?
-            }
+            opts.map(&file)?
         };
         let inner = Inner {
             path: path_ref.to_path_buf(),
@@ -1520,7 +1519,7 @@ impl MemoryMappedFile {
             mode: MmapMode::CopyOnWrite,
             cached_len: AtomicU64::new(len),
             map: MapVariant::Cow(mmap),
-            // COW never flushes underlying file in phase-1
+            // Nothing to flush: the mapping is never written.
             flush_policy: FlushPolicy::Never,
             written_since_last_flush: AtomicU64::new(0),
             writes_since_last_flush: AtomicU64::new(0),
@@ -2095,9 +2094,6 @@ fn start_time_based_flusher(mmap_file: &MemoryMappedFile, ms: u64) {
     // mapping; dropping Inner stops it.
     *mmap_file.inner.flusher.write() = flusher;
 }
-
-// Move this to the top-level with other use statements:
-use parking_lot::{RwLockReadGuard, RwLockWriteGuard};
 
 /// Wrapper for a mutable slice that holds a write lock guard,
 /// ensuring exclusive access for the lifetime of the slice.

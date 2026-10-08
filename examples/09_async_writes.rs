@@ -1,10 +1,12 @@
-//! Example 09: async write + flush via Tokio's spawn_blocking.
+//! Example 09: async write + flush on the `blocking` thread pool.
 //!
 //! `update_region_async` and `flush_async` move the blocking
-//! syscalls onto the blocking pool so the async scheduler is never
-//! stuck on disk I/O. Each `update_region_async` call also flushes
-//! after the write (async-only-flushing) to guarantee post-await
-//! cross-platform visibility.
+//! syscalls onto the `blocking` crate's thread pool so the async
+//! scheduler is never stuck on disk I/O. They work on any executor;
+//! this example happens to drive them with Tokio (a dev-dependency),
+//! but smol or async-std work the same. Each `update_region_async`
+//! call also flushes after the write, so the data is durable once the
+//! future resolves.
 //!
 //! Run with:
 //!   cargo run --example 09_async_writes --features async
@@ -22,7 +24,7 @@ async fn main() -> Result<(), mmap_io::MmapIoError> {
     use mmap_io::MemoryMappedFile;
     use std::path::PathBuf;
 
-    let path = PathBuf::from("example_09_async.bin");
+    let path: PathBuf = std::env::temp_dir().join("example_09_async.bin");
     let _ = std::fs::remove_file(&path);
 
     let mmap = MemoryMappedFile::create_rw(&path, 4096)?;

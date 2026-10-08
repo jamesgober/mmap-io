@@ -15,7 +15,8 @@ fn tmp_path(name: &str) -> PathBuf {
     p
 }
 
-#[cfg_attr(not(target_os = "linux"), ignore)]
+// Runs everywhere: `.huge_pages(true)` is a Linux-only hint and a
+// no-op elsewhere, so mapping creation must succeed on every platform.
 #[test]
 fn test_hugepages_fallback_behavior() {
     let path = tmp_path("hugepages");
@@ -166,17 +167,13 @@ fn test_comprehensive_feature_combination() {
     let _ = fs::remove_file(&path);
 
     // Test combination of multiple features
-    #[allow(unused_mut)]
-    let mut builder = MemoryMappedFile::builder(&path)
+    let builder = MemoryMappedFile::builder(&path)
         .mode(MmapMode::ReadWrite)
         .size(2 * 1024 * 1024) // 2MB
         .flush_policy(FlushPolicy::EveryBytes(64 * 1024))
         .touch_hint(TouchHint::Eager);
-
     #[cfg(feature = "hugepages")]
-    {
-        builder = builder.huge_pages(true);
-    }
+    let builder = builder.huge_pages(true);
 
     let mmap = builder.create().expect("create combined-features mapping");
 

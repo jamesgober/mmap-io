@@ -4,7 +4,9 @@
 //! Demonstrates the basic write workflow:
 //!   1. `create_rw` to allocate a sized file
 //!   2. `update_region` for in-place writes
-//!   3. `flush` for durability
+//!   3. `flush`, which waits until the OS reports the bytes written
+//!      (msync(MS_SYNC) on Unix, FlushViewOfFile + FlushFileBuffers on
+//!      Windows)
 //!   4. `open_ro` + `as_slice` to read back via a separate mapping
 //!
 //! Run with:
@@ -14,7 +16,7 @@ use mmap_io::MemoryMappedFile;
 use std::path::PathBuf;
 
 fn main() -> Result<(), mmap_io::MmapIoError> {
-    let path = PathBuf::from("example_02_output.bin");
+    let path: PathBuf = std::env::temp_dir().join("example_02_output.bin");
     let _ = std::fs::remove_file(&path);
 
     // Create a 1 KiB file mapped read-write.
@@ -25,7 +27,7 @@ fn main() -> Result<(), mmap_io::MmapIoError> {
     mmap.update_region(0, b"hello, mmap-io")?;
     mmap.update_region(64, b"...and again at offset 64")?;
 
-    // Force durability before dropping the mapping.
+    // Synchronous flush: returns once the OS reports the pages written.
     mmap.flush()?;
     drop(mmap);
 
