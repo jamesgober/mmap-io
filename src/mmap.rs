@@ -504,10 +504,18 @@ impl MemoryMappedFile {
     ///
     /// The cursor delegates each `read` call to `read_into`, which
     /// is bounds-checked. EOF is signalled the standard way (a
-    /// zero-length `read` return).
+    /// zero-length `read` return). Since 1.1.0 it also implements
+    /// `std::io::BufRead` (zero-copy on read-only mappings); see
+    /// [`MmapReader`].
     #[must_use]
     pub fn reader(&self) -> MmapReader<'_> {
-        MmapReader { mmap: self, pos: 0 }
+        MmapReader {
+            mmap: self,
+            pos: 0,
+            buf: [0; READER_BUF_LEN],
+            buf_start: 0,
+            buf_len: 0,
+        }
     }
 
     /// Get a zero-copy mutable slice for the given [offset, offset+len).
@@ -2842,7 +2850,8 @@ impl From<&MappedSlice<'_>> for bytes::Bytes {
     }
 }
 
-/// `io::Read` + `io::Seek` cursor over a memory-mapped file.
+/// `io::Read` + `io::Seek` + `io::BufRead` cursor over a memory-mapped
+/// file.
 ///
 /// Constructed via [`MemoryMappedFile::reader`]. Each `read` call
 /// delegates to `read_into`, which is bounds-checked. EOF is
@@ -2850,13 +2859,66 @@ impl From<&MappedSlice<'_>> for bytes::Bytes {
 ///
 /// The cursor borrows the mapping; multiple cursors can coexist
 /// and read concurrently on the same mapping.
+///
+/// # `BufRead` (since 1.1.0)
+///
+/// - **`ReadOnly` mappings**: [`fill_buf`](std::io::BufRead::fill_buf)
+///   returns the rest of the mapping from the current position,
+///   zero-copy (the buffer is the mapped memory, which nothing can
+///   change), so `lines()`, `read_until` and `split` never copy into an
+///   intermediate buffer.
+/// - **`ReadWrite` and `CopyOnWrite` mappings**: the mapped bytes can
+///   be written, and lending them as `&[u8]` would require the reader
+///   to hold a read guard between calls (blocking every writer, and
+///   deadlocking a write on the reader's thread). Instead `fill_buf`
+///   copies up to 4 KiB into a buffer inside the reader, through
+///   `read_into` (so bytes under a live atomic view are read with
+///   atomic loads), and holds no lock between calls. The buffered bytes
+///   are a snapshot taken when the buffer was filled, as with
+///   `std::io::BufReader` over a file.
+///
+/// The reader holds no lock and owns no heap memory, so it can be
+/// dropped or forgotten at any point. `read`, `seek` and
+/// `set_position` discard buffered bytes.
+///
+/// # Example
+///
+/// ```
+/// use std::io::BufRead;
+/// use mmap_io::MemoryMappedFile;
+///
+/// let dir = tempfile::tempdir()?;
+/// let path = dir.path().join("log.txt");
+/// std::fs::write(&path, "ok\nERROR disk\nok\n")?;
+/// let log = MemoryMappedFile::open_ro(&path)?;
+/// let errors: Vec<String> = log
+///     .reader()
+///     .lines()
+///     .filter_map(Result::ok)
+///     .filter(|l| l.starts_with("ERROR"))
+///     .collect();
+/// assert_eq!(errors, ["ERROR disk"]);
+/// # Ok::<(), Box<dyn std::error::Error>>(())
+/// ```
 pub struct MmapReader<'a> {
     mmap: &'a MemoryMappedFile,
     pos: u64,
+    /// `BufRead` buffer for writable mappings: `buf[..buf_len]` holds
+    /// the file bytes starting at `buf_start`. Inline (no heap) so the
+    /// reader keeps no drop glue: dropping it is a no-op, exactly as in
+    /// 1.0, and borrows of the mapping end at its last use.
+    buf: [u8; READER_BUF_LEN],
+    buf_start: u64,
+    buf_len: usize,
 }
+
+/// Size of the inline `BufRead` buffer for writable mappings.
+const READER_BUF_LEN: usize = 4096;
 
 impl<'a> std::io::Read for MmapReader<'a> {
     fn read(&mut self, buf: &mut [u8]) -> std::io::Result<usize> {
+        // `read` copies fresh bytes; drop any `fill_buf` snapshot.
+        self.buf_len = 0;
         let total = self.mmap.len();
         if self.pos >= total {
             return Ok(0); // EOF
@@ -2881,6 +2943,7 @@ impl<'a> std::io::Read for MmapReader<'a> {
 impl<'a> std::io::Seek for MmapReader<'a> {
     fn seek(&mut self, pos: std::io::SeekFrom) -> std::io::Result<u64> {
         use std::io::SeekFrom;
+        self.buf_len = 0;
         let (base, delta) = match pos {
             SeekFrom::Start(n) => {
                 self.pos = n;
@@ -2916,9 +2979,47 @@ impl<'a> MmapReader<'a> {
 
     /// Set the cursor position directly (no validation; out-of-range
     /// positions are clamped at the next `read` call which returns
-    /// EOF).
+    /// EOF). Discards any buffered `BufRead` bytes.
     pub fn set_position(&mut self, pos: u64) {
+        self.buf_len = 0;
         self.pos = pos;
+    }
+}
+
+/// `BufRead` (since 1.1.0): zero-copy on `ReadOnly` mappings, a 4 KiB
+/// inline copy on writable ones. See [`MmapReader`].
+impl<'a> std::io::BufRead for MmapReader<'a> {
+    fn fill_buf(&mut self) -> std::io::Result<&[u8]> {
+        if let MapVariant::Ro(m) = &self.mmap.inner.map {
+            // Immutable mapping: lend the remaining bytes directly.
+            let start = usize::try_from(self.pos).unwrap_or(usize::MAX).min(m.len());
+            return Ok(&m[start..]);
+        }
+        let buffered_end = self.buf_start + self.buf_len as u64;
+        if self.buf_len == 0 || self.pos < self.buf_start || self.pos >= buffered_end {
+            self.buf_len = 0;
+            let total = self.mmap.len();
+            if self.pos >= total {
+                return Ok(&[]);
+            }
+            let n = (total - self.pos).min(READER_BUF_LEN as u64) as usize;
+            self.mmap
+                .read_into(self.pos, &mut self.buf[..n])
+                .map_err(std::io::Error::other)?;
+            self.buf_start = self.pos;
+            self.buf_len = n;
+        }
+        // `buf_start <= pos < buf_start + buf_len`, so the offset is in
+        // the buffer.
+        let from = (self.pos - self.buf_start) as usize;
+        Ok(&self.buf[from..self.buf_len])
+    }
+
+    fn consume(&mut self, amt: usize) {
+        // `amt` must not exceed what `fill_buf` returned; a larger value
+        // only moves the cursor further (like `Cursor`), never past
+        // `u64::MAX`.
+        self.pos = self.pos.saturating_add(amt as u64);
     }
 }
 

@@ -353,6 +353,16 @@ impl<'a> MmapReader<'a> {
 
 impl std::io::Read for MmapReader<'_> { /* ... */ }
 impl std::io::Seek for MmapReader<'_> { /* ... */ }
+impl std::io::BufRead for MmapReader<'_> { /* ... */ } // since 1.1.0
+```
+
+**`BufRead`** (since 1.1.0): on `ReadOnly` mappings `fill_buf` returns the rest of the mapping zero-copy, so `lines()`, `read_until` and `split` read the mapped memory directly. On `ReadWrite` / `CopyOnWrite` mappings it copies up to 4 KiB into a buffer inside the reader (through `read_into`, so bytes under live atomic views are read atomically) and holds no lock between calls: lending writable mapped bytes would require a read guard held across calls, which would block writers and deadlock a write on the reader's thread. Buffered bytes are a snapshot from when the buffer was filled; `read`, `seek` and `set_position` discard them. The reader owns no heap memory and holds no lock.
+
+```rust
+use std::io::BufRead;
+let log = MemoryMappedFile::open_ro("app.log")?;
+let errors = log.reader().lines().filter(|l| l.as_ref().map_or(false, |l| l.contains("ERROR"))).count();
+# Ok::<(), Box<dyn std::error::Error>>(())
 ```
 
 Construct via [`MemoryMappedFile::reader`](#reader).
