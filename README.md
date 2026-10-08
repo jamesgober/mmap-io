@@ -25,9 +25,9 @@
 
 - **Zero-copy reads on every mode.** `as_slice` returns a `MappedSlice<'_>` borrowed directly from the mapping. No allocation. No memcpy. Works on read-only, read-write, and copy-on-write mappings uniformly.
 - **Zero-allocation iteration.** `mmap.chunks(N)` and `mmap.pages()` walk the file in fixed strides without ever heap-allocating. A 1 GiB scan at 4 KiB chunks skips 262,144 allocations and half the memory bandwidth of the naive approach.
-- **Aligned atomic views.** `atomic_u32` / `atomic_u64` return a wrapper that derefs to `&AtomicU64`. Multi-thread `fetch_add` over a memory-mapped counter is one cache-line ping; no cross-process locking required.
-- **Configurable durability.** `FlushPolicy::EveryBytes(N)`, `EveryWrites(N)`, `EveryMillis(N)`, `Always`, or `Manual`. Partial flushes debit the accumulator correctly; the millis policy runs a background flusher with cooperative shutdown bound to mapping lifetime.
-- **Thread-safe.** Interior mutability via `parking_lot::RwLock`. Multiple concurrent readers, one writer at a time. Live atomic views block `resize()` until released so memory under your reference cannot move.
+- **Aligned atomic views.** On read-write mappings, `atomic_u32` / `atomic_u64` return a wrapper that derefs to `&AtomicU64`. Multi-thread `fetch_add` over a memory-mapped counter is one cache-line ping; no cross-process locking required.
+- **Configurable durability.** `flush()` is synchronous (`msync(MS_SYNC)` on Unix, `FlushViewOfFile` + `FlushFileBuffers` on Windows). `FlushPolicy::EveryBytes(N)`, `EveryWrites(N)`, `EveryMillis(N)`, `Always`, or `Manual` decide when the crate flushes for you; the millis policy runs a background flusher bound to the mapping's lifetime.
+- **Thread-safe.** Interior mutability via `parking_lot::RwLock`. Multiple concurrent readers, one writer at a time. Every live read view (slice, iterator item, atomic view) blocks writes and `resize()` until released, so memory under your reference cannot move.
 - **Anonymous mappings.** Process-local memory without a backing file via `AnonymousMmap::new(size)` for shared scratch buffers between threads, large temporary allocations, or as the kernel substrate for IPC patterns.
 - **Cross-platform.** Linux, macOS, Windows. Per-platform hooks where they exist (`MADV_HUGEPAGE` for the huge-page hint, `posix_fadvise` for OS-level prefetch on Linux).
 - **Opt-in surface.** Default features are `advise` + `iterator`. Everything else (`async`, `atomic`, `cow`, `locking`, `watch`, `hugepages`) is off by default to keep compile time tight.
@@ -84,7 +84,7 @@ fn main() -> Result<(), mmap_io::MmapIoError> {
 | `atomic`    | Atomic views into memory as aligned `u32` / `u64` with strict alignment checks.                      |
 | `watch`     | Native file-change notifications: `inotify` (Linux), FSEvents (macOS), `ReadDirectoryChangesW` (Windows). |
 
-> ⚠️ Features are opt-in. Enable only those relevant to your use case to reduce compile time and dependency footprint.
+> Features are opt-in. Enable only those relevant to your use case to reduce compile time and dependency footprint.
 
 ### Default features
 
@@ -106,34 +106,36 @@ Enable async helpers:
 
 ```toml
 [dependencies]
-mmap-io = { version = "0.9", features = ["async"] }
+mmap-io = { version = "1", features = ["async"] }
 ```
 
 Multiple features:
 
 ```toml
 [dependencies]
-mmap-io = { version = "0.9", features = ["cow", "locking"] }
+mmap-io = { version = "1", features = ["cow", "locking"] }
 ```
 
 Minimal: disable defaults, opt into only what you need:
 
 ```toml
 [dependencies]
-mmap-io = { version = "0.9", default-features = false, features = ["locking"] }
+mmap-io = { version = "1", default-features = false, features = ["locking"] }
 ```
 
 ## Flush Policy
 
-mmap-io supports configurable flush behavior for ReadWrite mappings via `FlushPolicy`, letting you trade off durability and throughput.
+`mmap.flush()` on a ReadWrite mapping always writes dirty pages back and waits for the OS to report them written: `msync(MS_SYNC)` on Unix, `FlushViewOfFile` + `FlushFileBuffers` on Windows. (On macOS, `msync` does not issue `F_FULLFSYNC`, so the drive's own cache may still hold the data.) `flush_range(offset, len)` does the same for one range. Expect milliseconds, not nanoseconds; see [docs/PERFORMANCE.md](./docs/PERFORMANCE.md).
 
-Policy variants:
+`FlushPolicy` only decides when the crate flushes *for you*, letting you trade durability for throughput:
 
-- **`FlushPolicy::Never`** / **`FlushPolicy::Manual`**: no automatic flushes. Call `mmap.flush()` when you want durability.
-- **`FlushPolicy::Always`**: flush after every write; slowest but most durable.
-- **`FlushPolicy::EveryBytes(n)`**: accumulate bytes written across `update_region()` calls; flush when at least `n` bytes have been written.
-- **`FlushPolicy::EveryWrites(n)`**: flush after every `n` writes.
-- **`FlushPolicy::EveryMillis(ms)`**: automatically flushes pending writes at the specified interval using a background thread.
+- **`FlushPolicy::Never`** / **`FlushPolicy::Manual`** (default): no automatic flushes. Call `mmap.flush()` when you want durability.
+- **`FlushPolicy::Always`**: flush after every `update_region()`; slowest but most durable.
+- **`FlushPolicy::EveryBytes(n)`**: flush after the `update_region()` call that brings the bytes written since the last flush to at least `n`.
+- **`FlushPolicy::EveryWrites(n)`**: flush after every `n` `update_region()` calls.
+- **`FlushPolicy::EveryMillis(ms)`**: a background thread flushes every `ms` milliseconds when anything is pending.
+
+`mmap.pending_bytes()` counts bytes written since the last flush through every write path (`update_region`, `as_slice_mut`, `chunks_mut`, atomic views, `as_mut_ptr`); policies use it, explicit `flush()` ignores it.
 
 Builder usage:
 
@@ -160,7 +162,7 @@ flush(&mmap)?; // ensure durability now
 ```
 
 > [!NOTE]
-> On some platforms, visibility of writes without explicit flush may still occur due to OS behavior, but durability timing is best-effort without flush.
+> Visibility and durability are different things. Other mappings and readers of the same file on the same machine see your writes immediately through the shared page cache, flushed or not. A flush is what makes them survive a crash or power loss; without one, the OS writes them back whenever it chooses.
 
 ## Round-trip example
 
@@ -222,15 +224,15 @@ use mmap_io::create_mmap;
 fn main() -> Result<(), mmap_io::MmapIoError> {
     let mmap = create_mmap("large_file.bin", 10 * 1024 * 1024)?;
 
-    // Process file in 1MB chunks
+    // Process file in 1MB chunks. Each item is a zero-copy MappedSlice
+    // that derefs to &[u8].
     for (i, chunk) in mmap.chunks(1024 * 1024).enumerate() {
-        let data = chunk?;
-        println!("Processing chunk {i} with {} bytes", data.len());
+        println!("Processing chunk {i} with {} bytes", chunk.len());
     }
 
     // Process file page by page (OS-optimal)
     for page in mmap.pages() {
-        let _page_data = page?;
+        let _first = page.first();
         // Process page...
     }
 
@@ -332,7 +334,7 @@ Note: mmap-side writes (`update_region` + `flush`) are not a reliable trigger fo
 
 ## Copy-on-Write Mode (`feature = "cow"`)
 
-Private per-process memory views:
+Private mapping of an existing file. Writable copy-on-write is not implemented: a COW mapping is read-only at the API (every write method returns `MmapIoError::InvalidMode`), so today it behaves like `open_ro`.
 
 ```rust
 #[cfg(feature = "cow")]
@@ -341,17 +343,18 @@ use mmap_io::MemoryMappedFile;
 fn main() -> Result<(), mmap_io::MmapIoError> {
     let cow_mmap = MemoryMappedFile::open_cow("shared.bin")?;
 
-    // Reads see the original file content
+    // Reads see the file content
     let _data = cow_mmap.as_slice(0, 100)?;
 
-    // Writes affect this process only; underlying file remains unchanged.
+    // Writes are rejected with InvalidMode; the file is never modified.
+    assert!(cow_mmap.update_region(0, b"x").is_err());
     Ok(())
 }
 ```
 
 ## Async Operations (`feature = "async"`)
 
-Tokio-based async helpers:
+Runtime-agnostic async helpers (they run on the `blocking` crate's thread pool, so tokio, smol, async-std, or any executor works; this example uses tokio):
 
 ```rust
 #[cfg(feature = "async")]
@@ -371,7 +374,7 @@ async fn main() -> Result<(), mmap_io::MmapIoError> {
 
 ### Async-Only Flushing
 
-When using async write helpers, mmap-io enforces durability by flushing after each async write. This avoids visibility inconsistencies across platforms when awaiting async tasks.
+`update_region_async` flushes after each write, so the data is durable once the future resolves. It copies `data` into a `Vec` first (one allocation), because the blocking task must own its input.
 
 ```rust
 #[cfg(feature = "async")]
@@ -388,16 +391,16 @@ async fn main() -> Result<(), mmap_io::MmapIoError> {
 }
 ```
 
-Contract: after awaiting `update_region_async` or `flush_async`, opening a fresh RO mapping observes the persisted data.
+Contract: after awaiting `update_region_async` or `flush_async`, the written bytes have been flushed to the file.
 
 ## Platform Parity
 
-Flush visibility is guaranteed across operating systems: after calling `flush()` or `flush_range()`, a newly opened read-only mapping will observe the persisted bytes on all supported platforms.
+`flush()` and `flush_range()` behave the same on every platform: they return once the OS reports the pages written (see the Flush Policy section for the per-OS calls). A newly opened read-only mapping sees written bytes on every platform whether or not they were flushed, because mappings of the same file share the page cache; flushing is about durability, not visibility.
 
-- **Full-file flush**: both written regions are visible after `flush()`.
-- **Range flush**: only the flushed range is guaranteed visible; a later `flush()` persists remaining regions.
+- **Full-file flush**: every dirty page of the mapping is written back.
+- **Range flush**: the pages covering the range are written back; other dirty pages are written by a later `flush()` or by the OS.
 
-See parity tests in the repository that validate this contract on each platform.
+See the parity tests in the repository that check this on each platform.
 
 ## Huge Pages (`feature = "hugepages"`)
 
@@ -424,18 +427,18 @@ let mmap = MemoryMappedFile::builder("hp.bin")
 
 ## Safety Notes
 
-- All operations perform bounds checks.
-- Unsafe blocks are limited to mapping calls and documented with SAFETY comments.
-- Interior mutability uses `parking_lot::RwLock` for high performance.
-- Avoid flushing while holding a write guard to prevent deadlocks; drop the guard first.
+- All operations perform bounds checks, under the mapping lock. A zero-length request is accepted at any offset.
+- Every `unsafe` block carries a SAFETY comment; [docs/SAFETY.md](./docs/SAFETY.md) explains the locking model.
+- Interior mutability uses `parking_lot::RwLock`.
+- A live `MappedSlice`, iterator item, or atomic view holds the read lock; a `MappedSliceMut` holds the write lock. Calling a method that needs the other kind of lock (for example `update_region` or `resize` while holding a slice, or `flush` while holding a `MappedSliceMut`) on the same thread deadlocks. Drop the guard first.
 
 ## ⚠️ Unsafe Code Disclaimer
 
-This crate uses `unsafe` internally to manage raw memory mappings (`mmap`, `VirtualAlloc`, etc.) across platforms. Public APIs are designed to be memory-safe when used correctly. However:
+This crate uses `unsafe` internally to manage raw memory mappings (`mmap` on Unix, `MapViewOfFile` on Windows, through `memmap2`). Public APIs are memory-safe within one process. However:
 
-- **You must not modify the file concurrently** outside of this process.
-- **Mapped slices are only valid** as long as the underlying file and mapping stay valid.
-- **Behavior is undefined** if you access a truncated or deleted file via a stale mapping.
+- **You must not modify or truncate the file from another process** while it is mapped here; readers can see torn data or crash with `SIGBUS`.
+- **Do not mix atomic and plain access to the same bytes**: reading bytes through a `MappedSlice` while another thread stores to them through an atomic view is a data race.
+- **Raw pointers** from `as_ptr` / `as_mut_ptr` are invalidated by `resize()`.
 
 All unsafe logic is documented in the source and footguns are marked with caution.
 

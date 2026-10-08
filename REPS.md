@@ -87,6 +87,7 @@ pub struct MappedSlice<'a> { /* private */ }
 pub struct MappedSliceMut<'a> { /* private */ }
 
 impl MemoryMappedFile {
+    pub fn builder<P: AsRef<Path>>(path: P) -> MemoryMappedFileBuilder;
     pub fn create_rw<P: AsRef<Path>>(path: P, size: u64) -> Result<Self>;
     pub fn open_ro<P: AsRef<Path>>(path: P) -> Result<Self>;
     pub fn open_rw<P: AsRef<Path>>(path: P) -> Result<Self>;
@@ -107,6 +108,7 @@ impl MemoryMappedFile {
     pub fn touch_pages(&self) -> Result<()>;
     pub fn touch_pages_range(&self, offset: u64, len: u64) -> Result<()>;
     pub fn len(&self) -> u64;
+    pub fn current_len(&self) -> Result<u64>; // same value as len()
     pub fn is_empty(&self) -> bool;
     pub fn path(&self) -> &Path;
     pub fn mode(&self) -> MmapMode;
@@ -116,6 +118,8 @@ impl MemoryMappedFile {
     // Since 0.9.8: FFI escape hatches.
     pub unsafe fn as_ptr(&self) -> *const u8;
     pub unsafe fn as_mut_ptr(&self) -> Result<*mut u8>;
+    // Since 0.9.11: cursor accessors.
+    // MmapReader::position(&self) -> u64; set_position(&mut self, u64)
     // Since 0.9.8: kernel-side prefetch hint (posix_fadvise on
     // Linux; no-op elsewhere). Complementary to MmapAdvice::WillNeed
     // (which is a VM-side hint via madvise).
@@ -164,18 +168,37 @@ impl<'a> ChunkIteratorMut<'a> {
         where F: FnMut(u64, &mut [u8]) -> std::result::Result<(), E>;
 }
 
-// Builder additions since 0.9.8:
+pub struct MemoryMappedFileBuilder { /* private */ }
 impl MemoryMappedFileBuilder {
+    pub fn size(self, size: u64) -> Self;
+    pub fn mode(self, mode: MmapMode) -> Self;
+    pub fn flush_policy(self, policy: FlushPolicy) -> Self;
+    pub fn touch_hint(self, hint: TouchHint) -> Self;
+    #[cfg(feature = "hugepages")]
+    pub fn huge_pages(self, enable: bool) -> Self;
+    pub fn create(self) -> Result<MemoryMappedFile>;
+    pub fn open(self) -> Result<MemoryMappedFile>;
+    // Since 0.9.8.
     pub fn open_or_create(self) -> Result<MemoryMappedFile>;
 }
 
+// segment
+pub struct Segment { /* private */ }     // new, as_slice, len, is_empty, offset, parent, is_valid
+pub struct SegmentMut { /* private */ }  // new, as_slice_mut, write, len, is_empty, offset, parent, is_valid
+
+// utils
+pub fn page_size() -> usize;
+pub fn align_up(value: u64, alignment: u64) -> u64;
+pub fn ensure_in_bounds(offset: u64, len: u64, total: u64) -> Result<()>;
+pub fn slice_range(offset: u64, len: u64, total: u64) -> Result<(usize, usize)>;
+
 // manager (high-level)
 pub fn create_mmap<P: AsRef<Path>>(path: P, size: u64) -> Result<MemoryMappedFile>;
-pub fn load_mmap<P: AsRef<Path>>(path: P) -> Result<MemoryMappedFile>;
-pub fn write_mmap<P: AsRef<Path>>(path: P, data: &[u8]) -> Result<()>;
+pub fn load_mmap<P: AsRef<Path>>(path: P, mode: MmapMode) -> Result<MemoryMappedFile>;
+pub fn write_mmap<P: AsRef<Path>>(path: P, offset: u64, data: &[u8]) -> Result<()>;
 pub fn update_region(mmap: &MemoryMappedFile, offset: u64, data: &[u8]) -> Result<()>;
 pub fn flush(mmap: &MemoryMappedFile) -> Result<()>;
-pub fn copy_mmap<P, Q>(src: P, dst: Q) -> Result<()>;
+pub fn copy_mmap<P: AsRef<Path>>(src: P, dst: P) -> Result<()>;
 pub fn delete_mmap<P: AsRef<Path>>(path: P) -> Result<()>;
 
 // flush
@@ -238,7 +261,8 @@ impl MemoryMappedFile {
 // AtomicView<'_, T> / AtomicSliceView<'_, T> hold the read lock for
 // their lifetime; Deref<Target = T> / Deref<Target = [T]> so call
 // sites use the wrappers as if they were `&T` / `&[T]`. resize()
-// blocks until every live view is dropped (C3 fix).
+// blocks until every live view is dropped (C3 fix). Since 1.1 these
+// require a ReadWrite mapping (InvalidMode otherwise).
 pub struct AtomicView<'a, T> { /* private */ }
 pub struct AtomicSliceView<'a, T> { /* private */ }
 impl MemoryMappedFile {
@@ -258,7 +282,7 @@ pub struct ChangeEvent { /* private */ }
 pub struct WatchHandle { /* private */ }
 impl MemoryMappedFile {
     pub fn watch<F>(&self, callback: F) -> Result<WatchHandle>
-        where F: FnMut(ChangeEvent) + Send + 'static;
+        where F: Fn(ChangeEvent) + Send + 'static;
 }
 
 // async (feature = "async")
@@ -289,17 +313,26 @@ documented as a hint; `is_hugepage_backed()` reports the outcome.
 
 ### 5.1 Thread safety
 
-`MemoryMappedFile` MUST be `Send + Sync`. Concurrent reads from
-disjoint slices MUST be safe. Concurrent writes to overlapping
-regions are caller-managed; the crate MUST NOT silently serialize
-them. Internal state (flush policy, watch handles, etc.) MUST be
-protected by `parking_lot::RwLock` or atomic primitives.
+`MemoryMappedFile` MUST be `Send + Sync`. Concurrent reads MUST be
+safe. On `ReadWrite` mappings the crate serializes every write
+(`update_region`, `as_slice_mut`, `chunks_mut`, `resize`) behind the
+mapping's `parking_lot::RwLock` write lock, and every live read view
+(slice, iterator item, atomic view) holds the read lock, so writes
+wait for all views. The rustdoc MUST state that taking a write on a
+thread that holds a read view deadlocks. Stores through atomic views
+are the one write path that runs under the read lock; ordering them
+is the caller's job. Internal state (flush policy, watch handles,
+etc.) MUST be protected by `parking_lot` locks or atomic primitives.
+See `docs/SAFETY.md` for the full locking model.
 
 ### 5.2 Bounds checking
 
 Every method that accepts an `offset` and `len` MUST validate that
-`offset + len <= self.len()` before returning a slice. Out-of-bounds
-requests MUST return `MmapIoError::OutOfBounds`, not panic, not UB.
+`offset + len <= self.len()` (without overflow) before touching the
+mapping, against the length of the mapping it holds a lock on.
+Out-of-bounds requests MUST return `MmapIoError::OutOfBounds`, not
+panic, not UB, and are never clamped. A zero-length request is
+accepted at any offset and does nothing.
 
 ### 5.3 Alignment
 
@@ -417,10 +450,14 @@ New dependencies MUST be justified against:
 - Integration tests in `tests/` for cross-module behavior.
 - Property-based tests (added in 0.9.6) via `proptest` for: bounds
   checking, alignment validation, flush-policy state transitions.
-- Fuzz tests (target: 0.9.10) via `cargo-fuzz` for: `read_into`,
-  `update_region`, atomic-view access patterns.
+- Fuzz tests via `cargo-fuzz`, four targets under `fuzz/`:
+  `read_into`, `update_region`, `atomic_view` (atomic-view access
+  patterns), and `bounds_checks` (range validation across the API).
 - CI MUST run on Linux, macOS, and Windows, on MSRV (1.75) and
-  stable.
+  stable. The test suite runs on stable; on MSRV CI builds the
+  library with `--all-features`, because current releases of the
+  dev-dependencies (`proptest`, and `half` through `criterion`) need
+  a newer compiler than 1.75.
 - Every public method MUST have at least one rustdoc example.
 - Doctests are part of the test suite and MUST pass on every CI run.
 

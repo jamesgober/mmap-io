@@ -98,6 +98,7 @@ Complete reference for public-facing APIs. Each item lists its signature, parame
 - **[Safety and Best Practices](#safety-and-best-practices)**
 - **[Flush Policy](#flush-policy)**
   - [Mapped Memory Access](#mapped-memory-access)
+  - [Range Validation](#range-validation)
   - [Copy-On-Write Mode](#copy-on-write-cow-mode)
   - [Flushing Behavior](#flushing-behavior)
   - [Thread Safety](#thread-safety)
@@ -281,7 +282,7 @@ assert_eq!(&buf, b"hello");
 
 ### MappedSlice
 
-Read-only slice into a memory-mapped region. For RW mappings it holds the read lock for its lifetime, so concurrent `resize` blocks until the slice is dropped.
+Read-only slice into a memory-mapped region. For RW mappings it holds the read lock for its lifetime, so `resize` and every write method (`update_region`, `as_slice_mut`, `chunks_mut`) block until the slice is dropped. Calling one of those on the thread that holds the slice deadlocks. `Send + Sync`.
 
 ```rust
 pub struct MappedSlice<'a> { /* private fields */ }
@@ -351,14 +352,14 @@ Enum representing when to touch (prewarm) memory pages during mapping creation.
 pub enum TouchHint {
     Never,   // Don't touch pages during creation (default)
     Eager,   // Eagerly touch all pages during creation
-    Lazy,    // Touch pages lazily on first access (same as Never for now)
+    Lazy,    // Same as Never; kept for API compatibility
 }
 ```
 
 **Variants**:
 - `Never`: Don't touch pages during creation (default)
 - `Eager`: Eagerly touch all pages during creation to prewarm page tables and improve first-access latency. Useful for benchmarking scenarios where you want consistent timing without page fault overhead.
-- `Lazy`: Touch pages lazily on first access (same as Never for now)
+- `Lazy`: Same as `Never`: pages are faulted in by the OS on first access. No separate lazy prefetch exists; the variant is kept for API compatibility.
 
 <br>
 
@@ -378,7 +379,7 @@ pub enum MmapMode {
 **Variants**:
 - `ReadOnly`: Read-only access to the file
 - `ReadWrite`: Read and write access to the file
-- `CopyOnWrite`: Private copy-on-write mapping (feature-gated)
+- `CopyOnWrite`: Private mapping of an existing file (feature `cow`). Writable copy-on-write is not implemented: every write method returns `InvalidMode`, so it currently behaves like `ReadOnly`.
 
 <br>
 
@@ -501,7 +502,7 @@ update_region(&mmap, 100, b"Hello, World!")?;
 pub fn flush(mmap: &MemoryMappedFile) -> Result<()>
 ```
 
-**Description**: Flushes all changes to disk. No-op for read-only mappings.
+**Description**: Same as `MemoryMappedFile::flush`: synchronously writes dirty pages back and waits for the OS to report them written. No-op for read-only and copy-on-write mappings.
 
 **Parameters**:
 - `mmap`: The memory-mapped file to flush
@@ -660,7 +661,7 @@ let mmap = MemoryMappedFile::open_rw("data.bin")?;
 pub fn open_cow<P: AsRef<Path>>(path: P) -> Result<Self>
 ```
 
-**Description**: Opens an existing file in copy-on-write mode. Changes are private to this process.
+**Description**: Opens an existing file in copy-on-write mode. The mapping is private and exposed read-only: write methods return `InvalidMode`, so the file is never modified through it. Behaves like `open_ro` today.
 
 **Parameters**:
 - `path`: Path to the file to open
@@ -685,7 +686,7 @@ pub fn as_slice(&self, offset: u64, len: u64) -> Result<MappedSlice<'_>>
 
 **Description**: Returns a zero-copy read-only view of `[offset, offset + len)`. Since 0.9.7 this works on **all** mapping modes (ReadOnly, CopyOnWrite, and ReadWrite). `MappedSlice<'_>` implements `Deref<Target = [u8]>` and `AsRef<[u8]>` so it can be used as a `&[u8]` directly (indexing, iteration, passing to functions that take `&[u8]` via `&*slice` or `slice.as_ref()`).
 
-On ReadWrite mappings, the returned slice holds an internal read guard for its lifetime. Concurrent `resize()` (which requires the write lock) blocks until the slice is dropped. Other readers and disjoint writes are not blocked.
+On ReadWrite mappings, the returned slice holds an internal read guard for its lifetime. Other readers are not blocked, but every operation that needs the write lock is, whatever region it touches: `resize()`, `update_region()`, `as_slice_mut()`, and `chunks_mut()` wait until the slice is dropped. Calling one of them on the thread that holds the slice deadlocks. A zero-length request returns an empty slice at any offset.
 
 **Parameters**:
 - `offset`: Starting byte offset
@@ -714,7 +715,7 @@ consume(&*data);
 pub fn as_slice_mut(&self, offset: u64, len: u64) -> Result<MappedSliceMut<'_>>
 ```
 
-**Description**: Returns a mutable slice guard for the specified range. Only available in ReadWrite mode.
+**Description**: Returns a mutable slice guard for the specified range. Only available in ReadWrite mode. The guard holds the write lock until dropped; every other reader and writer waits. When the guard drops, its length is added to `pending_bytes()`.
 
 **Parameters**:
 - `offset`: Starting byte offset
@@ -769,7 +770,7 @@ mmap.read_into(50, &mut buffer)?;
 pub fn update_region(&self, offset: u64, data: &[u8]) -> Result<()>
 ```
 
-**Description**: Writes data to the mapped file at the specified offset.
+**Description**: Writes data to the mapped file at the specified offset under the write lock, then applies the flush policy. Empty `data` is accepted at any offset and does nothing.
 
 **Parameters**:
 - `offset`: Starting byte offset
@@ -791,13 +792,11 @@ mmap.update_region(100, b"Hello")?;
 
 ### flush
 
-Platform Parity: A subsequent fresh read-only mapping observes persisted data after this call on all supported platforms.
-
 ```rust
 pub fn flush(&self) -> Result<()>
 ```
 
-**Description**: Flushes all changes to disk.
+**Description**: Writes all dirty pages back to the file and waits for the OS to report them written. On a ReadWrite mapping it always flushes, whatever `pending_bytes()` says (before 1.1 it skipped the flush when the counter was zero, which under the default policy was always). Per platform: `msync(MS_SYNC)` on Unix (on macOS this does not issue `F_FULLFSYNC`, so the drive cache may still hold data); `FlushViewOfFile` + `FlushFileBuffers` on Windows. Resets `pending_bytes()` to 0. No-op for ReadOnly and CopyOnWrite.
 
 **Returns**: `Result<()>`
 
@@ -808,13 +807,11 @@ pub fn flush(&self) -> Result<()>
 
 ### flush_range
 
-Platform Parity: A subsequent fresh read-only mapping observes persisted data for the flushed range after this call. Other non-flushed regions may not be visible until a full `flush()` is performed.
-
 ```rust
 pub fn flush_range(&self, offset: u64, len: u64) -> Result<()>
 ```
 
-**Description**: Flushes a specific byte range to disk.
+**Description**: Synchronously flushes the pages covering `[offset, offset + len)`, with the same per-platform calls as `flush()` (on Windows `FlushFileBuffers` covers the whole file). A range covering the whole mapping resets `pending_bytes()`; a partial range leaves it unchanged, since the crate does not track which bytes are dirty. A zero-length range is accepted at any offset and does nothing. Visibility is not the question here: other mappings of the file see writes immediately through the page cache; flushing makes them durable.
 
 **Parameters**:
 - `offset`: Starting byte offset
@@ -834,7 +831,7 @@ pub fn flush_range(&self, offset: u64, len: u64) -> Result<()>
 pub fn resize(&self, new_size: u64) -> Result<()>
 ```
 
-**Description**: Resizes the mapped file. Only available in ReadWrite mode.
+**Description**: Resizes the mapped file and remaps it. Only available in ReadWrite mode. Takes the write lock before touching the file, so it waits for every live slice, iterator item, and atomic view to drop (calling it while this thread holds one deadlocks). Shrinking truncates the file on every platform, including Windows since 1.1 (it used to shrink only the cached length); bytes cut off read back as zeros after a later grow. On Windows a shrink fails with `Io` if another independent mapping of the same file is open.
 
 **Parameters**:
 - `new_size`: New size in bytes (must be > 0)
@@ -1004,7 +1001,7 @@ pub fn flush_policy(&self) -> FlushPolicy
 pub fn pending_bytes(&self) -> u64
 ```
 
-**Description**: Bytes written since the last successful flush. Mainly useful for diagnostics under `FlushPolicy::EveryBytes` / `EveryWrites`: poll to see how close you are to the next auto-flush. One atomic read, no I/O. Since 0.9.8.
+**Description**: Bytes written since the last successful full flush, under every flush policy. Counts `update_region` (at the write), `MappedSliceMut` (its length, when dropped), `chunks_mut` (bytes handed to the closure), atomic views (their size, when dropped), and `as_mut_ptr` (whole mapping). Reset by `flush()` and by a `flush_range` covering the whole mapping. It drives `EveryBytes` and `EveryMillis`; explicit `flush()` ignores it. One atomic read, no I/O. Since 0.9.8.
 
 **Returns**: `u64` accumulator value
 
@@ -1255,15 +1252,16 @@ let mmap = MemoryMappedFile::builder("file.bin")
 ```
 
 Behavior:
-- Never/Manual: internal counters are not used; user must call flush() explicitly.
-- Always: flush() is invoked after each update_region() call.
-- EveryBytes(n): increments a byte counter by the number of bytes written per update_region; when it reaches n, counter resets and flush() is called.
-- EveryWrites(w): increments a write counter per update_region; when it reaches w, counter resets and flush() is called.
-- EveryMillis(ms): Enables automatic time-based flushing using a background thread. Writes are tracked and the background thread flushes pending changes every `ms` milliseconds when there are dirty pages. The background thread automatically stops when the MemoryMappedFile is dropped.
+- The policy only controls automatic flushes. An explicit `flush()` / `flush_range()` always flushes.
+- Never/Manual: no automatic flushes; call `flush()` when you need durability. `pending_bytes()` still counts.
+- Always: `flush()` runs after each `update_region()` call.
+- EveryBytes(n): after an `update_region()` call, flushes if `pending_bytes()` (which also counts the other write paths) is at least n.
+- EveryWrites(w): flushes after every w-th `update_region()` call.
+- EveryMillis(ms): a background thread wakes every `ms` milliseconds and flushes if `pending_bytes()` is non-zero. It is started by every builder path (`create`, `open`, `open_or_create`) and is stopped and joined when the last handle to the mapping drops.
 
 Notes:
-- Flush is best-effort and may not imply fsync semantics on all platforms.
-- COW mappings treat flush() as a no-op.
+- `flush()` is synchronous: `msync(MS_SYNC)` on Unix, `FlushViewOfFile` + `FlushFileBuffers` on Windows. macOS `msync` does not issue `F_FULLFSYNC`.
+- ReadOnly and COW mappings treat flush() as a no-op.
 
 <hr>
 <div align="right"><a href="#doc-top">&uarr; TOP</a></div>
@@ -1336,7 +1334,7 @@ pub enum MmapAdvice {
 pub fn chunks(&self, chunk_size: usize) -> ChunkIterator<'_>
 ```
 
-**Description**: Zero-copy iterator over fixed-size chunks. The iterator holds a read guard (on RW mappings) for its lifetime; concurrent `resize()` blocks until the iterator is dropped.
+**Description**: Zero-copy iterator over fixed-size chunks. On RW mappings the iterator holds a read guard for its lifetime and every yielded item holds its own, so `resize()` and the write methods block until the iterator and all items it produced are dropped (before 1.1, an item kept after the iterator could outlive its guard).
 
 **Parameters**:
 - `chunk_size`: Size of each chunk in bytes (final chunk may be shorter)
@@ -1435,7 +1433,16 @@ it into `MmapIoError::Io(...)` before returning.
 > underlying atomic, so call sites that do
 > `view.fetch_add(...)` / `slice.iter()` keep working unchanged. The
 > wrapper holds the read lock for its lifetime, so a concurrent
-> `resize()` blocks while the view is alive (C3 fix).
+> `resize()` (and every write method) blocks while the view is alive.
+>
+> Since 1.1, atomic views require a **ReadWrite** mapping. On
+> ReadOnly and CopyOnWrite mappings the pages are not writable, so a
+> safe `store` would fault; these methods return
+> `MmapIoError::InvalidMode` there. Checks run in this order: mode,
+> alignment, bounds. Dropping a view adds its size to
+> `pending_bytes()`. Do not read the same bytes through a
+> `MappedSlice` while another thread stores to them atomically; that
+> is a data race.
 
 #### atomic_u64
 
@@ -1452,6 +1459,7 @@ pub fn atomic_u64(&self, offset: u64) -> Result<AtomicView<'_, AtomicU64>>
 **Returns**: `Result<AtomicView<'_, AtomicU64>>` - wrapper that derefs to `&AtomicU64`
 
 **Errors**:
+- `MmapIoError::InvalidMode` if the mapping is not ReadWrite
 - `MmapIoError::Misaligned` if offset is not 8-byte aligned
 - `MmapIoError::OutOfBounds` if offset + 8 exceeds file bounds
 
@@ -1481,6 +1489,7 @@ pub fn atomic_u32(&self, offset: u64) -> Result<AtomicView<'_, AtomicU32>>
 **Returns**: `Result<AtomicView<'_, AtomicU32>>` - wrapper that derefs to `&AtomicU32`
 
 **Errors**:
+- `MmapIoError::InvalidMode` if the mapping is not ReadWrite
 - `MmapIoError::Misaligned` if offset is not 4-byte aligned
 - `MmapIoError::OutOfBounds` if offset + 4 exceeds file bounds
 
@@ -1693,7 +1702,7 @@ pub struct Segment { /* private fields */ }
 
 **Methods**:
 - `new(parent: Arc<MemoryMappedFile>, offset: u64, len: u64) -> Result<Self>`
-- `as_slice(&self) -> Result<&[u8]>`
+- `as_slice(&self) -> Result<MappedSlice<'_>>`
 - `len(&self) -> u64`
 - `is_empty(&self) -> bool`
 - `offset(&self) -> u64`
@@ -1717,7 +1726,7 @@ let data = segment.as_slice()?;
 pub struct SegmentMut { /* private fields */ }
 ```
 
-**Description**: Mutable view into a region of a memory-mapped file.
+**Description**: Mutable view into a region of a memory-mapped file. `write(data)` writes at the start of the segment; since 1.1 it returns `OutOfBounds` (segment-relative fields: `offset` 0, `len` = `data.len()`, `total` = segment length) when `data` is longer than the segment, instead of writing past the segment's end.
 
 **Methods**:
 - `new(parent: Arc<MemoryMappedFile>, offset: u64, len: u64) -> Result<Self>`
@@ -1748,7 +1757,7 @@ durability across platforms (Async-Only Flushing).
 pub async fn update_region_async(&self, offset: u64, data: &[u8]) -> Result<()>
 ```
 
-**Description**: Async write that also flushes after the write completes. The write itself runs on a `tokio::spawn_blocking` task; the flush is unconditional regardless of the configured `FlushPolicy`. This is the cross-platform-safe write path for async code.
+**Description**: Async write that also flushes after the write completes. The write and the flush run on the `blocking` crate's thread pool (any executor works); the flush is unconditional regardless of the configured `FlushPolicy`. `data` is copied into a `Vec` first (one allocation of `data.len()` bytes), because the blocking task must own its input.
 
 **Parameters**:
 - `offset`: Starting byte offset
@@ -1776,7 +1785,7 @@ mmap.update_region_async(128, b"ASYNC-FLUSH").await?;
 pub async fn flush_async(&self) -> Result<()>
 ```
 
-**Description**: Async equivalent of `flush()`. Runs the underlying flush in a `spawn_blocking` task so the async scheduler is not blocked on disk I/O.
+**Description**: Async equivalent of `flush()`. Runs the underlying flush on the `blocking` crate's thread pool so the async scheduler is not blocked on disk I/O.
 
 **Returns**: `Result<()>`
 
@@ -1816,7 +1825,7 @@ pub async fn create_mmap_async<P: AsRef<Path>>(
 ) -> Result<MemoryMappedFile>
 ```
 
-**Description**: Asynchronously creates a new memory-mapped file.
+**Description**: Asynchronously creates a new memory-mapped file. Same behavior as `create_rw` (truncates an existing file), run on the `blocking` thread pool. Since 1.1 the size is validated before the file is touched; it used to truncate first.
 
 **Parameters**:
 - `path`: Path to the file to create
@@ -1895,7 +1904,7 @@ println!("System page size: {} bytes", ps);
 pub fn align_up(value: u64, alignment: u64) -> u64
 ```
 
-**Description**: Aligns a value up to the nearest multiple of alignment.
+**Description**: Aligns a value up to the nearest multiple of alignment. Returns `value` unchanged when `alignment` is 0, and saturates to `u64::MAX` when the result would overflow (it used to panic in debug builds).
 
 **Parameters**:
 - `value`: Value to align
@@ -1926,32 +1935,42 @@ We expose only safe public APIs, but the following safety considerations apply:
 <br>
 
 ### Mapped Memory Access
-- You must not access memory after the file is closed, truncated, or deleted.
-- Writing to `as_slice_mut()` is only allowed in `ReadWrite` or `CopyOnWrite` modes.
-- Do not share mutable slices across threads without synchronization.
+- Another process must not truncate or modify the file while it is mapped here; readers can see torn data or receive `SIGBUS`.
+- `as_slice_mut()` is only allowed in `ReadWrite` mode.
+- Raw pointers from `as_ptr()` / `as_mut_ptr()` are invalidated by `resize()`.
+- Do not read bytes through a `MappedSlice` while another thread stores to the same bytes through an atomic view.
+
+See [SAFETY.md](SAFETY.md) for the full locking model.
+
+<br>
+
+### Range Validation
+- A zero-length request is accepted at any offset, including past the end, and does nothing (slice methods return an empty slice).
+- Any other range must satisfy `offset + len <= len()` (checked without overflow) or the call returns `OutOfBounds`. Nothing is clamped.
+- On ReadWrite mappings the check runs under the mapping lock, against the mapping actually accessed, so a concurrent `resize()` yields `OutOfBounds`, never an out-of-range access.
+- Atomic views are not range requests: they always require an aligned `offset <= len()`.
 
 <br>
 
 ### Copy-On-Write (COW) Mode
-- Writes are isolated per-process and never flushed to disk.
-- `as_slice_mut()` is restricted in COW mode (future support planned).
-- Flush in COW is a no-op for disk persistence.
-
+- The mapping is private and exposed read-only; every write method returns `InvalidMode`, atomic views included.
+- The file is never modified through a COW mapping.
+- `flush()` is a no-op.
 
 <br>
 
 ### Flushing Behavior
-- `flush()` ensures memory is flushed to the underlying file, but is a **best-effort** operation and may not guarantee disk sync unless `sync_all` or `fsync` is also called.
-- Platform Parity: After `flush()`/`flush_range()`, opening a new RO mapping will observe the persisted bytes (entire file for `flush()`, specific region for `flush_range()`).
-- Async-Only Flushing: When using async helpers, writes are auto-flushed after each async write to maintain cross-platform visibility guarantees.
+- `flush()` / `flush_range()` are synchronous: `msync(MS_SYNC)` on Unix, `FlushViewOfFile` + `FlushFileBuffers` on Windows. On macOS, `msync` does not issue `F_FULLFSYNC`; call `File::sync_all` on a separate handle if you need the drive cache flushed too.
+- Visibility is not durability: other mappings and `std::fs` readers of the same file see writes at once through the page cache. Flushing is what makes them survive a crash.
+- Async helpers flush after each async write.
 
 <br>
 
 ### Thread Safety
-`MemoryMappedFile` can be used across threads with `Arc`, but internal mutability requires synchronization if using `as_slice_mut()`.
-- All operations are thread-safe through interior mutability
-- Read operations can proceed concurrently
-- Write operations are serialized through `RwLock`
+`MemoryMappedFile` is `Send + Sync` and can be shared with `Arc`.
+- Read views (`as_slice`, iterator items, atomic views) share the lock; any number can coexist, including several on one thread.
+- Writes (`update_region`, `as_slice_mut`, `chunks_mut`, `resize`) take the lock exclusively and wait for every live read view, whatever region it covers.
+- Calling a write method on a thread that still holds a read view of the same mapping deadlocks. Drop the view first.
 
 <br>
 
@@ -1960,12 +1979,12 @@ We expose only safe public APIs, but the following safety considerations apply:
 2. Prefer page-aligned operations when possible
 3. Use iterators for sequential processing of large files
 4. Lock critical memory regions to prevent swapping
-5. Batch writes and flush once rather than flushing frequently
+5. Batch writes and flush once rather than flushing frequently: each flush is a synchronous write-back
 
 <br>
 
 ### Common Pitfalls
-1. Don't hold mutable guards across `flush()` calls (causes deadlock)
+1. Don't call `flush()` while holding a `MappedSliceMut`, or a write method while holding a `MappedSlice` / iterator item / atomic view, on the same thread (deadlock)
 2. Ensure proper alignment when using atomic operations
 3. Drop mappings before deleting files
 4. Check privileges before using memory locking
