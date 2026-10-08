@@ -77,8 +77,8 @@ pub struct MemoryMappedFile { /* private */ }
 pub enum MmapMode { ReadOnly, ReadWrite, CopyOnWrite }
 pub enum TouchHint { Never, Eager, Lazy }
 
-// Read-side wrapper. Holds the RW / COW read guard for its lifetime
-// (none for RO). Derefs to `[u8]`. Implements Debug + PartialEq with
+// Read-side wrapper. Holds the RW / writable COW read guard for its
+// lifetime (none for RO and default COW). Derefs to `[u8]`. Implements Debug + PartialEq with
 // byte slices for ergonomic test/assert use. Since 0.9.7.
 pub struct MappedSlice<'a> { /* private */ }
 
@@ -97,7 +97,8 @@ impl MemoryMappedFile {
     pub fn unmap(self) -> std::result::Result<File, Self>;
     // Since 0.9.7: as_slice works uniformly on RO, COW, AND RW.
     pub fn as_slice(&self, offset: u64, len: u64) -> Result<MappedSlice<'_>>;
-    // Since 0.9.11: 0.9.6 compat shim, RO only (RO/COW before 1.1.0).
+    // Since 0.9.11: 0.9.6 compat shim, RO and default (read-only) COW;
+    // InvalidMode on RW and writable COW.
     pub fn as_slice_bytes(&self, offset: u64, len: u64) -> Result<&[u8]>;
     pub fn as_slice_mut(&self, offset: u64, len: u64) -> Result<MappedSliceMut<'_>>;
     pub fn read_into(&self, offset: u64, dst: &mut [u8]) -> Result<()>;
@@ -264,11 +265,20 @@ impl<'a> ChunkIteratorMut<'a> {
         where F: FnMut(u64, &mut [u8]) -> Result<()>;
 }
 
-// cow (feature = "cow"). Writable since 1.1.0: private pages, never
-// written to the file; flush is a no-op, resize unsupported.
+// cow (feature = "cow"). open_cow (and the builder, load_mmap,
+// from_file with CopyOnWrite) is read-only at the API, as in 1.0.
+// Since 1.1.0 private writes are opt-in: private pages, never written
+// to the file; flush is a no-op, resize unsupported. MmapMode gains no
+// variant for it.
 impl MemoryMappedFile {
     pub fn open_cow<P: AsRef<Path>>(path: P) -> Result<Self>;
+    pub fn open_cow_writable<P: AsRef<Path>>(path: P) -> Result<Self>; // 1.1.0
 }
+impl MemoryMappedFileBuilder {
+    pub fn cow_writable(self, enabled: bool) -> Self; // 1.1.0
+}
+// Always available (false unless opted in), since 1.1.0:
+// MemoryMappedFile::is_cow_writable(&self) -> bool
 
 // locking (feature = "locking")
 impl MemoryMappedFile {
@@ -283,7 +293,8 @@ impl MemoryMappedFile {
 // their lifetime; Deref<Target = T> / Deref<Target = [T]> so call
 // sites use the wrappers as if they were `&T` / `&[T]`. resize()
 // blocks until every live view is dropped (C3 fix). Since 1.1 these
-// require a ReadWrite mapping (InvalidMode otherwise).
+// require a ReadWrite or writable CopyOnWrite mapping (InvalidMode
+// otherwise).
 pub struct AtomicView<'a, T> { /* private */ }
 pub struct AtomicSliceView<'a, T> { /* private */ }
 impl MemoryMappedFile {
@@ -335,7 +346,7 @@ documented as a hint; `is_hugepage_backed()` reports the outcome.
 ### 5.1 Thread safety
 
 `MemoryMappedFile` MUST be `Send + Sync`. Concurrent reads MUST be
-safe. On `ReadWrite` and `CopyOnWrite` mappings the crate serializes
+safe. On `ReadWrite` and writable `CopyOnWrite` mappings the crate serializes
 every write (`update_region`, `as_slice_mut`, `chunks_mut`, `resize`)
 behind the mapping's `parking_lot::RwLock` write lock, and every live
 read view (slice, iterator item, atomic view) holds the read lock, so

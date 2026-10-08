@@ -23,20 +23,25 @@ The `mmap_io::raw` tier adds `unsafe fn` file-backed constructors
 - **ReadWrite** mappings live in `MapVariant::Rw(RwLock<RawMmapMut>)`
   (a `parking_lot::RwLock`). `resize()` replaces the `RawMmapMut`, so
   any access to the mapped bytes must hold a guard on this lock.
-- **CopyOnWrite** mappings (writable since 1.1) live in
+- **Writable CopyOnWrite** mappings (opt-in since 1.1:
+  `open_cow_writable`, builder `cow_writable(true)`) live in
   `MapVariant::Cow(RwLock<RawMmapMut>)`, a private `map_copy` mapping.
   They are never resized, but they are written, so every access takes
   the same guards as `ReadWrite`.
-- **ReadOnly** mappings live in an immutable `RawMmap` that is never
-  replaced or written. A plain `&[u8]` borrow tied to
+- **ReadOnly** mappings, and **CopyOnWrite** mappings without the
+  writable opt-in (the default, as in 1.0), live in
+  `MapVariant::Ro(RawMmap)`: an immutable read-only mapping that is
+  never replaced or written. `mode()` still reports `CopyOnWrite` for
+  the latter; every write path asks for the lock of `Rw` / `Cow` and
+  gets `InvalidMode` for `Ro`. A plain `&[u8]` borrow tied to
   `&MemoryMappedFile` is enough, and `as_slice_bytes` hands one out
-  only for this mode.
+  only for `Ro`.
 
 ### Who holds which guard
 
 | Read guard (shared) | Write guard (exclusive) |
 |---------------------|-------------------------|
-| `MappedSlice` from `as_slice` / `Segment::as_slice` (RW only) | `update_region` (for the copy) |
+| `MappedSlice` from `as_slice` / `Segment::as_slice` (RW / writable COW only) | `update_region` (for the copy) |
 | `chunks()` / `pages()` iterators **and every item they yield** | `as_slice_mut` / `SegmentMut::as_slice_mut` (`MappedSliceMut`) |
 | `AtomicView` / `AtomicSliceView` | `chunks_mut().for_each_mut` |
 | `read_into`, `touch_pages*`, `flush`, `flush_range`, `advise`, `lock`/`unlock` (for the duration of the call) | `resize` |
@@ -93,24 +98,27 @@ view can observe a truncated file:
 another process from modifying or truncating the file under the
 mapping. Inside the
 process, all access to RW mappings goes through the lock described
-above (COW included), and RO mappings are never written.
+above (writable COW included), and RO mappings (default COW included)
+are never written.
 Cross-process modification is out of scope (REPS.md section 5.1).
 
 Sites: `create_rw`, `open_ro`, `open_rw`, `from_file`,
 `MemoryMappedFileBuilder::open_existing` (RO), `map_file_rw`, which
-every builder RW path and `resize()` use, and `map_file_cow` (`open_cow`,
-`from_file` and the builder with `CopyOnWrite`). Callers of both
-helpers never pass a length beyond the file's current length.
+every builder RW path and `resize()` use, and `cow_inner` (`open_cow`,
+`open_cow_writable`, `from_file` and the builder with `CopyOnWrite`),
+which maps with `RawMmapOptions::map` (read-only, the default) or
+`map_copy` (writable opt-in). These helpers never map a length beyond
+the file's current length.
 
 Contract: `RawMmapOptions::map` (category 8 below).
 
 ### 2. Guarded slices (`MappedSlice`, `src/mmap.rs`)
 
-For RW and COW mappings a `MappedSlice` stores the read guard plus a raw
-`*const [u8]` computed once at construction, so `Deref` is a pointer
-dereference with no range arithmetic. Soundness: the slice was taken
-from the guarded mapping, the guard lives exactly as long as the
-`MappedSlice`, and the returned borrow is tied to `&self`.
+For RW and writable COW mappings a `MappedSlice` stores the read guard
+plus a raw `*const [u8]` computed once at construction, so `Deref` is
+a pointer dereference with no range arithmetic. Soundness: the slice
+was taken from the guarded mapping, the guard lives exactly as long as
+the `MappedSlice`, and the returned borrow is tied to `&self`.
 
 `MappedSlice` has `unsafe impl Send + Sync`. The guard it carries is
 `Send` because the crate enables parking_lot's `send_guard` feature;
@@ -121,11 +129,11 @@ with its `deadlock_detection` feature at compile time.)
 Iterator items take their own recursive read guard, so a chunk kept
 after its iterator is dropped still pins the mapping.
 
-On RW and COW mappings the slice also holds a `PlainReg`, its entry in
-the mapping's view registry (category 9), so no atomic view of its
-bytes can exist while it lives. The slice pointer is computed with
-`RawMmapMut::as_ptr` plus an offset (`sub_slice_ptr`) rather than by
-indexing `&guard[..]`, so no `&[u8]` over the whole mapping (which
+On RW and writable COW mappings the slice also holds a `PlainReg`, its
+entry in the mapping's view registry (category 9), so no atomic view
+of its bytes can exist while it lives. The slice pointer is computed
+with `RawMmapMut::as_ptr` plus an offset (`sub_slice_ptr`) rather than
+by indexing `&guard[..]`, so no `&[u8]` over the whole mapping (which
 could cover bytes under a live atomic view elsewhere) is ever formed.
 A fourth variant, `Snapshot(Box<[u8]>)`, is an owned copy used for
 iterator items that overlap a live atomic view.
@@ -135,9 +143,10 @@ iterator items that overlap a live atomic view.
 `view_parts` casts `guard.as_ptr().add(offset)` to `*const AtomicU32`
 or `*const AtomicU64`. It is sound because:
 
-1. Only writable mappings are accepted (`ReadWrite`, `CopyOnWrite`
-   since 1.1, and `AnonymousMmap`); RO mappings return `InvalidMode`,
-   since a safe `store` on a read-only page faults.
+1. Only writable mappings are accepted (`ReadWrite`, writable
+   `CopyOnWrite` since 1.1, and `AnonymousMmap`); RO and default
+   (read-only) COW mappings return `InvalidMode`, since a safe `store`
+   on a read-only page faults.
 2. The offset is checked to be a multiple of the type's alignment, and
    the mapping base is page-aligned.
 3. `offset + count * size_of::<T>()` is checked against the guarded
@@ -330,9 +339,9 @@ reads, and a `&[u8]` asserts that its bytes do not change at all while
 it lives: undefined behavior. Two atomic views of different element
 sizes over the same bytes are mixed-size atomic accesses, also
 undefined. Before 1.1 this was only documented; since 1.1 each
-writable mapping (RW, COW, `AnonymousMmap`) carries a `ViewRegistry`
-that records the byte range of every live plain and atomic view and
-refuses:
+writable mapping (RW, writable COW, `AnonymousMmap`) carries a
+`ViewRegistry` that records the byte range of every live plain and
+atomic view and refuses:
 
 - a plain view overlapping a live atomic view (`as_slice`,
   `Segment::as_slice`, `try_as_slice` return `InvalidMode`; iterator
@@ -362,8 +371,8 @@ two sides.
 
 Without the `atomic` feature no atomic view can exist and the registry
 compiles to nothing, so plain views cost exactly what they did in 1.0.
-With it, each RW / COW plain view costs one shard lock to register and
-one to deregister (see `docs/PERFORMANCE.md`).
+With it, each RW / writable COW plain view costs one shard lock to
+register and one to deregister (see `docs/PERFORMANCE.md`).
 
 What it does not cover: raw pointers (`as_ptr` / `as_mut_ptr`), and
 other `MemoryMappedFile` values that map the same file independently
@@ -393,12 +402,16 @@ cross-process modification.
 - **S3** (guard released before using the pointer in `advise.rs`,
   `lock.rs`): 0.9.6 only documented it. Since 1.1 the guard is kept
   alive across the syscall, and ranges are validated under it.
-- **S4** (COW write semantics): until 1.1 COW mappings were read-only
-  at the API. Since 1.1 they are mapped writable and private
-  (`map_copy`) and locked like `ReadWrite`, so the write methods and
-  atomic views are sound on them; `as_slice_bytes` (an unguarded
-  `&[u8]`) is refused on them, and `advise(DontNeed)`, which discards
-  private pages, takes the write lock.
+- **S4** (COW write semantics): COW mappings are read-only at the
+  API by default, as in 1.0, and are mapped read-only (`Ro`), so
+  `as_slice_bytes` may lend them out unguarded and nothing can write
+  them. Since 1.1 a COW mapping can opt in to writes
+  (`open_cow_writable`, builder `cow_writable(true)`); it is then
+  mapped writable and private (`map_copy`) and locked like
+  `ReadWrite`, so the write methods and atomic views are sound on it;
+  `as_slice_bytes` (an unguarded `&[u8]`) is refused on it, and
+  `advise(DontNeed)`, which discards private pages, takes the write
+  lock.
 - **Atomic vs plain views** (documented as a caller obligation
   through 1.0): enforced at run time by the view registry since 1.1.
 - **1.1 review**: iterator items outliving their guard

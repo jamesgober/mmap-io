@@ -100,7 +100,7 @@ The time is the storage round-trip, not the byte count: the kernel flushes whole
 
 ## Cost of the atomic / plain view check (1.1)
 
-Since 1.1 a plain view (`MappedSlice` from `as_slice`, an iterator item) and an atomic view of the same bytes cannot coexist (see `docs/SAFETY.md`, category 9). With the `atomic` feature enabled, every plain view of a `ReadWrite` / `CopyOnWrite` mapping registers its byte range for its lifetime, and copying reads (`read_into`) hold the registry's read lock during the copy. Without the `atomic` feature the check compiles to nothing. `ReadOnly` mappings are never affected.
+Since 1.1 a plain view (`MappedSlice` from `as_slice`, an iterator item) and an atomic view of the same bytes cannot coexist (see `docs/SAFETY.md`, category 9). With the `atomic` feature enabled, every plain view of a `ReadWrite` / writable `CopyOnWrite` mapping registers its byte range for its lifetime, and copying reads (`read_into`) hold the registry's read lock during the copy. Without the `atomic` feature the check compiles to nothing. `ReadOnly` and default (read-only) `CopyOnWrite` mappings are never affected.
 
 Per-operation cost on a 16 MiB `ReadWrite` mapping, hot cache (a tight loop of 5 million calls at 64 offsets, `--release`; the criterion group `rw_views` measures the same operations at random offsets, where cache misses dominate):
 
@@ -155,7 +155,8 @@ All threads contend on the same cache line, so the cache-coherence protocol seri
 | Operation | Windows | Linux (WSL2) |
 |-----------|---------|--------------|
 | `create_rw` 4 KiB - 1 MiB | 0.25-0.7 ms (very noisy) | 13 µs |
-| `open_cow` 4 MiB | 28-63 µs | 2.7 µs |
+| `open_cow` 4 MiB (read-only, the default) | 30-34 µs | 2.6 µs |
+| `open_cow_writable` 4 MiB (private, 1.1) | 39-40 µs | 2.5 µs |
 | `resize` (1 MiB -> 8 MiB -> 1 MiB) | 77 µs | 6 µs |
 | `advise` (Sequential, 4 MiB) | 11 ns (no-op on Windows) | 74 ns |
 | `read_into_rw` 4 KiB | 82 ns | 24 ns |
