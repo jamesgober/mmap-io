@@ -183,10 +183,14 @@ split so that the arithmetic and the syscalls can be reviewed apart:
 
 - `range.rs`: pure, `unsafe`-free offset and length arithmetic. Runs
   under Miri.
-- `unix.rs`: `mmap` / `msync` / `munmap` via `libc`.
+- `unix.rs`: `mmap` / `msync` / `munmap` / `mprotect`, plus `madvise`
+  (feature `advise`), `mlock` / `munlock` (feature `locking`) and
+  `sync_file_range` (Linux), via `libc`.
 - `windows.rs`: `CreateFileMappingW` / `MapViewOfFile` /
-  `FlushViewOfFile` / `UnmapViewOfFile` / `GetSystemInfo`, declared by
-  hand with `extern "system"` (no `windows-sys`).
+  `FlushViewOfFile` / `UnmapViewOfFile` / `VirtualProtect` /
+  `GetSystemInfo`, plus `PrefetchVirtualMemory` and `VirtualLock` /
+  `VirtualUnlock`, declared by hand with `extern "system"` (no
+  `windows-sys`).
 - `stub.rs`: every constructor returns `Unsupported`.
 - `mod.rs`: the owning `Mapping` type, `Deref`, `Drop`, `Send`/`Sync`.
 
@@ -208,17 +212,44 @@ does. `map_anon` is safe: anonymous memory has no outside writer.
    `CreateFileMappingW` (fails on empty files). The pointer is then a
    non-null, granularity-aligned address used only for zero-length
    slices and never unmapped.
-2. Otherwise the OS mapping starts at `ptr - delta`, is `delta + len`
+2. Otherwise the OS mapping starts at `ptr - delta` and is `os_len`
    bytes long, with `delta` below the OS offset granularity (page size
    on Unix, allocation granularity on Windows) and
-   `delta + len <= isize::MAX`. The pair is computed by
-   `range::layout` with checked arithmetic.
+   `delta + len <= os_len <= isize::MAX`. `delta` and `delta + len` are
+   computed by `range::layout` with checked arithmetic; `os_len` is
+   larger only for `huge()` anonymous mappings, rounded up (checked) to
+   the huge page size because `munmap` of a `MAP_HUGETLB` mapping needs
+   a huge-page multiple. `Drop` unmaps `os_len` bytes.
 3. The window `[offset, offset + len)` lies inside the file at mapping
    time (`range::resolve_len`): mapping past end of file is rejected
    up front instead of producing a mapping that faults on access.
 4. The mapping is owned exclusively by one value, so `Drop` unmaps it
    exactly once and never panics (errors from `munmap` /
    `UnmapViewOfFile` are ignored, as there is no caller to report to).
+
+**Protection changes.** `make_read_only` and `make_mut` call
+`mprotect` / `VirtualProtect` on the whole OS mapping. Both take the
+mapping by value, so no `&[u8]` or `&mut [u8]` into it can be alive
+when the protection changes (a `&mut [u8]` to pages that just became
+read-only would fault on write; a `&[u8]` to pages that just became
+writable through another handle would break its immutability). The
+mapping records its kind at creation (shared read, shared write,
+copy-on-write, anonymous), so `make_mut` restores exactly the original
+access; on Windows a view of a `PAGE_READONLY` section is never made
+writable (the call fails before any OS call). On Unix, making a
+read-only shared file mapping writable switches its backing so `flush`
+calls `msync`. A failed call drops (unmaps) the mapping.
+
+**Advice and locking.** `advise_range` and `lock` validate the range
+with the same `range::flush_span` as `flush_range`, so the address is
+page aligned and inside the mapping before `madvise` / `mlock` /
+`PrefetchVirtualMemory` / `VirtualLock` sees it. None of these calls
+reads or writes the bytes, except `MADV_DONTNEED` on private memory,
+which replaces private pages with file contents (copy-on-write) or
+zeros (anonymous) and would change bytes behind live `&[u8]` borrows.
+The raw tier therefore refuses `DontNeed` on private mappings with
+`InvalidInput`. On shared file mappings it only drops page table
+entries.
 
 **Bounds before pointers.** `flush_range` passes the caller's
 `(offset, len)` through `range::flush_span`, which rejects

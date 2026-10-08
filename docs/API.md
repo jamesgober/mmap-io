@@ -97,6 +97,7 @@ Complete reference for public-facing APIs. Each item lists its signature, parame
   - [RawMmapOptions](#rawmmapoptions)
   - [RawMmap](#rawmmap)
   - [RawMmapMut](#rawmmapmut)
+  - [Protection changes, advice and locking](#protection-changes-advice-and-locking) (1.1.0)
   - [offset_granularity](#offset_granularity)
   - [Behavior and platform notes](#behavior-and-platform-notes)
   - [Performance](#performance)
@@ -1914,12 +1915,14 @@ public API safe.
 
 ```rust
 #[derive(Debug, Clone, Default)]
-pub struct RawMmapOptions { /* offset: u64, len: Option<usize> */ }
+pub struct RawMmapOptions { /* offset, len, populate, huge */ }
 
 impl RawMmapOptions {
     pub const fn new() -> Self;
     pub fn offset(&mut self, offset: u64) -> &mut Self;
     pub fn len(&mut self, len: usize) -> &mut Self;
+    pub fn populate(&mut self) -> &mut Self; // 1.1.0
+    pub fn huge(&mut self) -> &mut Self;     // 1.1.0
     pub unsafe fn map(&self, file: &File) -> io::Result<RawMmap>;
     pub unsafe fn map_mut(&self, file: &File) -> io::Result<RawMmapMut>;
     pub unsafe fn map_copy(&self, file: &File) -> io::Result<RawMmapMut>;
@@ -1934,6 +1937,21 @@ granularity and the leading bytes are hidden. `map` is read-only and
 shared, `map_mut` is writable and shared with the file, `map_copy` is
 private copy-on-write (writes never reach the file), `map_anon` is
 zero-filled anonymous memory (offset ignored).
+
+Since 1.1.0:
+
+- `populate()` pre-faults the mapping at creation (`MAP_POPULATE` on
+  Linux and Android, for file and anonymous maps). First accesses then
+  do not page-fault; creation is slower and commits memory up front.
+  Accepted and ignored on other platforms.
+- `huge()` asks `map_anon` for explicit huge pages (`MAP_HUGETLB` on
+  Linux and Android, default size from `/proc/meminfo`). The OS
+  mapping is rounded up to whole huge pages; `len()` still reports the
+  requested length. Without reserved huge pages (`vm.nr_hugepages`,
+  0 on most systems) `map_anon` fails with the OS error, usually
+  `ENOMEM`; the raw tier does not fall back. `AnonymousMmap::with_huge_pages`
+  does. Ignored for file maps and on other platforms; Windows large
+  pages need `SeLockMemoryPrivilege` and are not used.
 
 **Errors**: `InvalidInput` when the offset is past the end of the
 file, when `offset + len` overflows or exceeds the file size, or when
@@ -2022,6 +2040,85 @@ map.flush_range(0, 4)?;
 
 <br>
 
+### Protection changes, advice and locking
+
+Since 1.1.0. Additive, following `memmap2`'s method names.
+
+```rust
+impl RawMmap {
+    pub fn make_mut(self) -> io::Result<RawMmapMut>;
+    #[cfg(feature = "advise")]
+    pub fn advise(&self, advice: MmapAdvice) -> io::Result<()>;
+    #[cfg(feature = "advise")]
+    pub fn advise_range(&self, advice: MmapAdvice, offset: usize, len: usize) -> io::Result<()>;
+    #[cfg(feature = "locking")]
+    pub fn lock(&self) -> io::Result<()>;
+    #[cfg(feature = "locking")]
+    pub fn unlock(&self) -> io::Result<()>;
+}
+
+impl RawMmapMut {
+    pub fn make_read_only(self) -> io::Result<RawMmap>;
+    #[cfg(feature = "advise")]
+    pub fn advise(&self, advice: MmapAdvice) -> io::Result<()>;
+    #[cfg(feature = "advise")]
+    pub fn advise_range(&self, advice: MmapAdvice, offset: usize, len: usize) -> io::Result<()>;
+    #[cfg(feature = "locking")]
+    pub fn lock(&self) -> io::Result<()>;
+    #[cfg(feature = "locking")]
+    pub fn unlock(&self) -> io::Result<()>;
+}
+```
+
+**`make_read_only` / `make_mut`** change the protection of the whole
+mapping (`mprotect` on Unix, `VirtualProtect` on Windows) and consume
+the value, so no borrow of the bytes can be alive across the change.
+A mapping that went through `make_read_only` gets its original access
+back from `make_mut`: shared writes reach the file, copy-on-write and
+anonymous mappings stay private. A mapping created read-only with
+`RawMmap::map`:
+
+| Platform | `make_mut` |
+|----------|------------|
+| Unix | `mprotect(PROT_READ \| PROT_WRITE)`; needs a file opened for writing (`EACCES` otherwise). `flush` then writes back with `msync`. |
+| Windows | Always `Unsupported`: the view belongs to a `PAGE_READONLY` section, which can never become writable. Map with `map_mut` and call `make_read_only` when a mapping must switch. |
+
+`make_read_only` does not flush; call `flush` first when the data must
+be durable. On error the mapping is released. Empty mappings convert
+without a syscall.
+
+**`advise` / `advise_range`** reuse `MmapAdvice` (feature `advise`).
+The range is validated (`offset <= len`, `len <= self.len() - offset`)
+before any syscall and its start is widened down to a page boundary.
+Unix calls `madvise`; Windows calls `PrefetchVirtualMemory` for
+`WillNeed` and ignores the other hints. `DontNeed` is refused with
+`InvalidInput` on private mappings (copy-on-write and anonymous, also
+after `make_read_only`): there it discards the private pages, which
+would change bytes that `&self` borrows can be reading. On shared file
+mappings it is allowed; the kernel drops page table entries and the
+bytes read back unchanged from the page cache.
+
+**`lock` / `unlock`** pin or unpin the whole window (`mlock` /
+`munlock`, `VirtualLock` / `VirtualUnlock`; feature `locking`).
+Locking usually needs privileges or a raised `RLIMIT_MEMLOCK`.
+Unlocking pages that are not locked succeeds on every platform.
+
+**Example**:
+```rust
+use mmap_io::{raw::RawMmapMut, MmapAdvice};
+
+let mut scratch = RawMmapMut::map_anon(1 << 20)?;
+scratch.advise(MmapAdvice::Sequential)?;
+scratch[..5].copy_from_slice(b"ready");
+let frozen = scratch.make_read_only()?;   // writes now fault
+assert_eq!(&frozen[..5], b"ready");
+let mut scratch = frozen.make_mut()?;     // writable again, still private
+scratch[0] = b'R';
+# Ok::<(), std::io::Error>(())
+```
+
+<br>
+
 ### offset_granularity
 
 ```rust
@@ -2048,6 +2145,11 @@ space.
 | Offsets above 2 GiB on 32-bit | `mmap64` (glibc, Android) or 64-bit `off_t` | high / low DWORD split |
 | `flush` | `msync(MS_SYNC)` | `FlushViewOfFile` + `FlushFileBuffers` |
 | `flush_async` | `msync(MS_ASYNC)` | `FlushViewOfFile` |
+| `make_read_only` / `make_mut` | `mprotect` | `VirtualProtect` (read-only sections stay read-only) |
+| `advise` | `madvise` | `PrefetchVirtualMemory` (`WillNeed` only) |
+| `lock` / `unlock` | `mlock` / `munlock` | `VirtualLock` / `VirtualUnlock` |
+| `populate()` | `MAP_POPULATE` (Linux, Android) | ignored |
+| `huge()` (anonymous) | `MAP_HUGETLB` (Linux, Android) | ignored |
 | Zero-length window | no syscall, empty slice | no syscall, empty slice |
 | Handles held per mapping | none | none (read-only, COW, anonymous); one duplicated file handle (read-write) |
 
