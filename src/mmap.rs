@@ -2485,3 +2485,108 @@ impl<const N: usize> PartialEq<&[u8; N]> for MappedSlice<'_> {
         self.as_slice() == other.as_slice()
     }
 }
+
+#[cfg(all(test, target_os = "linux"))]
+mod smaps_tests {
+    //! Unit tests for the private `/proc/self/smaps` parsing behind
+    //! `is_hugepage_backed`.
+
+    use super::{parse_smaps_kb_field, parse_smaps_range, smaps_hugepage_lookup};
+
+    const FIELDS: &[&str] = &["AnonHugePages:", "Private_Hugetlb:", "Shared_Hugetlb:"];
+
+    #[test]
+    fn range_headers_parse_and_stat_lines_do_not() {
+        assert_eq!(
+            parse_smaps_range("7f1234567000-7f1234578000 rw-s 00000000 00:00 0 /x"),
+            Some((0x7f12_3456_7000, 0x7f12_3457_8000))
+        );
+        assert_eq!(parse_smaps_range("0-1 r--p"), Some((0, 1)));
+        assert_eq!(
+            parse_smaps_range("ffffffffff600000-ffffffffff601000 --xp 0 0:0 0 [vsyscall]"),
+            Some((0xffff_ffff_ff60_0000, 0xffff_ffff_ff60_1000))
+        );
+        for line in [
+            "",
+            "   ",
+            "Size:                  4 kB",
+            "AnonHugePages:      2048 kB",
+            "VmFlags: rd wr sh mr mw me ms sd",
+            "7f12-zz rw-p",
+            "-7f12 rw-p",
+            "7f12- rw-p",
+            "nothex-1 rw-p",
+            "1ffffffffffffffffffff-2 rw-p",
+        ] {
+            assert_eq!(parse_smaps_range(line), None, "{line:?}");
+        }
+    }
+
+    #[test]
+    fn kb_fields_parse_only_for_requested_prefixes() {
+        assert_eq!(
+            parse_smaps_kb_field("AnonHugePages:      2048 kB", FIELDS),
+            Some(2048)
+        );
+        assert_eq!(
+            parse_smaps_kb_field("Private_Hugetlb:        0 kB", FIELDS),
+            Some(0)
+        );
+        assert_eq!(
+            parse_smaps_kb_field("Shared_Hugetlb: 4096 kB", FIELDS),
+            Some(4096)
+        );
+        assert_eq!(
+            parse_smaps_kb_field("Rss:                 4 kB", FIELDS),
+            None
+        );
+        assert_eq!(parse_smaps_kb_field("AnonHugePages:", FIELDS), None);
+        assert_eq!(
+            parse_smaps_kb_field("AnonHugePages:   lots kB", FIELDS),
+            None
+        );
+        assert_eq!(parse_smaps_kb_field("AnonHugePages: -1 kB", FIELDS), None);
+        assert_eq!(parse_smaps_kb_field(" AnonHugePages: 1 kB", FIELDS), None);
+        assert_eq!(parse_smaps_kb_field("AnonHugePages: 1 kB", &[]), None);
+    }
+
+    #[test]
+    fn lookup_of_an_unmapped_address_is_unknown() {
+        // Page zero is never mapped (vm.mmap_min_addr).
+        assert_eq!(smaps_hugepage_lookup(0), None);
+        assert_eq!(smaps_hugepage_lookup(1), None);
+    }
+
+    #[test]
+    fn lookup_of_live_mappings_is_known() {
+        let heap = vec![1u8; 1 << 20];
+        assert!(smaps_hugepage_lookup(heap.as_ptr() as usize).is_some());
+        let stack = 0u64;
+        assert!(smaps_hugepage_lookup(std::ptr::addr_of!(stack) as usize).is_some());
+        // The last entry in smaps (no header follows it) is decided at
+        // end of input. Its address is not fixed, so just exercise it.
+        let _ = smaps_hugepage_lookup(usize::MAX - 4095);
+    }
+
+    #[test]
+    fn transparent_huge_pages_are_detected_when_the_kernel_provides_them() {
+        // Ask for THP on an anonymous region and fault it in. Whether
+        // the kernel complies depends on its THP setting, so only the
+        // lookup itself is checked; a kernel that backs the region with
+        // huge pages takes the `kb > 0` branch.
+        let len = 8 << 20;
+        let mut m = crate::raw::RawMmapMut::map_anon(len).expect("anon map");
+        // SAFETY: madvise on a range this test owns; MADV_HUGEPAGE only
+        // changes the page-size policy, never the contents. Failure
+        // (THP disabled) is fine.
+        let _ = unsafe {
+            libc::madvise(
+                m.as_mut_ptr().cast::<libc::c_void>(),
+                len,
+                libc::MADV_HUGEPAGE,
+            )
+        };
+        m.fill(7);
+        assert!(smaps_hugepage_lookup(m.as_ptr() as usize).is_some());
+    }
+}

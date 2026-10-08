@@ -284,6 +284,12 @@ fn empty_file_maps_read_only_but_not_read_write() {
     {
         assert_resize_failed(MemoryMappedFile::open_cow(&path), "open_cow empty");
         assert_resize_failed(
+            MemoryMappedFile::builder(&path)
+                .mode(MmapMode::CopyOnWrite)
+                .open(),
+            "builder open COW empty",
+        );
+        assert_resize_failed(
             MemoryMappedFile::from_file(
                 fs::File::open(&path).unwrap(),
                 MmapMode::CopyOnWrite,
@@ -487,6 +493,8 @@ fn copy_on_write_paths_map_the_file_contents() {
         assert_eq!(m.len(), data.len() as u64);
         assert_eq!(m.as_slice(0, m.len()).unwrap(), &data[..]);
         assert_eq!(m.as_slice_bytes(1, 5).unwrap(), &data[1..6]);
+        // SAFETY: a single byte read inside len() of an immutable view.
+        assert_eq!(unsafe { m.as_ptr().read() }, data[0]);
         // flush is a no-op that succeeds.
         m.flush().unwrap();
         m.flush_range(0, m.len()).unwrap();
