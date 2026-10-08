@@ -15,22 +15,22 @@
 
 use crate::errors::{MmapIoError, Result};
 use crate::mmap::{MapVariant, MappedSlice, MemoryMappedFile};
+use crate::raw::RawMmapMut;
 use crate::utils::page_size;
-use memmap2::MmapMut;
 use parking_lot::{RwLock, RwLockReadGuard};
 use std::marker::PhantomData;
 
 /// Where a [`ChunkIterator`] reads its bytes from.
 enum ChunkSource<'a> {
-    /// RO / COW mapping: the underlying `Mmap` is never remapped, so a
+    /// RO / COW mapping: the underlying `RawMmap` is never remapped, so a
     /// plain borrow is valid for `'a`.
     Shared(&'a [u8]),
     /// RW mapping. `pin` keeps the length stable for the iterator's
     /// lifetime (so `ExactSizeIterator` stays accurate); each yielded
     /// item takes its own recursive read guard from `lock`.
     Locked {
-        lock: &'a RwLock<MmapMut>,
-        pin: RwLockReadGuard<'a, MmapMut>,
+        lock: &'a RwLock<RawMmapMut>,
+        pin: RwLockReadGuard<'a, RawMmapMut>,
     },
 }
 

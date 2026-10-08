@@ -15,7 +15,7 @@
 //! ## Differences from [`MemoryMappedFile`]
 //!
 //! - No file descriptor / handle; no `AsFd`/`AsRawFd`/`AsHandle` impls.
-//! - No `resize` (`memmap2` does not support resizing anonymous maps).
+//! - No `resize` (anonymous mappings have no backing file to grow).
 //! - No `flush` (volatile memory; nothing to persist).
 //! - No `path` (there is no path).
 //!
@@ -26,7 +26,7 @@
 //!
 //! [`MemoryMappedFile`]: crate::mmap::MemoryMappedFile
 
-use memmap2::MmapMut;
+use crate::raw::RawMmapMut;
 use parking_lot::RwLock;
 
 use crate::errors::{MmapIoError, Result};
@@ -62,7 +62,7 @@ const MAX_MMAP_SIZE: u64 = 2 * (1 << 30); // 2 GB
 /// # Ok::<(), mmap_io::MmapIoError>(())
 /// ```
 pub struct AnonymousMmap {
-    map: RwLock<MmapMut>,
+    map: RwLock<RawMmapMut>,
     len: u64,
 }
 
@@ -89,7 +89,7 @@ impl AnonymousMmap {
         }
         let len_usize = usize::try_from(size)
             .map_err(|_| MmapIoError::ResizeFailed(format!("Size {size} does not fit in usize")))?;
-        let mmap = MmapMut::map_anon(len_usize)?;
+        let mmap = RawMmapMut::map_anon(len_usize)?;
         Ok(Self {
             map: RwLock::new(mmap),
             len: size,

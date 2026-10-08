@@ -11,9 +11,13 @@ Bug-fix release. Several of the fixes below are memory-safety bugs reachable fro
 
 ### Security
 
-- **`memmap2` >= 0.9.11** ([RUSTSEC-2026-0186](https://rustsec.org/advisories/RUSTSEC-2026-0186.html)). memmap2 before 0.9.11 did not validate `offset` / `len` in `flush_range` and `advise_range`. The memmap2 bump was contributed by **@merces** in #10; the requirement is now `0.9.11` so downstream builds cannot resolve 0.9.0-0.9.10. mmap-io also validates every range itself before calling memmap2 or the kernel, pinned by `tests/range_validation_edges.rs`.
+- **`memmap2` removed; mapping now goes through the in-house `mmap_io::raw` layer** ([RUSTSEC-2026-0186](https://rustsec.org/advisories/RUSTSEC-2026-0186.html)). memmap2 before 0.9.11 did not validate `offset` / `len` in `flush_range` and `advise_range`. The memmap2 bump that first addressed this was contributed by **@merces** in #10; 1.1.0 goes further and drops the dependency. `mmap_io::raw` checks every range with overflow-checked arithmetic before any pointer math or syscall, and the managed API validates every range again under the mapping lock, pinned by `tests/range_validation_edges.rs`.
 - **Removed the unused `anyhow` dependency** ([RUSTSEC-2026-0190](https://rustsec.org/advisories/RUSTSEC-2026-0190.html)).
 - **`event-listener` 5.4.1 -> 5.4.2** in `Cargo.lock` ([RUSTSEC-2026-0221](https://rustsec.org/advisories/RUSTSEC-2026-0221.html)). Reached through `blocking` under the `async` feature.
+
+### Added
+
+- **`mmap_io::raw`**: a first-party, dependency-free memory-mapping layer (`RawMmap`, `RawMmapMut`, `RawMmapOptions`, `offset_granularity`) for Unix (`mmap` / `msync` / `munmap`) and Windows (`CreateFileMappingW` / `MapViewOfFile` / `FlushViewOfFile` + `FlushFileBuffers`), with a stub that returns `Unsupported` elsewhere. Its API follows memmap2's shape for the calls most code uses, so migrating is mostly an import change. Durable `flush` on every platform, offsets aligned to the OS granularity (64 KiB on Windows), mapping past end of file rejected up front instead of faulting on access, zero-length windows without an OS mapping. Measured never slower than memmap2 0.9.11; on Windows, map+drop is up to 2x faster (no write/exec probing, no handle duplication for read-only maps). Covered by unit, integration, concurrency, leak, property, Miri (range arithmetic) and fuzz (`raw_map`) tests. The managed `MemoryMappedFile` is built on it.
 
 ### Fixed
 

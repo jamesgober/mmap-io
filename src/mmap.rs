@@ -21,7 +21,7 @@ use std::{
     sync::Arc,
 };
 
-use memmap2::{Mmap, MmapMut, MmapOptions};
+use crate::raw::{RawMmap, RawMmapMut, RawMmapOptions};
 
 use crate::flush::FlushPolicy;
 
@@ -92,10 +92,10 @@ pub struct Inner {
 
 #[doc(hidden)]
 pub enum MapVariant {
-    Ro(Mmap),
-    Rw(RwLock<MmapMut>),
+    Ro(RawMmap),
+    Rw(RwLock<RawMmapMut>),
     /// Private, per-process copy-on-write mapping. Underlying file is not modified by writes.
-    Cow(Mmap),
+    Cow(RawMmap),
 }
 
 /// Memory-mapped file with safe, zero-copy region access.
@@ -219,7 +219,7 @@ impl MemoryMappedFile {
             .truncate(true)
             .open(path_ref)?;
         file.set_len(size)?;
-        // SAFETY: `MmapMut::map_mut` is `unsafe` because the OS does
+        // SAFETY: `RawMmapMut::map_mut` is `unsafe` because the OS does
         // not prevent another process from concurrently modifying the
         // backing file under the mapping, which would violate Rust's
         // aliasing model if anyone holds a `&mut [u8]` into the
@@ -227,14 +227,14 @@ impl MemoryMappedFile {
         // callers who share the file across processes are responsible
         // for synchronization (the crate documents this in REPS.md
         // section 5.1). Within this process, all mutable access to
-        // the `MmapMut` is mediated by `parking_lot::RwLock`, so the
+        // the `RawMmapMut` is mediated by `parking_lot::RwLock`, so the
         // standard aliasing rules hold for intra-process access.
         // The file has just been created and `set_len(size)` succeeded,
         // so the kernel will produce a mapping of exactly `size` bytes.
         // Note: `create_rw` convenience ignores huge pages; use builder
         // for that.
-        // Reference: https://docs.rs/memmap2/latest/memmap2/struct.MmapMut.html#method.map_mut
-        let mmap = unsafe { MmapMut::map_mut(&file)? };
+        // Contract: `crate::raw::RawMmapMut::map_mut` (see `docs/SAFETY.md`, raw mapping layer).
+        let mmap = unsafe { RawMmapMut::map_mut(&file)? };
         let inner = Inner {
             path: path_ref.to_path_buf(),
             file,
@@ -262,16 +262,16 @@ impl MemoryMappedFile {
         let path_ref = path.as_ref();
         let file = OpenOptions::new().read(true).open(path_ref)?;
         let len = file.metadata()?.len();
-        // SAFETY: `Mmap::map` is `unsafe` for the same cross-process
-        // reason as `MmapMut::map_mut` (see `create_rw` above): the OS
+        // SAFETY: `RawMmap::map` is `unsafe` for the same cross-process
+        // reason as `RawMmapMut::map_mut` (see `create_rw` above): the OS
         // does not prevent another process from writing to the backing
         // file. For a read-only mapping the in-process aliasing
         // hazard is reduced because we never hand out `&mut [u8]` into
         // the mapping, but cross-process modification can still cause
         // a race that surfaces as a torn read. This is documented as
         // out-of-scope; intra-process access is sound.
-        // Reference: https://docs.rs/memmap2/latest/memmap2/struct.Mmap.html#method.map
-        let mmap = unsafe { Mmap::map(&file)? };
+        // Contract: `crate::raw::RawMmap::map` (see `docs/SAFETY.md`, raw mapping layer).
+        let mmap = unsafe { RawMmap::map(&file)? };
         let inner = Inner {
             path: path_ref.to_path_buf(),
             file,
@@ -304,13 +304,13 @@ impl MemoryMappedFile {
             return Err(MmapIoError::ResizeFailed(ERR_ZERO_LENGTH_FILE.into()));
         }
         // SAFETY: see `create_rw` above for the full justification of
-        // calling `MmapMut::map_mut`. Additionally, we have verified
+        // calling `RawMmapMut::map_mut`. Additionally, we have verified
         // here that the file is not zero-length (`len != 0`), which
         // avoids `EINVAL` from `mmap(2)` on Linux for zero-length
         // mappings. Note: `open_rw` convenience ignores huge pages;
         // use the builder for that.
-        // Reference: https://docs.rs/memmap2/latest/memmap2/struct.MmapMut.html#method.map_mut
-        let mmap = unsafe { MmapMut::map_mut(&file)? };
+        // Contract: `crate::raw::RawMmapMut::map_mut` (see `docs/SAFETY.md`, raw mapping layer).
+        let mmap = unsafe { RawMmapMut::map_mut(&file)? };
         let inner = Inner {
             path: path_ref.to_path_buf(),
             file,
@@ -807,7 +807,7 @@ impl MemoryMappedFile {
     /// Grow the file and remap. Caller holds the write lock.
     fn grow_locked(
         &self,
-        map: &mut MmapMut,
+        map: &mut RawMmapMut,
         current_size: u64,
         new_size: u64,
         new_len: usize,
@@ -835,7 +835,7 @@ impl MemoryMappedFile {
     #[cfg(not(windows))]
     fn shrink_locked(
         &self,
-        map: &mut MmapMut,
+        map: &mut RawMmapMut,
         _current_len: usize,
         new_size: u64,
         new_len: usize,
@@ -854,7 +854,7 @@ impl MemoryMappedFile {
     #[cfg(windows)]
     fn shrink_locked(
         &self,
-        map: &mut MmapMut,
+        map: &mut RawMmapMut,
         current_len: usize,
         new_size: u64,
         new_len: usize,
@@ -862,7 +862,7 @@ impl MemoryMappedFile {
         // Windows rejects SetEndOfFile on a file with a mapped view
         // (ERROR_USER_MAPPED_FILE, os error 1224), so unmap our view
         // first by swapping in an empty anonymous placeholder.
-        drop(std::mem::replace(map, MmapMut::map_anon(0)?));
+        drop(std::mem::replace(map, RawMmapMut::map_anon(0)?));
         if let Err(e) = self.inner.file.set_len(new_size) {
             // File unchanged: restore the mapping at its old length.
             *map = map_file_rw(&self.inner.file, current_len, self.huge_pages())?;
@@ -1018,7 +1018,7 @@ impl MemoryMappedFile {
         match mode {
             MmapMode::ReadOnly => {
                 // SAFETY: see `open_ro` for the full justification.
-                let mmap = unsafe { Mmap::map(&file)? };
+                let mmap = unsafe { RawMmap::map(&file)? };
                 let inner = Inner {
                     path: path_ref,
                     file,
@@ -1041,7 +1041,7 @@ impl MemoryMappedFile {
                     return Err(MmapIoError::ResizeFailed(ERR_ZERO_LENGTH_FILE.into()));
                 }
                 // SAFETY: see `open_rw`.
-                let mmap = unsafe { MmapMut::map_mut(&file)? };
+                let mmap = unsafe { RawMmapMut::map_mut(&file)? };
                 let inner = Inner {
                     path: path_ref,
                     file,
@@ -1066,7 +1066,7 @@ impl MemoryMappedFile {
                 }
                 // SAFETY: see `open_cow`.
                 let mmap = unsafe {
-                    let mut opts = MmapOptions::new();
+                    let mut opts = RawMmapOptions::new();
                     opts.len(len as usize);
                     opts.map(&file)?
                 };
@@ -1236,7 +1236,7 @@ impl MemoryMappedFile {
         match &self.inner.map {
             // A read guard is enough to read the base address and does
             // not deadlock when this thread already holds a view. The
-            // pointer comes from memmap2's raw mapping pointer (not
+            // pointer comes from the raw mapping's base pointer (not
             // from a `&[u8]`), so writing through it is permitted.
             MapVariant::Rw(lock) => {
                 let guard = lock.read_recursive();
@@ -1373,7 +1373,7 @@ pub(crate) enum MapRead<'a> {
     /// RO / COW mapping.
     Shared(&'a [u8]),
     /// RW mapping, read-locked.
-    Guarded(RwLockReadGuard<'a, MmapMut>),
+    Guarded(RwLockReadGuard<'a, RawMmapMut>),
 }
 
 impl<'a> MapRead<'a> {
@@ -1411,15 +1411,15 @@ impl MemoryMappedFile {
 /// Map `len` bytes of `file` read-write from offset 0. With `huge`
 /// set (and the `hugepages` feature on), also issue the transparent
 /// huge page hint; see [`advise_huge_pages`].
-fn map_file_rw(file: &File, len: usize, huge: bool) -> Result<MmapMut> {
-    // SAFETY: `MmapOptions::map_mut` is `unsafe` because the OS does
+fn map_file_rw(file: &File, len: usize, huge: bool) -> Result<RawMmapMut> {
+    // SAFETY: `RawMmapOptions::map_mut` is `unsafe` because the OS does
     // not stop another process from modifying the file under the
     // mapping (see `create_rw`). Callers pass a `len` no larger than
     // the file's current length, so every mapped page is backed by
     // the file. Within this process all access to the returned
     // mapping goes through the `RwLock` in `MapVariant::Rw`.
-    // Reference: https://docs.rs/memmap2/latest/memmap2/struct.MmapOptions.html#method.map_mut
-    let map = unsafe { MmapOptions::new().len(len).map_mut(file)? };
+    // Contract: `crate::raw::RawMmapOptions::map_mut` (see `docs/SAFETY.md`, raw mapping layer).
+    let map = unsafe { RawMmapOptions::new().len(len).map_mut(file)? };
     #[cfg(feature = "hugepages")]
     if huge {
         advise_huge_pages(&map);
@@ -1439,7 +1439,7 @@ fn map_file_rw(file: &File, len: usize, huge: bool) -> Result<MmapMut> {
 /// on base pages. `MAP_HUGETLB` is not used: it needs a hugetlbfs file.
 /// Elsewhere this does nothing. Failures are logged at debug level.
 #[cfg(feature = "hugepages")]
-fn advise_huge_pages(map: &MmapMut) {
+fn advise_huge_pages(map: &RawMmapMut) {
     #[cfg(target_os = "linux")]
     {
         if map.is_empty() {
@@ -1498,8 +1498,8 @@ impl MemoryMappedFile {
         if len == 0 {
             return Err(MmapIoError::ResizeFailed(ERR_ZERO_LENGTH_FILE.into()));
         }
-        // SAFETY: `MmapOptions::map` carries the same cross-process
-        // aliasing hazard as `Mmap::map`: another process modifying
+        // SAFETY: `RawMmapOptions::map` carries the same cross-process
+        // aliasing hazard as `RawMmap::map`: another process modifying
         // the backing file can produce torn reads. The crate marks
         // this as out-of-scope per REPS.md section 5.1. `map` creates
         // a read-only mapping (PROT_READ / FILE_MAP_READ), and the
@@ -1507,9 +1507,9 @@ impl MemoryMappedFile {
         // aliasing rules are trivially satisfied within the process.
         // `opts.len(len as usize)` constrains the mapping to the file
         // size we just queried; `len > 0` is verified above.
-        // Reference: https://docs.rs/memmap2/latest/memmap2/struct.MmapOptions.html#method.map
+        // Contract: `crate::raw::RawMmapOptions::map` (see `docs/SAFETY.md`, raw mapping layer).
         let mmap = unsafe {
-            let mut opts = MmapOptions::new();
+            let mut opts = RawMmapOptions::new();
             opts.len(len as usize);
             opts.map(&file)?
         };
@@ -1907,11 +1907,11 @@ impl MemoryMappedFileBuilder {
                 let file = OpenOptions::new().read(true).open(&self.path)?;
                 let len = file.metadata()?.len();
                 // SAFETY: see `MemoryMappedFile::open_ro` for the full
-                // justification of calling `Mmap::map`. The file was
+                // justification of calling `RawMmap::map`. The file was
                 // just opened read-only; cross-process modification is
                 // the only residual hazard and is documented as
                 // out-of-scope.
-                let mmap = unsafe { Mmap::map(&file)? };
+                let mmap = unsafe { RawMmap::map(&file)? };
                 Ok(MemoryMappedFile::from_inner(Inner {
                     path: self.path,
                     file,
@@ -1946,7 +1946,7 @@ impl MemoryMappedFileBuilder {
                 // `len > 0` verified, and the COW mapping is exposed
                 // as read-only at the Rust API.
                 let mmap = unsafe {
-                    let mut opts = MmapOptions::new();
+                    let mut opts = RawMmapOptions::new();
                     opts.len(len as usize);
                     opts.map(&file)?
                 };
@@ -2101,7 +2101,7 @@ fn start_time_based_flusher(mmap_file: &MemoryMappedFile, ms: u64) {
 /// For file-backed mappings, dropping it adds its length to
 /// [`MemoryMappedFile::pending_bytes`]; the bytes are assumed written.
 pub struct MappedSliceMut<'a> {
-    guard: RwLockWriteGuard<'a, MmapMut>,
+    guard: RwLockWriteGuard<'a, RawMmapMut>,
     range: std::ops::Range<usize>,
     /// Pending-bytes counter of the owning `MemoryMappedFile`; `None`
     /// for `AnonymousMmap`, which has nothing to flush.
@@ -2113,7 +2113,7 @@ impl<'a> MappedSliceMut<'a> {
     /// lifetime. Used by `AnonymousMmap`, which has no flush
     /// accounting.
     pub(crate) fn guarded(
-        guard: RwLockWriteGuard<'a, MmapMut>,
+        guard: RwLockWriteGuard<'a, RawMmapMut>,
         range: std::ops::Range<usize>,
     ) -> Self {
         Self {
@@ -2199,7 +2199,7 @@ enum MappedSliceInner<'a> {
     /// `bytes` is computed once at construction so `Deref` does no
     /// range arithmetic or bounds checks.
     Guarded {
-        _guard: RwLockReadGuard<'a, MmapMut>,
+        _guard: RwLockReadGuard<'a, RawMmapMut>,
         bytes: *const [u8],
     },
 }
@@ -2210,7 +2210,7 @@ enum MappedSliceInner<'a> {
 // which is `Send + Sync`. `Guarded` holds a parking_lot read guard,
 // which is `Send` because this crate enables parking_lot's
 // `send_guard` feature (checked at compile time by
-// `_ASSERT_GUARDS_SEND_SYNC` below) and `Sync` because `MmapMut` is
+// `_ASSERT_GUARDS_SEND_SYNC` below) and `Sync` because `RawMmapMut` is
 // `Sync`; the raw `bytes` pointer is only a cached view of memory
 // owned by that guarded mapping, so moving or sharing it across
 // threads is no different from moving or sharing the guard itself.
@@ -2225,8 +2225,8 @@ unsafe impl Sync for MappedSlice<'_> {}
 /// blocks in this crate unsound.
 const _ASSERT_GUARDS_SEND_SYNC: fn() = || {
     fn assert_send_sync<T: Send + Sync>() {}
-    assert_send_sync::<RwLockReadGuard<'static, MmapMut>>();
-    assert_send_sync::<RwLockWriteGuard<'static, MmapMut>>();
+    assert_send_sync::<RwLockReadGuard<'static, RawMmapMut>>();
+    assert_send_sync::<RwLockWriteGuard<'static, RawMmapMut>>();
 };
 
 impl<'a> MappedSlice<'a> {
@@ -2247,7 +2247,7 @@ impl<'a> MappedSlice<'a> {
     /// Panics if `range` is not within `guard`'s mapping. Callers
     /// validate the range against `guard.len()` first.
     pub(crate) fn guarded(
-        guard: RwLockReadGuard<'a, MmapMut>,
+        guard: RwLockReadGuard<'a, RawMmapMut>,
         range: std::ops::Range<usize>,
     ) -> Self {
         let bytes: *const [u8] = &guard[range];

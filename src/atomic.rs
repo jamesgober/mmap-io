@@ -37,7 +37,7 @@
 
 use crate::errors::{MmapIoError, Result};
 use crate::mmap::{MapVariant, MemoryMappedFile};
-use memmap2::MmapMut;
+use crate::raw::RawMmapMut;
 use parking_lot::RwLockReadGuard;
 use std::marker::PhantomData;
 use std::ops::Deref;
@@ -69,7 +69,7 @@ mod private {
 /// lock, and `resize()` / `update_region()` (which need the write
 /// lock) block until the view is dropped.
 pub struct AtomicView<'a, T> {
-    _guard: RwLockReadGuard<'a, MmapMut>,
+    _guard: RwLockReadGuard<'a, RawMmapMut>,
     ptr: *const T,
     /// The mapping's pending-bytes counter; see `Drop`.
     pending: &'a AtomicU64,
@@ -89,7 +89,7 @@ impl<T> Drop for AtomicView<'_, T> {
 // - The read guard is Send (this crate enables parking_lot's
 //   `send_guard` feature; the compile-time assertion
 //   `_ASSERT_GUARDS_SEND_SYNC` in mmap.rs fails the build otherwise)
-//   and Sync (`MmapMut` is Sync).
+//   and Sync (`RawMmapMut` is Sync).
 // - The pointer targets memory owned by the guarded mapping, which
 //   stays mapped while the guard is alive, wherever the guard lives.
 // - `T: Sync` is required, so handing `&T` to another thread is sound.
@@ -116,7 +116,7 @@ impl<T> Deref for AtomicView<'_, T> {
 ///
 /// See [`AtomicView`] for lifetime / resize semantics.
 pub struct AtomicSliceView<'a, T> {
-    _guard: RwLockReadGuard<'a, MmapMut>,
+    _guard: RwLockReadGuard<'a, RawMmapMut>,
     ptr: *const T,
     len: usize,
     /// The mapping's pending-bytes counter; see `Drop`.
@@ -161,7 +161,7 @@ fn view_parts<T: AtomicCell>(
     mapping: &MemoryMappedFile,
     offset: u64,
     count: usize,
-) -> Result<(RwLockReadGuard<'_, MmapMut>, *const T)> {
+) -> Result<(RwLockReadGuard<'_, RawMmapMut>, *const T)> {
     let align = std::mem::align_of::<T>() as u64;
     let size = std::mem::size_of::<T>() as u64;
 

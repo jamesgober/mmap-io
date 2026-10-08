@@ -1,13 +1,14 @@
 //! Edge-case range validation for every API that hands an
-//! `(offset, len)` pair to a kernel syscall or to `memmap2`.
+//! `(offset, len)` pair to a kernel syscall or to the raw mapping layer.
 //!
 //! RUSTSEC-2026-0186 reported that `memmap2` before 0.9.11 did not
 //! validate `offset` / `len` in `flush_range` and `advise_range`,
 //! producing out-of-bounds pointers that were passed to `msync` /
-//! `madvise`. mmap-io now requires `memmap2 >= 0.9.11`, but it also
-//! validates every range itself before reaching `memmap2` or libc.
-//! These tests pin that behavior so a future refactor cannot drop the
-//! crate-side check and silently fall back on the dependency.
+//! `madvise`. Since 1.1.0 mmap-io maps memory through its own
+//! `mmap_io::raw` layer, which checks every range before pointer math,
+//! and the managed API validates every range again under the mapping
+//! lock. These tests pin the managed-API side so a future refactor
+//! cannot drop it and silently rely on the layer below.
 //!
 //! Every hostile range below must return `MmapIoError::OutOfBounds`
 //! (never panic, never succeed), and every boundary-exact range must

@@ -29,7 +29,6 @@ authors = [
 
 
 [dependencies]
-memmap2 = "0.9.11"
 # Runtime-agnostic spawn-blocking for the `async` feature. Was
 # `tokio` through 0.9.10; switched to `blocking` in 0.9.11 so the
 # async surface works on every executor (tokio, smol, async-std)
@@ -98,12 +97,6 @@ maintenance = { status = "actively-developed" }
 # Criterion benches
 [[bench]]
 name = "mmap_bench"
-harness = false
-
-# Temporary: compares mmap_io::raw with memmap2. Delete this entry and
-# benches/raw_vs_memmap2.rs when the memmap2 dependency is removed.
-[[bench]]
-name = "raw_vs_memmap2"
 harness = false
 
 # Focused examples (since 0.9.10). Each example demonstrates one
