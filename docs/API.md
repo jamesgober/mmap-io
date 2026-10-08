@@ -388,7 +388,7 @@ pub enum MmapMode {
 **Variants**:
 - `ReadOnly`: Read-only access to the file
 - `ReadWrite`: Read and write access to the file
-- `CopyOnWrite`: Private mapping of an existing file (feature `cow`). Writable copy-on-write is not implemented: every write method returns `InvalidMode`, so it currently behaves like `ReadOnly`.
+- `CopyOnWrite`: Private, writable mapping of an existing file (feature `cow`, writable since 1.1.0). Writes land in private pages, are visible through this mapping and its clones, and never reach the file. `flush` / `flush_range` are no-ops, `pending_bytes()` stays 0, `resize` returns `InvalidMode`.
 
 <br>
 
@@ -670,7 +670,9 @@ let mmap = MemoryMappedFile::open_rw("data.bin")?;
 pub fn open_cow<P: AsRef<Path>>(path: P) -> Result<Self>
 ```
 
-**Description**: Opens an existing file in copy-on-write mode. The mapping is private and exposed read-only: write methods return `InvalidMode`, so the file is never modified through it. Behaves like `open_ro` today.
+**Description**: Opens an existing file in copy-on-write mode (`MAP_PRIVATE` / `PAGE_WRITECOPY`). The file only needs read permission. Since 1.1.0 the mapping is writable: `update_region`, `as_slice_mut`, `chunks_mut`, `as_mut_ptr` and the atomic views all work; each written page is copied on first write, and the changes are visible through this mapping (and its clones) only. They never reach the file and are lost when the mapping is dropped. `flush` and `flush_range` are `Ok` no-ops (ranges are still validated), `pending_bytes()` stays 0, and `resize` returns `InvalidMode`. Locking is the same as for `ReadWrite`: a live view blocks the write methods, and a write on the thread that holds a view deadlocks (the `try_` methods avoid that). `advise(.., DontNeed)` discards private copies on Linux, so on this mode it takes the write lock (see [advise](#advise)). Pages not yet written may still reflect later changes others make to the file (POSIX leaves this unspecified; Windows shows them).
+
+**Behavior change in 1.1.0**: write methods returned `InvalidMode` on this mode before; `as_slice_bytes` now returns `InvalidMode` on it (it cannot hand out an unguarded `&[u8]` to writable memory).
 
 **Parameters**:
 - `path`: Path to the file to open
@@ -683,6 +685,8 @@ pub fn open_cow<P: AsRef<Path>>(path: P) -> Result<Self>
 use mmap_io::MemoryMappedFile;
 
 let mmap = MemoryMappedFile::open_cow("shared.bin")?;
+mmap.update_region(0, b"patched")?;           // private; the file is unchanged
+assert_eq!(&*mmap.as_slice(0, 7)?, b"patched");
 ```
 
 <br>
@@ -1137,7 +1141,7 @@ mmap.touch_pages_range(0, 64 * 1024)?;
 pub fn as_slice_bytes(&self, offset: u64, len: u64) -> Result<&[u8]>
 ```
 
-**Description**: Returns a direct `&[u8]` borrow into the mapping. Mirrors the 0.9.6 `as_slice` signature for codebases that were broken by the 0.9.7 return-type change. Supported on `ReadOnly` and `CopyOnWrite` mappings; returns `MmapIoError::InvalidMode` on `ReadWrite` (use [`as_slice`](#as_slice) which returns `MappedSlice<'_>` for that path).
+**Description**: Returns a direct `&[u8]` borrow into the mapping. Mirrors the 0.9.6 `as_slice` signature for codebases that were broken by the 0.9.7 return-type change. Supported on `ReadOnly` mappings; returns `MmapIoError::InvalidMode` on `ReadWrite` and (since 1.1.0, when copy-on-write became writable) `CopyOnWrite` (use [`as_slice`](#as_slice), which returns `MappedSlice<'_>`, for those).
 
 **Errors**:
 - `MmapIoError::InvalidMode` on `ReadWrite` mappings.
@@ -1270,7 +1274,7 @@ Behavior:
 
 Notes:
 - `flush()` is synchronous: `msync(MS_SYNC)` on Unix, `FlushViewOfFile` + `FlushFileBuffers` on Windows. macOS `msync` does not issue `F_FULLFSYNC`.
-- ReadOnly and COW mappings treat flush() as a no-op.
+- ReadOnly and COW mappings treat flush() as a no-op (COW writes stay in private pages by design).
 
 <hr>
 <div align="right"><a href="#doc-top">&uarr; TOP</a></div>
@@ -1289,7 +1293,7 @@ Notes:
 pub fn advise(&self, offset: u64, len: u64, advice: MmapAdvice) -> Result<()>
 ```
 
-**Description**: Provides hints to the OS about expected access patterns for better performance.
+**Description**: Provides hints to the OS about expected access patterns for better performance. The start is widened down to a page boundary. Unix calls `madvise`; Windows calls `PrefetchVirtualMemory` for `WillNeed` and ignores the other hints. The call holds a read guard, except `DontNeed` on a `CopyOnWrite` mapping: there `MADV_DONTNEED` throws away the private copies (on Linux the range reads the file again and private changes are lost), which changes the mapped bytes, so it takes the write lock like a write method (it waits for live views; on the thread holding a view it deadlocks).
 
 **Parameters**:
 - `offset`: Starting byte offset
@@ -1444,10 +1448,10 @@ it into `MmapIoError::Io(...)` before returning.
 > wrapper holds the read lock for its lifetime, so a concurrent
 > `resize()` (and every write method) blocks while the view is alive.
 >
-> Since 1.1, atomic views require a **ReadWrite** mapping. On
-> ReadOnly and CopyOnWrite mappings the pages are not writable, so a
-> safe `store` would fault; these methods return
-> `MmapIoError::InvalidMode` there. Checks run in this order: mode,
+> Since 1.1, atomic views require a writable mapping: **ReadWrite**
+> or **CopyOnWrite** (whose stores stay in private pages). On
+> ReadOnly mappings the pages are not writable, so a safe `store`
+> would fault; these methods return `MmapIoError::InvalidMode` there. Checks run in this order: mode,
 > alignment, bounds. Dropping a view adds its size to
 > `pending_bytes()`. Do not read the same bytes through a
 > `MappedSlice` while another thread stores to them atomically; that
@@ -2273,9 +2277,10 @@ See [SAFETY.md](SAFETY.md) for the full locking model.
 <br>
 
 ### Copy-On-Write (COW) Mode
-- The mapping is private and exposed read-only; every write method returns `InvalidMode`, atomic views included.
-- The file is never modified through a COW mapping.
-- `flush()` is a no-op.
+- Writable since 1.1.0: every write method works, atomic views included, on private pages.
+- The file is never modified through a COW mapping; changes are lost when the mapping is dropped.
+- `flush()` / `flush_range()` are no-ops, `pending_bytes()` stays 0, `resize()` returns `InvalidMode`.
+- Locking matches `ReadWrite`: live views block writers.
 
 <br>
 

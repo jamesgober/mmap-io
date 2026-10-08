@@ -1,10 +1,12 @@
 //! Atomic memory views for lock-free concurrent access to specific data types.
 //!
-//! Atomic views are available on `ReadWrite` mappings only. Read-only
-//! and copy-on-write mappings are backed by pages the process may not
-//! write, and an atomic view hands out `&AtomicU64` / `&AtomicU32`,
-//! whose safe `store` / `fetch_add` methods would fault on those pages.
-//! Requesting a view on such a mapping returns
+//! Atomic views are available on `ReadWrite` and (since 1.1.0)
+//! `CopyOnWrite` mappings. On a copy-on-write mapping the stores land
+//! in private pages, are shared by every thread using this mapping, and
+//! never reach the file. Read-only mappings are backed by pages the
+//! process may not write, and an atomic view hands out `&AtomicU64` /
+//! `&AtomicU32`, whose safe `store` / `fetch_add` methods would fault
+//! on those pages, so requesting a view on one returns
 //! [`MmapIoError::InvalidMode`].
 //!
 //! # Lifetime safety
@@ -36,7 +38,7 @@
 //! the atomic view for every access to those bytes.
 
 use crate::errors::{MmapIoError, Result};
-use crate::mmap::{MapVariant, MemoryMappedFile};
+use crate::mmap::MemoryMappedFile;
 use crate::raw::RawMmapMut;
 use parking_lot::RwLockReadGuard;
 use std::marker::PhantomData;
@@ -71,8 +73,9 @@ mod private {
 pub struct AtomicView<'a, T> {
     _guard: RwLockReadGuard<'a, RawMmapMut>,
     ptr: *const T,
-    /// The mapping's pending-bytes counter; see `Drop`.
-    pending: &'a AtomicU64,
+    /// The mapping's pending-bytes counter (`None` when writes are not
+    /// tracked: copy-on-write); see `Drop`.
+    pending: Option<&'a AtomicU64>,
     _marker: PhantomData<&'a T>,
 }
 
@@ -80,8 +83,9 @@ impl<T> Drop for AtomicView<'_, T> {
     fn drop(&mut self) {
         // Stores through the view cannot be observed individually, so
         // the view's bytes count as written once it is released.
-        self.pending
-            .fetch_add(std::mem::size_of::<T>() as u64, Ordering::AcqRel);
+        if let Some(pending) = self.pending {
+            pending.fetch_add(std::mem::size_of::<T>() as u64, Ordering::AcqRel);
+        }
     }
 }
 
@@ -119,16 +123,18 @@ pub struct AtomicSliceView<'a, T> {
     _guard: RwLockReadGuard<'a, RawMmapMut>,
     ptr: *const T,
     len: usize,
-    /// The mapping's pending-bytes counter; see `Drop`.
-    pending: &'a AtomicU64,
+    /// The mapping's pending-bytes counter, if tracked; see `Drop`.
+    pending: Option<&'a AtomicU64>,
     _marker: PhantomData<&'a [T]>,
 }
 
 impl<T> Drop for AtomicSliceView<'_, T> {
     fn drop(&mut self) {
         // See `AtomicView`'s `Drop`.
-        let bytes = (std::mem::size_of::<T>() as u64).saturating_mul(self.len as u64);
-        self.pending.fetch_add(bytes, Ordering::AcqRel);
+        if let Some(pending) = self.pending {
+            let bytes = (std::mem::size_of::<T>() as u64).saturating_mul(self.len as u64);
+            pending.fetch_add(bytes, Ordering::AcqRel);
+        }
     }
 }
 
@@ -153,7 +159,7 @@ impl<T> Deref for AtomicSliceView<'_, T> {
 /// Validate a request for `count` consecutive `T` values at `offset`
 /// and return the read guard plus a pointer to the first element.
 ///
-/// Checks run in this order: mapping mode (`InvalidMode` unless RW),
+/// Checks run in this order: mapping mode (`InvalidMode` for RO),
 /// alignment (`Misaligned`), bounds (`OutOfBounds`). Bounds are
 /// checked against the mapping length read under the returned guard,
 /// so a concurrent `resize()` cannot invalidate the result.
@@ -165,14 +171,7 @@ fn view_parts<T: AtomicCell>(
     let align = std::mem::align_of::<T>() as u64;
     let size = std::mem::size_of::<T>() as u64;
 
-    let lock = match &mapping.inner.map {
-        MapVariant::Rw(lock) => lock,
-        MapVariant::Ro(_) | MapVariant::Cow(_) => {
-            return Err(MmapIoError::InvalidMode(
-                "atomic views require a ReadWrite mapping",
-            ))
-        }
-    };
+    let lock = mapping.write_lock("atomic views require a ReadWrite or CopyOnWrite mapping")?;
     if offset % align != 0 {
         return Err(MmapIoError::Misaligned {
             required: align,
@@ -200,7 +199,8 @@ fn view_parts<T: AtomicCell>(
     //      trait), which have the same size and layout as `u32`/`u64`
     //      and accept every bit pattern; `size == align` for both, so
     //      every element of a `count`-long run is also aligned.
-    //   3. The bytes are writable: only RW mappings reach this point.
+    //   3. The bytes are writable: only RW and COW mappings (both
+    //      mapped PROT_READ|PROT_WRITE) reach this point.
     // Reference: https://doc.rust-lang.org/std/sync/atomic/struct.AtomicU64.html
     let ptr = unsafe { guard.as_ptr().add(start) }.cast::<T>();
     Ok((guard, ptr))
@@ -209,8 +209,8 @@ fn view_parts<T: AtomicCell>(
 impl MemoryMappedFile {
     /// Get an atomic view of a `u64` value at the specified offset.
     ///
-    /// The mapping must be `ReadWrite` and the offset must be 8-byte
-    /// aligned (the alignment of [`AtomicU64`]). The returned view
+    /// The mapping must be `ReadWrite` or `CopyOnWrite` and the offset
+    /// must be 8-byte aligned (the alignment of [`AtomicU64`]). The returned view
     /// implements [`Deref<Target = AtomicU64>`], so atomic operations
     /// (`load`, `store`, `fetch_add`, `compare_exchange`, etc.) can be
     /// called directly:
@@ -235,8 +235,8 @@ impl MemoryMappedFile {
     ///
     /// # Errors
     ///
-    /// Returns [`MmapIoError::InvalidMode`] if the mapping is not
-    /// `ReadWrite`.
+    /// Returns [`MmapIoError::InvalidMode`] if the mapping is
+    /// `ReadOnly`.
     /// Returns [`MmapIoError::Misaligned`] if the offset is not
     /// 8-byte aligned.
     /// Returns [`MmapIoError::OutOfBounds`] if `offset + 8` exceeds
@@ -247,7 +247,7 @@ impl MemoryMappedFile {
         Ok(AtomicView {
             _guard: guard,
             ptr,
-            pending: &self.inner.written_since_last_flush,
+            pending: self.pending_counter(),
             _marker: PhantomData,
         })
     }
@@ -262,8 +262,8 @@ impl MemoryMappedFile {
     ///
     /// # Errors
     ///
-    /// Returns [`MmapIoError::InvalidMode`] if the mapping is not
-    /// `ReadWrite`.
+    /// Returns [`MmapIoError::InvalidMode`] if the mapping is
+    /// `ReadOnly`.
     /// Returns [`MmapIoError::Misaligned`] if the offset is not
     /// 4-byte aligned.
     /// Returns [`MmapIoError::OutOfBounds`] if `offset + 4` exceeds
@@ -274,7 +274,7 @@ impl MemoryMappedFile {
         Ok(AtomicView {
             _guard: guard,
             ptr,
-            pending: &self.inner.written_since_last_flush,
+            pending: self.pending_counter(),
             _marker: PhantomData,
         })
     }
@@ -291,8 +291,8 @@ impl MemoryMappedFile {
     ///
     /// # Errors
     ///
-    /// Returns [`MmapIoError::InvalidMode`] if the mapping is not
-    /// `ReadWrite`.
+    /// Returns [`MmapIoError::InvalidMode`] if the mapping is
+    /// `ReadOnly`.
     /// Returns [`MmapIoError::Misaligned`] if the offset is not
     /// 8-byte aligned.
     /// Returns [`MmapIoError::OutOfBounds`] if the requested range
@@ -308,7 +308,7 @@ impl MemoryMappedFile {
             _guard: guard,
             ptr,
             len: count,
-            pending: &self.inner.written_since_last_flush,
+            pending: self.pending_counter(),
             _marker: PhantomData,
         })
     }
@@ -322,8 +322,8 @@ impl MemoryMappedFile {
     ///
     /// # Errors
     ///
-    /// Returns [`MmapIoError::InvalidMode`] if the mapping is not
-    /// `ReadWrite`.
+    /// Returns [`MmapIoError::InvalidMode`] if the mapping is
+    /// `ReadOnly`.
     /// Returns [`MmapIoError::Misaligned`] if the offset is not
     /// 4-byte aligned.
     /// Returns [`MmapIoError::OutOfBounds`] if the requested range
@@ -339,7 +339,7 @@ impl MemoryMappedFile {
             _guard: guard,
             ptr,
             len: count,
-            pending: &self.inner.written_since_last_flush,
+            pending: self.pending_counter(),
             _marker: PhantomData,
         })
     }
@@ -520,12 +520,16 @@ mod tests {
 
         #[cfg(feature = "cow")]
         {
-            // COW mode: same rule; the mapping is read-only at the API.
+            // COW mode: atomics work on the private pages and never
+            // reach the file.
             let mmap = MemoryMappedFile::open_cow(&path).expect("open cow");
-            assert!(matches!(
-                mmap.atomic_u64(0),
-                Err(MmapIoError::InvalidMode(_))
-            ));
+            {
+                let atomic = mmap.atomic_u64(0).expect("atomic cow");
+                assert_eq!(atomic.load(Ordering::SeqCst), 42);
+                atomic.store(7, Ordering::SeqCst);
+            }
+            assert_eq!(mmap.atomic_u64(0).expect("again").load(Ordering::SeqCst), 7);
+            assert_eq!(mmap.pending_bytes(), 0);
             drop(mmap);
         }
 

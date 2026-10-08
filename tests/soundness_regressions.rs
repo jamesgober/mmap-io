@@ -134,9 +134,14 @@ fn atomic_views_reject_read_only_mapping() {
     let _ = fs::remove_file(&path);
 }
 
+// Since 1.1 copy-on-write mappings are mapped writable (private pages),
+// so atomic views on them are sound and allowed; the stores never reach
+// the file. (Before 1.1 the COW mapping was read-only and the views were
+// refused, which this test used to pin.)
 #[cfg(all(feature = "atomic", feature = "cow"))]
 #[test]
-fn atomic_views_reject_copy_on_write_mapping() {
+fn atomic_views_on_copy_on_write_mapping_stay_private() {
+    use std::sync::atomic::Ordering;
     let path = tmp_path("atomic_cow");
     let _ = fs::remove_file(&path);
     {
@@ -144,15 +149,16 @@ fn atomic_views_reject_copy_on_write_mapping() {
         rw.flush().expect("flush");
     }
     let cow = MemoryMappedFile::open_cow(&path).expect("open_cow");
-    assert!(matches!(
-        cow.atomic_u64(0),
-        Err(mmap_io::MmapIoError::InvalidMode(_))
-    ));
-    assert!(matches!(
-        cow.atomic_u32_slice(0, 1),
-        Err(mmap_io::MmapIoError::InvalidMode(_))
-    ));
+    cow.atomic_u64(0)
+        .expect("u64 view")
+        .store(u64::MAX, Ordering::SeqCst);
+    cow.atomic_u32_slice(8, 1).expect("u32 view")[0].store(7, Ordering::SeqCst);
+    assert_eq!(
+        cow.atomic_u64(0).expect("again").load(Ordering::SeqCst),
+        u64::MAX
+    );
     drop(cow);
+    assert_eq!(fs::read(&path).expect("read"), vec![0u8; 64]);
     let _ = fs::remove_file(&path);
 }
 

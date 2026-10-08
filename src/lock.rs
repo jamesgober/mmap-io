@@ -2,13 +2,14 @@
 
 use crate::errors::{MmapIoError, Result};
 use crate::mmap::MemoryMappedFile;
-use crate::utils::slice_range;
+use crate::utils::{page_size, slice_range};
 
 impl MemoryMappedFile {
     /// Lock memory pages to prevent them from being swapped to disk.
     ///
     /// This operation requires appropriate permissions (typically root/admin).
-    /// Locked pages count against system limits.
+    /// Locked pages count against system limits. The range is widened
+    /// down to a page boundary (the kernel works in whole pages).
     ///
     /// # Platform-specific behavior
     ///
@@ -21,82 +22,20 @@ impl MemoryMappedFile {
     /// Returns `MmapIoError::LockFailed` if the lock operation fails (often due to permissions).
     #[cfg(feature = "locking")]
     pub fn lock(&self, offset: u64, len: u64) -> Result<()> {
-        if len == 0 {
-            return Ok(());
-        }
-
-        // Hold read access (a read guard for RW mappings) until the
-        // syscall below returns, so `resize()` cannot unmap the range
-        // while the kernel is working on it.
-        let map = self.map_read();
-        let (start, end) = slice_range(offset, len, map.len() as u64)?;
-        let region = &map[start..end];
-        let addr = region.as_ptr();
-        let length = region.len();
-
-        #[cfg(unix)]
-        {
-            // SAFETY: POSIX `mlock` requires:
-            //   1. `[addr, addr + length)` lies within a mapped region
-            //      of the process: it is `region`, a subslice of the
-            //      mapping that `map` keeps mapped until this returns.
-            //   2. `length > 0` (we early-return on `len == 0` at the
-            //      top of this method, and the bounds check guarantees
-            //      `length == end - start > 0` reaches here).
-            // The call locks the resident pages into RAM, preventing
-            // them from being paged out. It does not access the memory
-            // contents and does not retain `addr` after the call. On
-            // failure (typically EPERM without CAP_IPC_LOCK, or ENOMEM
-            // exceeding RLIMIT_MEMLOCK) it returns -1 and we surface
-            // that as `LockFailed`. No UB is reachable from any failure
-            // mode.
-            // Reference: https://man7.org/linux/man-pages/man2/mlock.2.html
-            let result = unsafe { libc::mlock(addr as *const libc::c_void, length) };
-
-            if result != 0 {
-                let err = std::io::Error::last_os_error();
-                return Err(MmapIoError::LockFailed(format!(
-                    "mlock failed: {err}. This operation typically requires elevated privileges."
-                )));
-            }
-        }
-
-        #[cfg(windows)]
-        {
-            extern "system" {
-                fn VirtualLock(lpAddress: *const core::ffi::c_void, dwSize: usize) -> i32;
-            }
-
-            // SAFETY: `VirtualLock` (kernel32.dll) requires:
-            //   1. `lpAddress` points within a committed region of the
-            //      caller's address space, and
-            //      `[lpAddress, lpAddress + dwSize)` does not cross a
-            //      region boundary. The mmap-io mapping is a single
-            //      committed view, `region` is a subslice of it, and
-            //      `map` keeps it mapped until this call returns.
-            //   2. `dwSize > 0` (guaranteed by the early-return on
-            //      `len == 0` and the bounds-check arithmetic).
-            // Like `mlock`, the function operates on the address range
-            // without accessing the memory contents or retaining the
-            // pointer. A return of 0 indicates failure; we read the
-            // last OS error and return `LockFailed`.
-            // Reference: https://learn.microsoft.com/en-us/windows/win32/api/memoryapi/nf-memoryapi-virtuallock
-            let result = unsafe { VirtualLock(addr as *const core::ffi::c_void, length) };
-
-            if result == 0 {
-                let err = std::io::Error::last_os_error();
-                return Err(MmapIoError::LockFailed(format!(
-                    "VirtualLock failed: {err}. This operation may require elevated privileges."
-                )));
-            }
-        }
-
-        Ok(())
+        self.lock_range(offset, len, true).map_err(|e| match e {
+            LockError::Range(e) => e,
+            LockError::Os(err) => MmapIoError::LockFailed(if cfg!(windows) {
+                format!("VirtualLock failed: {err}. This operation may require elevated privileges.")
+            } else {
+                format!("mlock failed: {err}. This operation typically requires elevated privileges.")
+            }),
+        })
     }
 
     /// Unlock previously locked memory pages.
     ///
     /// This allows the pages to be swapped out again if needed.
+    /// Unlocking pages that were not locked succeeds on every platform.
     ///
     /// # Platform-specific behavior
     ///
@@ -109,66 +48,37 @@ impl MemoryMappedFile {
     /// Returns `MmapIoError::UnlockFailed` if the unlock operation fails.
     #[cfg(feature = "locking")]
     pub fn unlock(&self, offset: u64, len: u64) -> Result<()> {
+        self.lock_range(offset, len, false).map_err(|e| match e {
+            LockError::Range(e) => e,
+            LockError::Os(err) => MmapIoError::UnlockFailed(if cfg!(windows) {
+                format!("VirtualUnlock failed: {err}")
+            } else {
+                format!("munlock failed: {err}")
+            }),
+        })
+    }
+
+    /// Validate the range under read access and lock or unlock it.
+    fn lock_range(&self, offset: u64, len: u64, lock: bool) -> std::result::Result<(), LockError> {
         if len == 0 {
             return Ok(());
         }
-
-        // See `lock`: the guard stays alive across the syscall.
+        // Hold read access (a read guard for RW/COW mappings) until the
+        // syscall returns, so `resize()` cannot unmap the range while
+        // the kernel is working on it.
         let map = self.map_read();
-        let (start, end) = slice_range(offset, len, map.len() as u64)?;
-        let region = &map[start..end];
-        let addr = region.as_ptr();
-        let length = region.len();
-
-        #[cfg(unix)]
-        {
-            // SAFETY: POSIX `munlock` requires the same range
-            // preconditions as `mlock` (range lies within a mapped
-            // region, length > 0). Both are established above.
-            // `munlock` does not access the memory contents; it removes
-            // the lock that prevented paging. If the range was not
-            // previously locked, the syscall is still well-defined and
-            // simply succeeds (or returns ENOMEM on Linux, which we
-            // surface as `UnlockFailed` rather than treating as UB).
-            // Reference: https://man7.org/linux/man-pages/man2/mlock.2.html
-            let result = unsafe { libc::munlock(addr as *const libc::c_void, length) };
-
-            if result != 0 {
-                let err = std::io::Error::last_os_error();
-                return Err(MmapIoError::UnlockFailed(format!("munlock failed: {err}")));
-            }
-        }
-
-        #[cfg(windows)]
-        {
-            extern "system" {
-                fn VirtualUnlock(lpAddress: *const core::ffi::c_void, dwSize: usize) -> i32;
-            }
-
-            // SAFETY: `VirtualUnlock` (kernel32.dll) requires the same
-            // range preconditions as `VirtualLock`. The function does
-            // not read or write the memory; it operates on the locked-
-            // pages bookkeeping for the address range. If the range
-            // was not previously locked, the function returns 0 with
-            // `GetLastError() == ERROR_NOT_LOCKED` (158), which we
-            // detect below and treat as a soft success.
-            // Reference: https://learn.microsoft.com/en-us/windows/win32/api/memoryapi/nf-memoryapi-virtualunlock
-            let result = unsafe { VirtualUnlock(addr as *const core::ffi::c_void, length) };
-
-            if result == 0 {
-                let err = std::io::Error::last_os_error();
-                // VirtualUnlock can fail if pages weren't locked, which is often not an error
-                let err_code = err.raw_os_error().unwrap_or(0);
-                if err_code != 158 {
-                    // ERROR_NOT_LOCKED
-                    return Err(MmapIoError::UnlockFailed(format!(
-                        "VirtualUnlock failed: {err}"
-                    )));
-                }
-            }
-        }
-
-        Ok(())
+        let (start, end) = slice_range(offset, len, map.len() as u64).map_err(LockError::Range)?;
+        let aligned_start = start - start % page_size();
+        // In bounds; `wrapping_add` avoids `unsafe` and forms no
+        // reference to the bytes.
+        let addr = map.base_ptr().wrapping_add(aligned_start).cast_mut();
+        // SAFETY: `lock_span` requires a page-aligned, non-empty range
+        // inside a live raw-layer mapping: the managed mapping base is
+        // page aligned and `aligned_start` is a page multiple,
+        // `end - aligned_start >= len > 0`, `end <= map.len()`, and `map`
+        // keeps the mapping alive until this returns. `mlock` /
+        // `VirtualLock` do not read or write the bytes.
+        unsafe { crate::raw::lock_span(addr, end - aligned_start, lock) }.map_err(LockError::Os)
     }
 
     /// Lock all pages of the memory-mapped file.
@@ -197,6 +107,13 @@ impl MemoryMappedFile {
     pub fn unlock_all(&self) -> Result<()> {
         self.unlock(0, self.len())
     }
+}
+
+/// Why `lock_range` failed: a range error to pass through unchanged,
+/// or an OS error to wrap in `LockFailed` / `UnlockFailed`.
+enum LockError {
+    Range(MmapIoError),
+    Os(std::io::Error),
 }
 
 #[cfg(test)]

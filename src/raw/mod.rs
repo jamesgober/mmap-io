@@ -210,6 +210,41 @@ pub fn offset_granularity() -> io::Result<usize> {
     os::offset_granularity()
 }
 
+/// Apply `advice` to `count` bytes at `addr`: the platform call behind
+/// [`RawMmap::advise_range`], for the managed layer, which validates
+/// ranges against its own locked mapping.
+///
+/// # Safety
+///
+/// `addr` must be page aligned and `[addr, addr + count)` must lie
+/// inside a live mapping created by this module, with `count > 0`, for
+/// the duration of the call. `DontNeed` must not be applied to private
+/// (copy-on-write or anonymous) memory while any reference into the
+/// range may be alive.
+#[cfg(feature = "advise")]
+pub(crate) unsafe fn advise_span(
+    addr: *mut u8,
+    count: usize,
+    advice: crate::advise::MmapAdvice,
+) -> io::Result<()> {
+    // SAFETY: forwarded caller contract, identical to `os::advise`'s.
+    unsafe { os::advise(addr, count, advice) }
+}
+
+/// Lock or unlock `count` bytes at `addr`: the platform call behind
+/// [`RawMmap::lock`], for the managed layer.
+///
+/// # Safety
+///
+/// `addr` must be page aligned and `[addr, addr + count)` must lie
+/// inside a live mapping created by this module, with `count > 0`, for
+/// the duration of the call.
+#[cfg(feature = "locking")]
+pub(crate) unsafe fn lock_span(addr: *mut u8, count: usize, lock: bool) -> io::Result<()> {
+    // SAFETY: forwarded caller contract, identical to `os::lock`'s.
+    unsafe { os::lock(addr, count, lock) }
+}
+
 /// One OS mapping, or the empty placeholder.
 ///
 /// Invariants:

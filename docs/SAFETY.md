@@ -20,13 +20,17 @@ The `mmap_io::raw` tier adds `unsafe fn` file-backed constructors
 
 ### Which mappings are locked
 
-- **ReadWrite** mappings live in `MapVariant::Rw(RwLock<MmapMut>)`
-  (a `parking_lot::RwLock`). `resize()` replaces the `MmapMut`, so
+- **ReadWrite** mappings live in `MapVariant::Rw(RwLock<RawMmapMut>)`
+  (a `parking_lot::RwLock`). `resize()` replaces the `RawMmapMut`, so
   any access to the mapped bytes must hold a guard on this lock.
-- **ReadOnly** and **CopyOnWrite** mappings live in an immutable
-  `memmap2::Mmap` that is never replaced (resize is rejected for both
-  modes, and COW is exposed read-only). A plain `&[u8]` borrow tied to
-  `&MemoryMappedFile` is enough.
+- **CopyOnWrite** mappings (writable since 1.1) live in
+  `MapVariant::Cow(RwLock<RawMmapMut>)`, a private `map_copy` mapping.
+  They are never resized, but they are written, so every access takes
+  the same guards as `ReadWrite`.
+- **ReadOnly** mappings live in an immutable `RawMmap` that is never
+  replaced or written. A plain `&[u8]` borrow tied to
+  `&MemoryMappedFile` is enough, and `as_slice_bytes` hands one out
+  only for this mode.
 
 ### Who holds which guard
 
@@ -85,7 +89,7 @@ view can observe a truncated file:
 `map_mut` are `unsafe` because the OS does not stop another process
 from modifying or truncating the file under the mapping. Inside the
 process, all access to RW mappings goes through the lock described
-above, and RO/COW mappings are never written through Rust references.
+above (COW included), and RO mappings are never written.
 Cross-process modification is out of scope (REPS.md section 5.1).
 
 Sites: `create_rw`, `open_ro`, `open_rw`, `from_file`, `open_cow`,
@@ -309,9 +313,12 @@ read guard so the mapping cannot be replaced during the call.
 - **S3** (guard released before using the pointer in `advise.rs`,
   `lock.rs`): 0.9.6 only documented it. Since 1.1 the guard is kept
   alive across the syscall, and ranges are validated under it.
-- **S4** (COW write semantics): COW mappings are read-only at the API;
-  every write method returns `InvalidMode`, and atomic views are
-  refused on them since 1.1.
+- **S4** (COW write semantics): until 1.1 COW mappings were read-only
+  at the API. Since 1.1 they are mapped writable and private
+  (`map_copy`) and locked like `ReadWrite`, so the write methods and
+  atomic views are sound on them; `as_slice_bytes` (an unguarded
+  `&[u8]`) is refused on them, and `advise(DontNeed)`, which discards
+  private pages, takes the write lock.
 - **1.1 review**: iterator items outliving their guard
   (use-after-free on `resize`), atomic views on read-only pages,
   validation against a length read before the lock, truncation before

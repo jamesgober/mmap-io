@@ -1,7 +1,7 @@
 //! Memory advise operations for optimizing OS behavior.
 
 use crate::errors::{MmapIoError, Result};
-use crate::mmap::MemoryMappedFile;
+use crate::mmap::{MapVariant, MemoryMappedFile};
 use crate::utils::{page_size, slice_range};
 
 /// Memory access pattern advice for the OS.
@@ -34,142 +34,93 @@ impl MemoryMappedFile {
     ///   `offset`. The end is not widened past the mapping.
     /// - **Windows**: Uses `PrefetchVirtualMemory` for `WillNeed`, no-op for others
     ///
+    /// # `DontNeed` on copy-on-write mappings
+    ///
+    /// On a `CopyOnWrite` mapping, `MADV_DONTNEED` throws the private
+    /// copies of the pages away: on Linux the next access reads the
+    /// file again, so private changes in the (page-widened) range are
+    /// lost. Because that changes the mapped bytes, `DontNeed` on a
+    /// copy-on-write mapping takes the write lock like a write method:
+    /// it waits for every live view of the mapping, and calling it on a
+    /// thread that holds one deadlocks. Every other hint, and
+    /// `DontNeed` on read-only and read-write mappings (where dirty data
+    /// stays in the page cache and the bytes do not change), only takes
+    /// a read guard.
+    ///
     /// A zero-length range is accepted at any offset and does nothing.
     ///
     /// # Errors
     ///
     /// Returns `MmapIoError::OutOfBounds` if the range exceeds file bounds.
     /// Returns `MmapIoError::AdviceFailed` if the system call fails.
+    ///
+    /// # Example
+    ///
+    /// ```
+    /// use mmap_io::{MemoryMappedFile, MmapAdvice};
+    ///
+    /// let dir = tempfile::tempdir()?;
+    /// let mmap = MemoryMappedFile::create_rw(dir.path().join("a.bin"), 3 * 4096)?;
+    /// mmap.advise(0, mmap.len(), MmapAdvice::Sequential)?;
+    /// mmap.advise(5000, 100, MmapAdvice::WillNeed)?;
+    /// assert!(mmap.advise(mmap.len(), 1, MmapAdvice::Normal).is_err());
+    /// # Ok::<(), Box<dyn std::error::Error>>(())
+    /// ```
     #[cfg(feature = "advise")]
     pub fn advise(&self, offset: u64, len: u64, advice: MmapAdvice) -> Result<()> {
         if len == 0 {
             return Ok(());
         }
-
-        // Hold read access (a read guard for RW mappings) until the
-        // syscall below returns, so `resize()` cannot unmap the range
-        // while the kernel is working on it.
+        if advice == MmapAdvice::DontNeed {
+            if let MapVariant::Cow(lock) = &self.inner.map {
+                // Discards private pages: exclude every view first.
+                let guard = lock.write();
+                return advise_mapped(guard.as_ptr(), guard.len(), offset, len, advice);
+            }
+        }
+        // Hold read access (a read guard for RW/COW mappings) until the
+        // syscall returns, so `resize()` cannot unmap the range while
+        // the kernel is working on it.
         let map = self.map_read();
-        let (start, end) = slice_range(offset, len, map.len() as u64)?;
-        // Widen down to a page boundary: `madvise` rejects unaligned
-        // addresses with EINVAL. The mapping base is page-aligned
-        // (every mapping starts at file offset 0), so a page-aligned
-        // offset gives a page-aligned address.
-        let aligned_start = start - start % page_size();
-        let region = &map[aligned_start..end];
-        let addr = region.as_ptr();
-        let length = region.len();
-
-        #[cfg(unix)]
-        {
-            use libc::{
-                madvise, MADV_DONTNEED, MADV_NORMAL, MADV_RANDOM, MADV_SEQUENTIAL, MADV_WILLNEED,
-            };
-
-            let advice_flag = match advice {
-                MmapAdvice::Normal => MADV_NORMAL,
-                MmapAdvice::Random => MADV_RANDOM,
-                MmapAdvice::Sequential => MADV_SEQUENTIAL,
-                MmapAdvice::WillNeed => MADV_WILLNEED,
-                MmapAdvice::DontNeed => MADV_DONTNEED,
-            };
-
-            // SAFETY: POSIX `madvise` (and Linux's extension) requires:
-            //   1. `addr` is page-aligned: `aligned_start` is a
-            //      multiple of the page size and the mapping base is
-            //      page-aligned by `mmap(2)`.
-            //   2. The range `[addr, addr + length)` lies within a
-            //      mapped region of the process: it is `region`, a
-            //      subslice of the mapping that `map` keeps mapped
-            //      until after this call returns.
-            //   3. `advice_flag` is one of the documented constants.
-            //      Each branch of the match above selects exactly one
-            //      libc constant.
-            // `madvise` does not access the memory at `addr` in the
-            // sense of forming a reference to it; it advises the
-            // kernel's VM subsystem about expected access patterns. For
-            // MADV_DONTNEED specifically, the kernel may zero pages
-            // backed by anonymous memory, but for our file-backed
-            // mappings the next read will re-fault from the file, so
-            // there is no soundness issue.
-            // Reference: https://man7.org/linux/man-pages/man2/madvise.2.html
-            let result = unsafe { madvise(addr as *mut libc::c_void, length, advice_flag) };
-
-            if result != 0 {
-                let err = std::io::Error::last_os_error();
-                return Err(MmapIoError::AdviceFailed(format!("madvise failed: {err}")));
-            }
-        }
-
-        #[cfg(windows)]
-        {
-            // Windows only supports prefetching (WillNeed equivalent)
-            if matches!(advice, MmapAdvice::WillNeed) {
-                // Field names mirror the Win32 definition.
-                #[allow(non_snake_case)]
-                #[repr(C)]
-                struct WIN32_MEMORY_RANGE_ENTRY {
-                    VirtualAddress: *mut core::ffi::c_void,
-                    NumberOfBytes: usize,
-                }
-
-                extern "system" {
-                    fn PrefetchVirtualMemory(
-                        hProcess: *mut core::ffi::c_void,
-                        NumberOfEntries: usize,
-                        VirtualAddresses: *const WIN32_MEMORY_RANGE_ENTRY,
-                        Flags: u32,
-                    ) -> i32;
-
-                    fn GetCurrentProcess() -> *mut core::ffi::c_void;
-                }
-
-                let entry = WIN32_MEMORY_RANGE_ENTRY {
-                    VirtualAddress: addr as *mut core::ffi::c_void,
-                    NumberOfBytes: length,
-                };
-
-                // SAFETY: `PrefetchVirtualMemory` (kernel32.dll,
-                // documented on MSDN) requires:
-                //   1. `hProcess` is a valid process handle with the
-                //      PROCESS_QUERY_INFORMATION and PROCESS_VM_READ
-                //      access rights. `GetCurrentProcess()` returns a
-                //      pseudo-handle to the current process which
-                //      always has full rights.
-                //   2. `NumberOfEntries == 1` matches the size of the
-                //      single-element `entry` array pointed to by
-                //      `VirtualAddresses`.
-                //   3. Each `WIN32_MEMORY_RANGE_ENTRY` describes a
-                //      region within the caller's address space.
-                //      `addr` and `length` describe `region`, a
-                //      subslice of the mapping that `map` keeps mapped
-                //      until after this call returns.
-                //   4. `Flags` is reserved and must be 0.
-                // The function does not retain pointers past the call
-                // and does not mutate the described memory; it merely
-                // hints the page cache to load the pages.
-                // Reference: https://learn.microsoft.com/en-us/windows/win32/api/memoryapi/nf-memoryapi-prefetchvirtualmemory
-                let result = unsafe {
-                    PrefetchVirtualMemory(
-                        GetCurrentProcess(),
-                        1,
-                        &entry,
-                        0, // No special flags
-                    )
-                };
-
-                if result == 0 {
-                    let err = std::io::Error::last_os_error();
-                    return Err(MmapIoError::AdviceFailed(format!(
-                        "PrefetchVirtualMemory failed: {err}"
-                    )));
-                }
-            }
-            // Other advice types are no-ops on Windows
-        }
-
-        Ok(())
+        advise_mapped(map.base_ptr(), map.len(), offset, len, advice)
     }
+}
+
+/// Validate `[offset, offset + len)` against a mapping of `total` bytes
+/// at `base` and apply `advice`. The caller holds the guard that keeps
+/// the mapping alive (and, for `DontNeed` on private memory, the write
+/// guard) for the duration of the call.
+fn advise_mapped(
+    base: *const u8,
+    total: usize,
+    offset: u64,
+    len: u64,
+    advice: MmapAdvice,
+) -> Result<()> {
+    let (start, end) = slice_range(offset, len, total as u64)?;
+    // Widen down to a page boundary: `madvise` rejects unaligned
+    // addresses with EINVAL. The mapping base is page-aligned (every
+    // managed mapping starts at file offset 0), so a page-aligned
+    // offset gives a page-aligned address.
+    let aligned_start = start - start % page_size();
+    // In bounds (`aligned_start <= start < total`); `wrapping_add` keeps
+    // this free of `unsafe`, and no reference to the bytes is formed.
+    let addr = base.wrapping_add(aligned_start).cast_mut();
+    // SAFETY: `advise_span` requires a page-aligned, non-empty range
+    // inside a live mapping created by the raw layer: `aligned_start`
+    // is a page multiple of a page-aligned base, `end - aligned_start
+    // >= end - start = len > 0`, and `end <= total`. The caller's guard
+    // keeps the mapping alive until this returns. `DontNeed` on private
+    // memory only reaches here under the write guard (see `advise`),
+    // so no reference into the range is alive.
+    unsafe { crate::raw::advise_span(addr, end - aligned_start, advice) }.map_err(|e| {
+        let call = if cfg!(windows) {
+            "PrefetchVirtualMemory"
+        } else {
+            "madvise"
+        };
+        MmapIoError::AdviceFailed(format!("{call} failed: {e}"))
+    })
 }
 
 #[cfg(test)]

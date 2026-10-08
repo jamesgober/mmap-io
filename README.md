@@ -79,7 +79,7 @@ fn main() -> Result<(), mmap_io::MmapIoError> {
 | `advise`    | Memory hinting via `madvise`/`posix_madvise` (Unix) or `PrefetchVirtualMemory` (Windows).            |
 | `iterator`  | Iterator-based access to memory chunks or pages with zero-copy reads.                                |
 | `hugepages` | Transparent huge page hint (`madvise(MADV_HUGEPAGE)`) on Linux RW mappings; no effect on other platforms. |
-| `cow`       | Copy-on-Write mapping mode using private per-process memory views.                                   |
+| `cow`       | Copy-on-Write mapping mode: writable private per-process views whose changes never reach the file.  |
 | `locking`   | Page-level memory locking via `mlock`/`munlock` (Unix) or `VirtualLock` (Windows).                   |
 | `atomic`    | Atomic views into memory as aligned `u32` / `u64` with strict alignment checks.                      |
 | `watch`     | Native file-change notifications: `inotify` (Linux), FSEvents (macOS), `ReadDirectoryChangesW` (Windows). |
@@ -334,7 +334,7 @@ Note: mmap-side writes (`update_region` + `flush`) are not a reliable trigger fo
 
 ## Copy-on-Write Mode (`feature = "cow"`)
 
-Private mapping of an existing file. Writable copy-on-write is not implemented: a COW mapping is read-only at the API (every write method returns `MmapIoError::InvalidMode`), so today it behaves like `open_ro`.
+Private, writable mapping of an existing file (since 1.1.0). Every write method works (`update_region`, `as_slice_mut`, `chunks_mut`, atomic views); written pages are copied on first write, the changes are visible through this mapping only, and they never reach the file. `flush()` is a no-op, `pending_bytes()` stays 0, and `resize()` is not supported. The file only needs read permission. Locking follows the `ReadWrite` rules: a live view blocks writers.
 
 ```rust
 #[cfg(feature = "cow")]
@@ -343,14 +343,15 @@ use mmap_io::MemoryMappedFile;
 fn main() -> Result<(), mmap_io::MmapIoError> {
     let cow_mmap = MemoryMappedFile::open_cow("shared.bin")?;
 
-    // Reads see the file content
-    let _data = cow_mmap.as_slice(0, 100)?;
-
-    // Writes are rejected with InvalidMode; the file is never modified.
-    assert!(cow_mmap.update_region(0, b"x").is_err());
+    // Patch the in-memory image; the file on disk is untouched.
+    cow_mmap.update_region(0, b"patched")?;
+    assert_eq!(&*cow_mmap.as_slice(0, 7)?, b"patched");
+    cow_mmap.flush()?; // no-op for copy-on-write
     Ok(())
 }
 ```
+
+Before 1.1.0 this mode was read-only (every write returned `InvalidMode`).
 
 ## Async Operations (`feature = "async"`)
 

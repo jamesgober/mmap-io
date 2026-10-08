@@ -52,10 +52,13 @@ pub enum MmapMode {
     /// Read-write mapping.
     ReadWrite,
     /// Copy-on-write mode (`open_cow`, feature `cow`). The file is
-    /// mapped privately, so the underlying file can never be changed
-    /// through it. Writable copy-on-write is not implemented: every
-    /// write method returns [`MmapIoError::InvalidMode`], `flush` is a
-    /// no-op, and in practice this mode behaves like `ReadOnly`.
+    /// mapped privately (`MAP_PRIVATE` / `PAGE_WRITECOPY`): the write
+    /// methods work (`update_region`, `as_slice_mut`, `chunks_mut`,
+    /// atomic views), changes are visible through this mapping only,
+    /// and they never reach the file. `flush` and `flush_range` are
+    /// `Ok` no-ops, `pending_bytes` stays 0, and `resize` returns
+    /// [`MmapIoError::InvalidMode`]. Writable since 1.1.0; earlier
+    /// releases refused every write on this mode.
     CopyOnWrite,
 }
 
@@ -94,8 +97,21 @@ pub struct Inner {
 pub enum MapVariant {
     Ro(RawMmap),
     Rw(RwLock<RawMmapMut>),
-    /// Private, per-process copy-on-write mapping. Underlying file is not modified by writes.
-    Cow(RawMmap),
+    /// Private, per-process copy-on-write mapping (`map_copy`). Writes
+    /// go to private pages and never reach the file. Locked exactly
+    /// like `Rw`: writers take the write lock, readers a read guard.
+    Cow(RwLock<RawMmapMut>),
+}
+
+impl MapVariant {
+    /// The lock of a writable mapping (`Rw` or `Cow`); `None` for `Ro`.
+    #[inline]
+    pub(crate) fn locked(&self) -> Option<&RwLock<RawMmapMut>> {
+        match self {
+            MapVariant::Ro(_) => None,
+            MapVariant::Rw(lock) | MapVariant::Cow(lock) => Some(lock),
+        }
+    }
 }
 
 /// Memory-mapped file with safe, zero-copy region access.
@@ -388,9 +404,11 @@ impl MemoryMappedFile {
     }
 
     /// Migration shim that mirrors the 0.9.6 `as_slice` signature:
-    /// returns `Result<&[u8]>` directly for `ReadOnly` and
-    /// `CopyOnWrite` mappings, and `MmapIoError::InvalidMode` for
-    /// `ReadWrite` mappings.
+    /// returns `Result<&[u8]>` directly for `ReadOnly` mappings, and
+    /// `MmapIoError::InvalidMode` for `ReadWrite` and (since 1.1.0,
+    /// when copy-on-write mappings became writable) `CopyOnWrite`
+    /// mappings. A plain `&[u8]` tied to `&self` cannot keep writers
+    /// out, so it is only handed out for memory nothing can write.
     ///
     /// **Prefer [`as_slice`](Self::as_slice)** for new code; that
     /// method returns a [`MappedSlice<'_>`] which works uniformly
@@ -410,18 +428,17 @@ impl MemoryMappedFile {
     ///
     /// Returns `MmapIoError::OutOfBounds` if `offset + len` exceeds
     /// the file's current length.
-    /// Returns `MmapIoError::InvalidMode` on `ReadWrite` mappings
-    /// (matching the 0.9.6 behavior; use `as_slice` or `read_into`
-    /// for RW).
+    /// Returns `MmapIoError::InvalidMode` on `ReadWrite` and
+    /// `CopyOnWrite` mappings (use `as_slice` or `read_into` there).
     pub fn as_slice_bytes(&self, offset: u64, len: u64) -> Result<&[u8]> {
         match &self.inner.map {
-            MapVariant::Ro(_) | MapVariant::Cow(_) if len == 0 => Ok(&[]),
-            MapVariant::Ro(m) | MapVariant::Cow(m) => {
+            MapVariant::Ro(_) if len == 0 => Ok(&[]),
+            MapVariant::Ro(m) => {
                 let (start, end) = slice_range(offset, len, m.len() as u64)?;
                 Ok(&m[start..end])
             }
-            MapVariant::Rw(_) => Err(MmapIoError::InvalidMode(
-                "use as_slice() for RW mappings; as_slice_bytes is the 0.9.6 compat shim and supports RO/COW only",
+            MapVariant::Rw(_) | MapVariant::Cow(_) => Err(MmapIoError::InvalidMode(
+                "use as_slice() for writable mappings; as_slice_bytes is the 0.9.6 compat shim and supports read-only mappings only",
             )),
         }
     }
@@ -461,7 +478,8 @@ impl MemoryMappedFile {
     }
 
     /// Get a zero-copy mutable slice for the given [offset, offset+len).
-    /// Only available in `ReadWrite` mode.
+    /// Available on `ReadWrite` and (private writes, since 1.1.0)
+    /// `CopyOnWrite` mappings.
     ///
     /// The returned guard holds the mapping's write lock for its
     /// lifetime: every other reader and writer (on any region) waits
@@ -474,31 +492,21 @@ impl MemoryMappedFile {
     ///
     /// # Errors
     ///
-    /// Returns `MmapIoError::InvalidMode` if not in `ReadWrite` mode.
+    /// Returns `MmapIoError::InvalidMode` on a `ReadOnly` mapping.
     /// Returns `MmapIoError::OutOfBounds` if range exceeds file bounds.
     pub fn as_slice_mut(&self, offset: u64, len: u64) -> Result<MappedSliceMut<'_>> {
-        match &self.inner.map {
-            MapVariant::Ro(_) => Err(MmapIoError::InvalidMode(
-                "mutable access on read-only mapping",
-            )),
-            MapVariant::Rw(lock) => {
-                let guard = lock.write();
-                let (start, end) = if len == 0 {
-                    (0, 0)
-                } else {
-                    slice_range(offset, len, guard.len() as u64)?
-                };
-                Ok(MappedSliceMut {
-                    guard,
-                    range: start..end,
-                    pending: Some(&self.inner.written_since_last_flush),
-                })
-            }
-            // COW mappings are exposed read-only; see `open_cow`.
-            MapVariant::Cow(_) => Err(MmapIoError::InvalidMode(
-                "mutable access on copy-on-write mapping (read-only)",
-            )),
-        }
+        let lock = self.write_lock("mutable access on read-only mapping")?;
+        let guard = lock.write();
+        let (start, end) = if len == 0 {
+            (0, 0)
+        } else {
+            slice_range(offset, len, guard.len() as u64)?
+        };
+        Ok(MappedSliceMut {
+            guard,
+            range: start..end,
+            pending: self.pending_counter(),
+        })
     }
 
     /// Copy the provided bytes into the mapped file at the given offset.
@@ -516,39 +524,28 @@ impl MemoryMappedFile {
     /// - **Memory Usage**: No additional allocation
     /// - **I/O Operations**: May trigger flush based on flush policy
     ///
+    /// On a `CopyOnWrite` mapping (since 1.1.0) the bytes go to private
+    /// pages: visible through this mapping, never written to the file,
+    /// and not counted in [`pending_bytes`](Self::pending_bytes).
+    ///
     /// # Errors
     ///
-    /// Returns `MmapIoError::InvalidMode` if not in `ReadWrite` mode.
+    /// Returns `MmapIoError::InvalidMode` on a `ReadOnly` mapping.
     /// Returns `MmapIoError::OutOfBounds` if range exceeds file bounds.
     pub fn update_region(&self, offset: u64, data: &[u8]) -> Result<()> {
         if data.is_empty() {
             return Ok(());
         }
-        if self.inner.mode != MmapMode::ReadWrite {
-            return Err(MmapIoError::InvalidMode(
-                "Update region requires ReadWrite mode.",
-            ));
-        }
+        let lock = self.write_lock("Update region requires ReadWrite or CopyOnWrite mode.")?;
         let len = data.len() as u64;
-        match &self.inner.map {
-            MapVariant::Ro(_) => Err(MmapIoError::InvalidMode(
-                "Cannot write to read-only mapping",
-            )),
-            MapVariant::Rw(lock) => {
-                {
-                    let mut guard = lock.write();
-                    let (start, end) = slice_range(offset, len, guard.len() as u64)?;
-                    guard[start..end].copy_from_slice(data);
-                }
-                // Apply flush policy after releasing the write lock;
-                // flushing only needs a read guard.
-                self.apply_flush_policy(len)?;
-                Ok(())
-            }
-            MapVariant::Cow(_) => Err(MmapIoError::InvalidMode(
-                "Cannot write to copy-on-write mapping (read-only)",
-            )),
+        {
+            let mut guard = lock.write();
+            let (start, end) = slice_range(offset, len, guard.len() as u64)?;
+            guard[start..end].copy_from_slice(data);
         }
+        // Apply flush policy after releasing the write lock; flushing
+        // only needs a read guard.
+        self.apply_flush_policy(len)
     }
 
     /// Async write that enforces Async-Only Flushing semantics: always flush after write.
@@ -588,7 +585,8 @@ impl MemoryMappedFile {
 
     /// Flush changes to disk and wait for the OS to report them
     /// written. For read-only and copy-on-write mappings this is a
-    /// no-op.
+    /// no-op that returns `Ok`: copy-on-write changes live in private
+    /// pages and are never written to the file.
     ///
     /// On a `ReadWrite` mapping every call flushes, whatever
     /// [`pending_bytes`](Self::pending_bytes) reports; the counter only
@@ -618,6 +616,8 @@ impl MemoryMappedFile {
     /// Returns `MmapIoError::FlushFailed` if flush operation fails.
     pub fn flush(&self) -> Result<()> {
         match &self.inner.map {
+            // Copy-on-write pages are private: there is nothing to
+            // write back, by design.
             MapVariant::Ro(_) | MapVariant::Cow(_) => Ok(()),
             MapVariant::Rw(lock) => {
                 let guard = lock.read_recursive();
@@ -682,6 +682,8 @@ impl MemoryMappedFile {
     /// whole file's buffers regardless of the range.
     ///
     /// A zero-length range is accepted at any offset and does nothing.
+    /// On read-only and copy-on-write mappings the range is validated
+    /// and nothing else happens.
     ///
     /// # Errors
     ///
@@ -693,7 +695,8 @@ impl MemoryMappedFile {
         }
         match &self.inner.map {
             MapVariant::Ro(_) | MapVariant::Cow(_) => {
-                // Nothing to write back, but the range is still
+                // Nothing to write back (read-only, or private
+                // copy-on-write pages), but the range is still
                 // validated so callers get the same contract everywhere.
                 let map = self.map_read();
                 slice_range(offset, len, map.len() as u64)?;
@@ -916,7 +919,7 @@ impl MemoryMappedFile {
         // reference to the mapped memory, only one volatile byte read
         // per page.
         let map = self.map_read();
-        touch_range_with_ptr(map.as_ptr(), 0, map.len(), crate::utils::page_size());
+        touch_range_with_ptr(map.base_ptr(), 0, map.len(), crate::utils::page_size());
         Ok(())
     }
 
@@ -941,7 +944,7 @@ impl MemoryMappedFile {
         // the mapping, so the page holding byte `end - 1` is mapped.
         let page_sz = crate::utils::page_size();
         let first_page = start - start % page_sz;
-        touch_range_with_ptr(map.as_ptr(), first_page, end - first_page, page_sz);
+        touch_range_with_ptr(map.base_ptr(), first_page, end - first_page, page_sz);
         Ok(())
     }
 }
@@ -1064,18 +1067,13 @@ impl MemoryMappedFile {
                 if len == 0 {
                     return Err(MmapIoError::ResizeFailed(ERR_ZERO_LENGTH_FILE.into()));
                 }
-                // SAFETY: see `open_cow`.
-                let mmap = unsafe {
-                    let mut opts = RawMmapOptions::new();
-                    opts.len(len as usize);
-                    opts.map(&file)?
-                };
+                let mmap = map_file_cow(&file, len)?;
                 let inner = Inner {
                     path: path_ref,
                     file,
                     mode,
                     cached_len: AtomicU64::new(len),
-                    map: MapVariant::Cow(mmap),
+                    map: MapVariant::Cow(RwLock::new(mmap)),
                     flush_policy: FlushPolicy::Never,
                     written_since_last_flush: AtomicU64::new(0),
                     writes_since_last_flush: AtomicU64::new(0),
@@ -1210,13 +1208,13 @@ impl MemoryMappedFile {
     pub unsafe fn as_ptr(&self) -> *const u8 {
         match &self.inner.map {
             MapVariant::Ro(m) => m.as_ptr(),
-            MapVariant::Rw(lock) => lock.read_recursive().as_ptr(),
-            MapVariant::Cow(m) => m.as_ptr(),
+            MapVariant::Rw(lock) | MapVariant::Cow(lock) => lock.read_recursive().as_ptr(),
         }
     }
 
     /// Raw mutable pointer to the start of the mapped region.
-    /// Available only on `ReadWrite` mappings.
+    /// Available on `ReadWrite` mappings and, since 1.1.0, on
+    /// `CopyOnWrite` mappings (writes through it stay private).
     ///
     /// See [`as_ptr`](Self::as_ptr) for the safety contract; the
     /// same rules apply, plus the caller MUST NOT alias this
@@ -1225,31 +1223,24 @@ impl MemoryMappedFile {
     ///
     /// # Errors
     ///
-    /// Returns [`MmapIoError::InvalidMode`] if the mapping is not
-    /// `ReadWrite`.
+    /// Returns [`MmapIoError::InvalidMode`] on a `ReadOnly` mapping.
     ///
     /// # Safety
     ///
     /// Same as [`as_ptr`](Self::as_ptr), plus the no-aliasing rule
     /// above.
     pub unsafe fn as_mut_ptr(&self) -> Result<*mut u8> {
-        match &self.inner.map {
-            // A read guard is enough to read the base address and does
-            // not deadlock when this thread already holds a view. The
-            // pointer comes from the raw mapping's base pointer (not
-            // from a `&[u8]`), so writing through it is permitted.
-            MapVariant::Rw(lock) => {
-                let guard = lock.read_recursive();
-                // Writes through the pointer are invisible to us; count
-                // the whole mapping as pending so EveryMillis/EveryBytes
-                // still see a dirty mapping.
-                self.record_write(guard.len() as u64);
-                Ok(guard.as_ptr().cast_mut())
-            }
-            MapVariant::Ro(_) | MapVariant::Cow(_) => Err(MmapIoError::InvalidMode(
-                "as_mut_ptr requires ReadWrite mode",
-            )),
-        }
+        // A read guard is enough to read the base address and does not
+        // deadlock when this thread already holds a view. The pointer
+        // comes from the raw mapping's base pointer (not from a
+        // `&[u8]`), so writing through it is permitted.
+        let lock = self.write_lock("as_mut_ptr requires a writable mapping")?;
+        let guard = lock.read_recursive();
+        // Writes through the pointer are invisible to us; count the
+        // whole mapping as pending so EveryMillis/EveryBytes still see
+        // a dirty mapping (no-op for copy-on-write).
+        self.record_write(guard.len() as u64);
+        Ok(guard.as_ptr().cast_mut())
     }
 
     /// Hint the kernel that the given `[offset, offset + len)` range
@@ -1363,20 +1354,40 @@ fn touch_range_with_ptr(base: *const u8, start: usize, walk_len: usize, page_sz:
 
 /// Read access to the mapped bytes, used by every read-side accessor.
 ///
-/// For RW mappings this holds a recursive read guard, so the mapping
-/// cannot be remapped (by `resize`) or written while it lives, and a
-/// thread that already holds a view does not deadlock behind a queued
-/// writer. RO and COW mappings are never remapped, so a plain borrow
-/// is enough. Range checks against `len()` of this value are checks
-/// against the mapping actually being accessed.
+/// For RW and COW mappings this holds a recursive read guard, so the
+/// mapping cannot be remapped (by `resize`) or written while it lives,
+/// and a thread that already holds a view does not deadlock behind a
+/// queued writer. RO mappings are never remapped or written, so a
+/// plain borrow is enough. Range checks against `len()` of this value
+/// are checks against the mapping actually being accessed.
 pub(crate) enum MapRead<'a> {
-    /// RO / COW mapping.
+    /// RO mapping.
     Shared(&'a [u8]),
-    /// RW mapping, read-locked.
+    /// RW / COW mapping, read-locked.
     Guarded(RwLockReadGuard<'a, RawMmapMut>),
 }
 
 impl<'a> MapRead<'a> {
+    /// Length of the mapping this access covers. Inherent, so it is
+    /// used instead of `<[u8]>::len` through `Deref`: it does not form
+    /// a reference to the whole mapping.
+    #[inline]
+    pub(crate) fn len(&self) -> usize {
+        match self {
+            MapRead::Shared(s) => s.len(),
+            MapRead::Guarded(g) => g.len(),
+        }
+    }
+
+    /// Base address of the mapping, without forming a slice reference.
+    #[inline]
+    pub(crate) fn base_ptr(&self) -> *const u8 {
+        match self {
+            MapRead::Shared(s) => s.as_ptr(),
+            MapRead::Guarded(g) => RawMmapMut::as_ptr(g),
+        }
+    }
+
     /// Turn this access into a `MappedSlice` over `range`. The range
     /// must have been validated against `self.len()`.
     pub(crate) fn into_slice(self, range: std::ops::Range<usize>) -> MappedSlice<'a> {
@@ -1402,8 +1413,33 @@ impl MemoryMappedFile {
     /// Acquire read access to the current mapping. See [`MapRead`].
     pub(crate) fn map_read(&self) -> MapRead<'_> {
         match &self.inner.map {
-            MapVariant::Ro(m) | MapVariant::Cow(m) => MapRead::Shared(m),
-            MapVariant::Rw(lock) => MapRead::Guarded(lock.read_recursive()),
+            MapVariant::Ro(m) => MapRead::Shared(m),
+            MapVariant::Rw(lock) | MapVariant::Cow(lock) => MapRead::Guarded(lock.read_recursive()),
+        }
+    }
+
+    /// The lock of a writable (`ReadWrite` or `CopyOnWrite`) mapping,
+    /// or `InvalidMode(msg)` for a read-only one.
+    pub(crate) fn write_lock(&self, msg: &'static str) -> Result<&RwLock<RawMmapMut>> {
+        self.inner.map.locked().ok_or(MmapIoError::InvalidMode(msg))
+    }
+
+    /// Whether writes count toward `pending_bytes` and the flush
+    /// policy: only shared (`ReadWrite`) mappings have anything to
+    /// flush.
+    #[inline]
+    pub(crate) fn tracks_writes(&self) -> bool {
+        matches!(self.inner.map, MapVariant::Rw(_))
+    }
+
+    /// The pending-bytes counter for write guards, or `None` for
+    /// copy-on-write mappings, whose writes are never flushed.
+    #[inline]
+    pub(crate) fn pending_counter(&self) -> Option<&AtomicU64> {
+        if self.tracks_writes() {
+            Some(&self.inner.written_since_last_flush)
+        } else {
+            None
         }
     }
 }
@@ -1427,6 +1463,25 @@ fn map_file_rw(file: &File, len: usize, huge: bool) -> Result<RawMmapMut> {
     #[cfg(not(feature = "hugepages"))]
     let _ = huge;
     Ok(map)
+}
+
+/// Map the first `len` bytes of `file` privately (copy-on-write).
+#[cfg(feature = "cow")]
+fn map_file_cow(file: &File, len: u64) -> Result<RawMmapMut> {
+    let len = usize::try_from(len).map_err(|_| {
+        MmapIoError::ResizeFailed(format!("File length {len} does not fit in usize"))
+    })?;
+    // SAFETY: `RawMmapOptions::map_copy` carries the same cross-process
+    // hazard as `RawMmap::map`: another process modifying the file can
+    // change pages this mapping has not written yet (torn reads). The
+    // crate marks that as out of scope (REPS.md section 5.1). Writes
+    // through the mapping go to private pages (MAP_PRIVATE /
+    // PAGE_WRITECOPY) and never reach the file or any other mapping, and
+    // within the process every access goes through the `RwLock` in
+    // `MapVariant::Cow`, exactly as for `Rw`. `len` is the file size the
+    // caller just queried, so the window lies inside the file.
+    // Contract: `crate::raw::RawMmapOptions::map_copy` (see `docs/SAFETY.md`, raw mapping layer).
+    Ok(unsafe { RawMmapOptions::new().len(len).map_copy(file)? })
 }
 
 /// Hint the kernel to back `map` with transparent huge pages.
@@ -1480,17 +1535,47 @@ fn advise_huge_pages(map: &RawMmapMut) {
 impl MemoryMappedFile {
     /// Open an existing file and memory-map it in copy-on-write mode.
     ///
-    /// The mapping is exposed read-only: writes through it are not
-    /// supported (every write method returns
-    /// [`MmapIoError::InvalidMode`]), so it currently behaves like
-    /// [`open_ro`](Self::open_ro) and the underlying file is never
-    /// modified through it. The mode is reserved for a writable
-    /// private mapping in a future release.
+    /// The file only needs read permission. The mapping is private
+    /// (`MAP_PRIVATE` / `PAGE_WRITECOPY`): since 1.1.0 every write
+    /// method works on it ([`update_region`](Self::update_region),
+    /// [`as_slice_mut`](Self::as_slice_mut), `chunks_mut`, atomic
+    /// views), each written page is copied on first write, and the
+    /// changes are visible through this mapping (and its clones) only.
+    /// They never reach the file, and they are lost when the mapping is
+    /// dropped. [`flush`](Self::flush) and
+    /// [`flush_range`](Self::flush_range) are `Ok` no-ops,
+    /// [`pending_bytes`](Self::pending_bytes) stays 0, and
+    /// [`resize`](Self::resize) returns [`MmapIoError::InvalidMode`].
+    ///
+    /// Locking works as for `ReadWrite`: a live read view blocks the
+    /// write methods, and a write on the thread that holds a view
+    /// deadlocks (use the `try_` methods to avoid that).
+    ///
+    /// Pages not yet written may still show later changes made to the
+    /// file by others (POSIX leaves this unspecified; Windows shows
+    /// them), the same caveat as any mapping of a shared file.
     ///
     /// # Errors
     ///
     /// Returns [`MmapIoError::Io`] if the file cannot be opened or mapped.
     /// Returns [`MmapIoError::ResizeFailed`] if the file is zero-length.
+    ///
+    /// # Example
+    ///
+    /// ```
+    /// use mmap_io::MemoryMappedFile;
+    ///
+    /// let dir = tempfile::tempdir()?;
+    /// let path = dir.path().join("cow.bin");
+    /// std::fs::write(&path, b"original")?;
+    ///
+    /// let cow = MemoryMappedFile::open_cow(&path)?;
+    /// cow.update_region(0, b"EDIT")?;
+    /// assert_eq!(&*cow.as_slice(0, 8)?, b"EDITinal");
+    /// cow.flush()?; // no-op: private pages are never written back
+    /// assert_eq!(std::fs::read(&path)?, b"original");
+    /// # Ok::<(), Box<dyn std::error::Error>>(())
+    /// ```
     pub fn open_cow<P: AsRef<Path>>(path: P) -> Result<Self> {
         let path_ref = path.as_ref();
         let file = OpenOptions::new().read(true).open(path_ref)?;
@@ -1498,28 +1583,14 @@ impl MemoryMappedFile {
         if len == 0 {
             return Err(MmapIoError::ResizeFailed(ERR_ZERO_LENGTH_FILE.into()));
         }
-        // SAFETY: `RawMmapOptions::map` carries the same cross-process
-        // aliasing hazard as `RawMmap::map`: another process modifying
-        // the backing file can produce torn reads. The crate marks
-        // this as out-of-scope per REPS.md section 5.1. `map` creates
-        // a read-only mapping (PROT_READ / FILE_MAP_READ), and the
-        // crate never hands out `&mut [u8]` into a COW mapping, so the
-        // aliasing rules are trivially satisfied within the process.
-        // `opts.len(len as usize)` constrains the mapping to the file
-        // size we just queried; `len > 0` is verified above.
-        // Contract: `crate::raw::RawMmapOptions::map` (see `docs/SAFETY.md`, raw mapping layer).
-        let mmap = unsafe {
-            let mut opts = RawMmapOptions::new();
-            opts.len(len as usize);
-            opts.map(&file)?
-        };
+        let mmap = map_file_cow(&file, len)?;
         let inner = Inner {
             path: path_ref.to_path_buf(),
             file,
             mode: MmapMode::CopyOnWrite,
             cached_len: AtomicU64::new(len),
-            map: MapVariant::Cow(mmap),
-            // Nothing to flush: the mapping is never written.
+            map: MapVariant::Cow(RwLock::new(mmap)),
+            // Nothing to flush: writes stay in private pages.
             flush_policy: FlushPolicy::Never,
             written_since_last_flush: AtomicU64::new(0),
             writes_since_last_flush: AtomicU64::new(0),
@@ -1537,15 +1608,20 @@ impl MemoryMappedFile {
     /// Add `bytes` to the pending-bytes counter without evaluating the
     /// flush policy. Used by write paths that cannot flush at the
     /// point of the write (guards being dropped, closures returning).
+    /// Copy-on-write writes are not counted: they are never flushed.
     pub(crate) fn record_write(&self, bytes: u64) {
-        self.inner
-            .written_since_last_flush
-            .fetch_add(bytes, Ordering::AcqRel);
+        if let Some(pending) = self.pending_counter() {
+            pending.fetch_add(bytes, Ordering::AcqRel);
+        }
     }
 
     /// Count one `update_region` of `written` bytes and run the flush
-    /// policy. Called after the write lock has been released.
+    /// policy. Called after the write lock has been released. A no-op
+    /// on copy-on-write mappings.
     fn apply_flush_policy(&self, written: u64) -> Result<()> {
+        if !self.tracks_writes() {
+            return Ok(());
+        }
         let pending = self
             .inner
             .written_since_last_flush
@@ -1670,8 +1746,9 @@ impl MemoryMappedFile {
     fn base_addr(&self) -> Option<usize> {
         match &self.inner.map {
             MapVariant::Ro(m) => Some(m.as_ptr() as usize),
-            MapVariant::Cow(m) => Some(m.as_ptr() as usize),
-            MapVariant::Rw(lock) => Some(lock.read_recursive().as_ptr() as usize),
+            MapVariant::Rw(lock) | MapVariant::Cow(lock) => {
+                Some(lock.read_recursive().as_ptr() as usize)
+            }
         }
     }
 }
@@ -1941,21 +2018,13 @@ impl MemoryMappedFileBuilder {
                 if len == 0 {
                     return Err(MmapIoError::ResizeFailed(ERR_ZERO_LENGTH_FILE.into()));
                 }
-                // SAFETY: see `open_cow` for the full justification.
-                // Identical preconditions: file just opened read-only,
-                // `len > 0` verified, and the COW mapping is exposed
-                // as read-only at the Rust API.
-                let mmap = unsafe {
-                    let mut opts = RawMmapOptions::new();
-                    opts.len(len as usize);
-                    opts.map(&file)?
-                };
+                let mmap = map_file_cow(&file, len)?;
                 Ok(MemoryMappedFile::from_inner(Inner {
                     path: self.path,
                     file,
                     mode,
                     cached_len: AtomicU64::new(len),
-                    map: MapVariant::Cow(mmap),
+                    map: MapVariant::Cow(RwLock::new(mmap)),
                     flush_policy: FlushPolicy::Never,
                     written_since_last_flush: AtomicU64::new(0),
                     writes_since_last_flush: AtomicU64::new(0),
