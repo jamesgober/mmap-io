@@ -1812,13 +1812,13 @@ pub fn unlock_all(&self) -> Result<()>
 #[cfg(feature = "watch")]
 pub fn watch<F>(&self, callback: F) -> Result<WatchHandle>
 where
-    F: Fn(ChangeEvent) + Send + 'static
+    F: FnMut(ChangeEvent) + Send + 'static
 ```
 
 **Description**: Watch the backing file for changes using the OS-native event source. The callback runs on a dedicated dispatcher thread for each detected change. Drop the returned `WatchHandle` to stop watching and release the OS subscription.
 
 **Parameters**:
-- `callback`: `Fn(ChangeEvent) + Send + 'static` invoked once per detected change
+- `callback`: `FnMut(ChangeEvent) + Send + 'static` invoked once per detected change, always on the same dispatcher thread, one call at a time (`FnMut` since 1.1.0; it was `Fn`, and every `Fn` closure still works)
 
 **Returns**: `Result<WatchHandle>` - drop to stop watching
 

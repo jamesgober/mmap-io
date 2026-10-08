@@ -66,6 +66,7 @@ Bug-fix release. Several of the fixes below are memory-safety bugs reachable fro
 - **Dependencies:** `thiserror` and `cfg-if` removed (`MmapIoError` implements `Display` / `Error` / `From<io::Error>` by hand with byte-identical messages, pinned by a test); `libc` is a Unix-only dependency; docs.rs metadata drops the redundant `features = ["async"]`.
 - **Internals:** the cached length and the flush counters are `AtomicU64` instead of `RwLock<u64>`; `MappedSlice` caches its slice pointer at construction instead of re-indexing the guard on every deref.
 - **CI:** tests run for the default feature set, all features, no features, and each feature alone on Linux, macOS, and Windows; a new MSRV job builds the library on 1.75 on all three OSes; the bench-regression gate (which could never fail) parses critcmp's table and uses the REPS.md 10% limit; `actions/cache` v6 and `actions/upload-artifact` v7; tool installs no longer come from never-expiring caches.
+- **`MemoryMappedFile::watch` accepts `FnMut` callbacks** (the bound was `Fn(ChangeEvent) + Send + 'static`). The callback only ever runs on the dispatcher thread, one call at a time, so it may keep mutable state without a lock. Relaxing a bound on a method's own type parameter is not a breaking change: every `Fn` closure is `FnMut`, no public trait carries the bound, and explicit type arguments still satisfy it.
 
 ### Performance
 
