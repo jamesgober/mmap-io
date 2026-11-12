@@ -56,6 +56,10 @@ fn tmp_path(name: &str) -> PathBuf {
 // Existing benches (preserved from prior milestones)
 // ---------------------------------------------------------------------
 
+/// `create_rw` keeps its 1.1 meaning here: a sparse file (the builder's
+/// `sparse(true)`), so the numbers stay comparable across releases.
+/// Since 1.2 `create_rw` reserves the disk blocks by default;
+/// `create_rw_reserved` measures that, including the `fallocate`.
 fn bench_create_rw(b: &mut Criterion) {
     let mut group = b.benchmark_group("create_rw");
     for &size in &[4_usize * 1024, 64 * 1024, 1024 * 1024] {
@@ -64,6 +68,30 @@ fn bench_create_rw(b: &mut Criterion) {
             ben.iter_batched(
                 || {
                     let path = tmp_path(&format!("create_rw_{sz}"));
+                    let _ = fs::remove_file(&path);
+                    (path, sz)
+                },
+                |(path, sz)| {
+                    let _m = MemoryMappedFile::builder(&path)
+                        .size(sz as u64)
+                        .sparse(true)
+                        .create()
+                        .expect("create sparse");
+                    let _ = fs::remove_file(&path);
+                },
+                BatchSize::SmallInput,
+            )
+        });
+    }
+    group.finish();
+
+    let mut group = b.benchmark_group("create_rw_reserved");
+    for &size in &[4_usize * 1024, 64 * 1024, 1024 * 1024] {
+        group.throughput(Throughput::Bytes(size as u64));
+        group.bench_with_input(BenchmarkId::from_parameter(size), &size, |ben, &sz| {
+            ben.iter_batched(
+                || {
+                    let path = tmp_path(&format!("create_rw_reserved_{sz}"));
                     let _ = fs::remove_file(&path);
                     (path, sz)
                 },
@@ -182,8 +210,25 @@ fn bench_as_slice_ro(b: &mut Criterion) {
 
 fn bench_resize(b: &mut Criterion) {
     let mut group = b.benchmark_group("resize");
+    // Sparse growth, as in 1.1, so the numbers stay comparable; the
+    // `_reserved` variant measures the 1.2 default, which reserves the
+    // new 7 MiB on disk on every grow.
     group.bench_function("grow_1MB_to_8MB", |ben| {
         let path = tmp_path("resize_grow");
+        let _ = fs::remove_file(&path);
+        let mmap = MemoryMappedFile::builder(&path)
+            .size(1024 * 1024)
+            .sparse(true)
+            .create()
+            .expect("create sparse");
+        ben.iter(|| {
+            mmap.resize(8 * 1024 * 1024).expect("resize grow");
+            mmap.resize(1024 * 1024).expect("resize shrink");
+        });
+        let _ = fs::remove_file(&path);
+    });
+    group.bench_function("grow_1MB_to_8MB_reserved", |ben| {
+        let path = tmp_path("resize_grow_reserved");
         let _ = fs::remove_file(&path);
         let mmap = MemoryMappedFile::create_rw(&path, 1024 * 1024).expect("create_rw");
         ben.iter(|| {

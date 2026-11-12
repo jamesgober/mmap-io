@@ -227,10 +227,10 @@ impl NewFile {
             claim,
             created,
         };
-        let sized = new
-            .file
-            .set_len(0)
-            .and_then(|()| extend_file(&new.file, 0, size, sparse));
+        // A file this call created is empty already; an existing one is
+        // truncated first so the new length reads as zeros.
+        let truncated = if created { Ok(()) } else { new.file.set_len(0) };
+        let sized = truncated.and_then(|()| extend_file(&new.file, 0, size, sparse));
         match sized {
             Ok(()) => Ok(new),
             Err(e) => Err(new.undo(path, e.into())),

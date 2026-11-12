@@ -163,6 +163,8 @@ All threads contend on the same cache line, so the cache-coherence protocol seri
 | `read_into_rw` 64 KiB | 0.60 µs | 0.57 µs |
 | `read_into_rw` 1 MiB | 15 µs | 15 µs |
 
+Since 1.2, `create_rw` and a growing `resize` reserve the new disk blocks (`fallocate` on Linux, `F_PREALLOCATE` on macOS), so a full disk is an error instead of a `SIGBUS` later. That costs time: on the Linux CI runner (ext4) `create_rw` of 4 KiB to 1 MiB went from about 40 µs to about 140 µs and the 1 MiB -> 8 MiB -> 1 MiB resize from about 21 µs to about 94 µs. The `create_rw` and `resize` rows above use `sparse(true)` (the 1.1 behaviour); the criterion groups `create_rw_reserved` and `resize/grow_1MB_to_8MB_reserved` measure the default.
+
 `create_rw` on Windows is dominated by file-creation overhead and varies by more than 2x between runs. `resize` on Windows got slower in 1.1 (24 µs in 1.0) because shrinking now really truncates the file: the view is unmapped, the file truncated, and the prefix remapped. In 1.0 a Windows shrink only lowered the cached length, which left the file at its old size and broke a later grow.
 
 ## Notes on reading these numbers
