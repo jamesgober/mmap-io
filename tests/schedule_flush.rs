@@ -122,6 +122,36 @@ fn concurrent_writers_and_schedulers() {
         .all(|&b| b == 4));
 }
 
+/// The name of `path`'s filesystem when it is one where write-back cannot
+/// be observed through `/proc/self/smaps`: tmpfs and ramfs have no backing
+/// store, and overlayfs does not clear the upper mapping's dirty count.
+#[cfg(target_os = "linux")]
+fn no_writeback_fs(path: &std::path::Path) -> Option<&'static str> {
+    // `f_type` values from linux/magic.h. `f_type` is a different integer
+    // type per target (and signed on some 32-bit ones), so compare its low
+    // 32 bits as i64.
+    const TMPFS_MAGIC: i64 = 0x0102_1994;
+    const RAMFS_MAGIC: i64 = 0x8584_58f6;
+    const OVERLAYFS_SUPER_MAGIC: i64 = 0x794c_7630;
+
+    use std::os::unix::ffi::OsStrExt;
+    let c_path = std::ffi::CString::new(path.as_os_str().as_bytes()).ok()?;
+    // SAFETY: `statfs` is a plain C struct; all-zero bytes are a valid value.
+    let mut buf: libc::statfs = unsafe { std::mem::zeroed() };
+    // SAFETY: `c_path` is a valid NUL-terminated string and `buf` is a
+    // properly sized, writable `statfs` that outlives the call.
+    if unsafe { libc::statfs(c_path.as_ptr(), &mut buf) } != 0 {
+        return None;
+    }
+    #[allow(clippy::unnecessary_cast, clippy::cast_lossless)]
+    match (buf.f_type as i64) & 0xffff_ffff {
+        TMPFS_MAGIC => Some("tmpfs"),
+        RAMFS_MAGIC => Some("ramfs"),
+        OVERLAYFS_SUPER_MAGIC => Some("overlayfs"),
+        _ => None,
+    }
+}
+
 /// Linux: `sync_file_range(SYNC_FILE_RANGE_WRITE)` really starts
 /// write-back (unlike `msync(MS_ASYNC)`, a no-op there). Observed
 /// through this mapping's own dirty page count in `/proc/self/smaps`,
@@ -162,6 +192,13 @@ fn linux_schedule_flush_starts_writeback() {
     }
 
     let dir = tempfile::tempdir().expect("tempdir");
+    if let Some(fs) = no_writeback_fs(dir.path()) {
+        // tmpfs and ramfs have no backing store, and overlayfs does not
+        // clear the mapping's dirty count after write-back starts, so
+        // there is nothing to observe there (issue #13).
+        eprintln!("skipping: temp dir is on {fs}, which shows no write-back in smaps");
+        return;
+    }
     let len: usize = 16 << 20;
     let m = rw(&dir, len as u64);
     m.update_region(0, &vec![0xC3; len])

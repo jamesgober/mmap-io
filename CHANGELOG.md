@@ -7,6 +7,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.1.1] - 2026-11-11
+
+Test-only patch release: no library code changes.
+
+### Fixed
+
+- **`linux_schedule_flush_starts_writeback` failed on tmpfs and overlayfs** (#13). The test watches the mapping's dirty page count in `/proc/self/smaps` fall after `schedule_flush()`. On tmpfs and ramfs there is no backing store, and on overlayfs the count does not fall, so the test timed out after 20 s even though `schedule_flush` worked. It now checks the temp directory's filesystem with `statfs` and skips on tmpfs, ramfs and overlayfs, as it already skipped when the pages were clean to begin with. Reported by the Debian packager, who builds on overlayfs.
+
 ## [1.1.0] - 2026-10-07
 
 Minor release: security fixes, soundness fixes, a first-party mapping layer, and new APIs. memmap2 is replaced by the in-house `mmap_io::raw` layer (closing RUSTSEC-2026-0186 for this crate); several fixes below are memory-safety bugs reachable from safe code (marked **soundness**), including run-time exclusion of atomic and plain views of the same bytes, so upgrading is recommended for every user. New: non-blocking `try_` accessors, opt-in writable copy-on-write mappings, `schedule_flush` (write-back without waiting), atomic views and huge pages on `AnonymousMmap`, `BufRead` for `MmapReader`, `MemoryMappedFileBuilder::create_new`, `FnMut` watch callbacks, and memmap2-style additions to `raw`. Everything is additive: no public items were removed or renamed and no signatures changed (one trait bound was relaxed); the behavior changes are listed under **Changed**.
@@ -941,7 +949,8 @@ impls. Everything is additive; no API breaks.
 - Basic README.
 
 <!-- LINK REFERENCE -->
-[Unreleased]: https://github.com/jamesgober/mmap-io/compare/v1.1.0...HEAD
+[Unreleased]: https://github.com/jamesgober/mmap-io/compare/v1.1.1...HEAD
+[1.1.1]: https://github.com/jamesgober/mmap-io/compare/v1.1.0...v1.1.1
 [1.1.0]: https://github.com/jamesgober/mmap-io/compare/v1.0.0...v1.1.0
 [1.0.0]: https://github.com/jamesgober/mmap-io/compare/v0.9.11...v1.0.0
 [0.9.11]: https://github.com/jamesgober/mmap-io/compare/v0.9.10...v0.9.11
