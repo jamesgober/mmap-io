@@ -338,3 +338,34 @@ fn flush_does_not_wait_for_a_writer() {
     flusher.join().unwrap();
     assert_eq!(done, Ok(true), "flush waited for the write guard");
 }
+
+/// Found while landing the registry: a claim released after the file was
+/// closed could outlive the inode, and a new file that got the same inode
+/// number was refused. Two threads create, map, unlink and drop files as
+/// fast as they can; no mapping of a fresh file may ever be refused.
+#[cfg(unix)]
+#[cfg_attr(miri, ignore = "FFI mmap syscalls are not supported by Miri")]
+#[test]
+fn reused_inode_numbers_are_never_refused() {
+    let dir = tempfile::tempdir().unwrap();
+    let workers: Vec<_> = (0..4)
+        .map(|t| {
+            let dir = dir.path().to_path_buf();
+            std::thread::spawn(move || {
+                for i in 0..500 {
+                    let path = dir.join(format!("w{t}-{i}.bin"));
+                    let m = match MemoryMappedFile::create_rw(&path, 4096) {
+                        Ok(m) => m,
+                        Err(e) => panic!("thread {t} round {i}: {e}"),
+                    };
+                    m.update_region(0, b"x").unwrap();
+                    fs::remove_file(&path).unwrap();
+                    drop(m);
+                }
+            })
+        })
+        .collect();
+    for w in workers {
+        w.join().unwrap();
+    }
+}

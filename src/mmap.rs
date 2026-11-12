@@ -75,6 +75,15 @@ pub enum MmapMode {
 
 #[doc(hidden)]
 pub struct Inner {
+    // Registration of this mapping in the process-wide registry (see
+    // `crate::registry`). Declared first, so it is released while the
+    // file is still open: the registry keys on the file's identity
+    // (device and inode), and once the last descriptor and mapping of an
+    // unlinked file are gone the OS may give the same inode number to a
+    // new file, which a still-registered claim would then block. Nothing
+    // can borrow the mapping any more when `Inner` is dropped, so
+    // releasing the claim before the mapping is unmapped is safe.
+    pub(crate) claim: Claim,
     pub(crate) path: PathBuf,
     pub(crate) file: File,
     pub(crate) mode: MmapMode,
@@ -114,10 +123,6 @@ pub struct Inner {
     // The `EveryMillis` worker holds only a `Weak`, upgraded while it
     // flushes, and is not counted. See `Drop for MemoryMappedFile`.
     pub(crate) handles: std::sync::atomic::AtomicUsize,
-    // Registration of this mapping in the process-wide registry (see
-    // `crate::registry`). Declared last so it is released only after
-    // the mapping itself has been unmapped.
-    pub(crate) claim: Claim,
 }
 
 impl Inner {
@@ -184,8 +189,10 @@ fn extend_file(file: &File, old_len: u64, new_len: u64, sparse: bool) -> std::io
 /// A file opened for a new `ReadWrite` mapping, sized and registered,
 /// that has not been mapped yet.
 struct NewFile {
-    file: File,
+    // Before `file`, so it is released while the file is still open
+    // (see `Inner::claim`).
     claim: Claim,
+    file: File,
     /// Whether this call created the file (rather than truncating an
     /// existing one), so a later failure can remove it again.
     created: bool,
@@ -246,6 +253,8 @@ impl NewFile {
             claim,
             created,
         } = self;
+        // Released while the file is still open (see `Inner::claim`).
+        drop(claim);
         if created {
             // Closed before removing: Windows cannot delete an open file.
             drop(file);
@@ -254,7 +263,6 @@ impl NewFile {
             let _ = file.set_len(0);
             drop(file);
         }
-        drop(claim);
         err
     }
 }
