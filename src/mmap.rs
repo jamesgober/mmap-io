@@ -106,7 +106,7 @@ pub struct Inner {
     // Time-based flusher background thread (used only when
     // FlushPolicy::EveryMillis is selected on the builder path). Held
     // here so the worker thread's lifetime is bound to the mapping;
-    // Drop signals shutdown. See C2 fix in .dev/AUDIT.md.
+    // Drop signals shutdown.
     pub(crate) flusher: RwLock<Option<crate::flush::TimeBasedFlusher>>,
     // Live views of a writable (RW / writable COW) mapping, so an atomic
     // view and a plain byte view of the same bytes can never coexist.

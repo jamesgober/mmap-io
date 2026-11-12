@@ -395,7 +395,7 @@ impls. Everything is additive; no API breaks.
   Version history entry added. Install snippet bumped to 0.9.9.
 - `REPS.md`: watch surface annotated `Since 0.9.9: backed by
   notify`.
-- `.dev/ROADMAP.md`: **1.0.0 placed on indefinite hold** pending
+- Roadmap: **1.0.0 placed on indefinite hold** pending
   cross-repo presentation cleanup (consistent headers / branding /
   SECURITY.md / CONTRIBUTING.md across the project family). The
   previously-planned `1.0.0-rc.1` candidate phase is dropped:
@@ -692,7 +692,7 @@ impls. Everything is additive; no API breaks.
   mixed `update_region` with `flush_range`. The accumulator is now
   debited by the actual flushed length (clamped at zero), so the
   policy correctly tracks unflushed pages. Regression test:
-  `tests/flush_range_accumulator.rs`. See `.dev/AUDIT.md` C1.
+  `tests/flush_range_accumulator.rs`.
 - **(C2)** `FlushPolicy::EveryMillis` actually triggers automatic
   flushes. The previous implementation created a dangling
   `Weak::new()` and discarded the `TimeBasedFlusher` value, leaving
@@ -702,21 +702,19 @@ impls. Everything is additive; no API breaks.
   `Arc::downgrade` weak reference and a shutdown signal so the
   worker thread exits cleanly on drop. Regression tests:
   `tests/time_based_flush.rs`. The misnamed test in `tests/basic.rs`
-  was rewritten to verify the actual fixed behavior. See
-  `.dev/AUDIT.md` C2.
+  was rewritten to verify the actual fixed behavior.
 - **(H5)** `WatchHandle::drop` now signals the polling thread to
   exit via an `AtomicBool` shutdown flag. Previously, dropping the
   handle did nothing and the background thread continued polling
   indefinitely (until the watched file was deleted), causing a
-  per-call thread leak. See `.dev/AUDIT.md` H5.
+  per-call thread leak.
 - **(H6)** `Segment::as_slice` and `SegmentMut::as_slice_mut` /
   `SegmentMut::write` now re-validate bounds on every call instead
   of relying on the construction-time check. Parent mappings can be
   resized between segment construction and use, so the previous
   "validated in constructor" claim was misleading. New helper
   `is_valid()` lets callers check cheaply without paying for an
-  access. Regression test: `tests/segment_after_resize.rs`. See
-  `.dev/AUDIT.md` H6.
+  access. Regression test: `tests/segment_after_resize.rs`.
 - Removed three unused imports (`std::mem` and `std::ptr` in
   `advise.rs`, `std::ptr` in `lock.rs`) that triggered clippy
   warnings.
@@ -745,7 +743,7 @@ impls. Everything is additive; no API breaks.
   and `resize()` needs the write lock). Pattern: take the view in
   a tight scope or call `drop(view)` explicitly before subsequent
   write operations. Regression tests:
-  `tests/atomic_view_resize_safety.rs`. See `.dev/AUDIT.md` C3.
+  `tests/atomic_view_resize_safety.rs`.
 - MSRV dropped from 1.76 to 1.75 (no source changes required).
 - Repository ownership transferred from `asotex/mmap-io` to
   `jamesgober/mmap-io`.
@@ -763,7 +761,7 @@ impls. Everything is additive; no API breaks.
   `OnceLock<usize>`, eliminating a `sysconf` / `GetSystemInfo`
   syscall on every call. Hot paths affected: `flush_range`
   microflush optimization, `touch_pages`, `touch_pages_range`, and
-  the page-iterator. See `.dev/AUDIT.md` H7.
+  the page-iterator.
 
 ### Documentation
 
@@ -772,22 +770,6 @@ impls. Everything is additive; no API breaks.
   principles, module structure, public API surface, safety contract,
   MSRV policy, performance contract, stability guarantees,
   dependency policy, testing requirements, and out-of-scope items.
-- Added `.dev/DIRECTIVES.md` (project standards: identity, language
-  rules, code style, build matrix, CI policy, commit and release
-  rules, test discipline, documentation discipline, banned-words
-  enforcement, AI dev workflow).
-- Added `.dev/AUDIT.md` (deep-dive audit findings catalog that
-  drove this release's bug fixes).
-- Added `.dev/ROADMAP.md` (precise milestone path covering `0.9.5`
-  correctness bugfix release, `0.9.6` unsafe audit and property
-  tests, `0.9.7` performance telemetry and iterator zero-copy
-  redesign, `0.9.8` async polish, `0.9.9` native watch backends and
-  ergonomic adds, `0.9.10` pre-1.0 stabilization, `1.0.0-rc.1`
-  release candidate, `1.0.0` stable, and long-term post-1.0 work).
-- Added `.dev/PROMPTS.md` (ready-to-paste bootstrap prompts for
-  handing each roadmap milestone to an AI agent, plus generic
-  prompts for CHANGELOG management and safety review). `.dev/` is
-  gitignored.
 
 ### Known issues
 
@@ -796,8 +778,7 @@ impls. Everything is additive; no API breaks.
   (`test_all_features_integration`) remain
   `#[cfg_attr(windows, ignore)]`. Windows mtime granularity makes
   polling-based change detection flaky without native
-  `ReadDirectoryChangesW` integration. Tracked for `0.9.9` per
-  `.dev/ROADMAP.md`.
+  `ReadDirectoryChangesW` integration. Tracked for `0.9.9`.
 
 <br>
 
