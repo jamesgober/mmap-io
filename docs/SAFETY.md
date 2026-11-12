@@ -125,8 +125,11 @@ part as follows.
   path to the same file is the same entry. Read claims (`ReadOnly`,
   `CopyOnWrite`) share; a write claim (`ReadWrite`) is exclusive. The
   claim is taken after the file is opened and before it is mapped or
-  truncated, and released when the last clone is dropped, after the
-  mapping is unmapped (it is the last field of `Inner`). `create_rw`
+  truncated, and released when the last clone is dropped. It is the
+  first field of `Inner`, so it is released while the file is still
+  open: once an unlinked file's last descriptor and mapping are gone the
+  OS may reuse its inode number for a new file, which a stale entry
+  would block. Nothing can borrow the mapping by then. `create_rw`
   (and `create_mmap`) open the file without truncating, claim it, and
   only then truncate, so a mapped file is never truncated. `write_mmap`
   goes through `open_rw` and is refused the same way. A shrinking
