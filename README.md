@@ -24,9 +24,9 @@
 ## What you get
 
 - **Zero-copy reads on every mode.** `as_slice` returns a `MappedSlice<'_>` borrowed directly from the mapping. No allocation. No memcpy. Works on read-only, read-write, and copy-on-write mappings uniformly.
-- **Zero-allocation iteration.** `mmap.chunks(N)` and `mmap.pages()` walk the file in fixed strides without ever heap-allocating. A 1 GiB scan at 4 KiB chunks skips 262,144 allocations and half the memory bandwidth of the naive approach.
+- **Zero-allocation iteration.** `mmap.chunks(N)` and `mmap.pages()` walk the file in fixed strides without heap-allocating. A 1 GiB scan at 4 KiB chunks skips 262,144 allocations and half the memory bandwidth of the naive approach. The exception: an item over bytes that a live atomic view covers is an owned snapshot (one allocation, read with atomic loads).
 - **Aligned atomic views.** On read-write, writable copy-on-write and anonymous mappings, `atomic_u32` / `atomic_u64` return a wrapper that derefs to `&AtomicU64`. Multi-thread `fetch_add` over a memory-mapped counter is one cache-line ping; no cross-process locking required. Since 1.1 the crate refuses a plain slice and an atomic view over the same bytes at run time, so the two cannot race.
-- **Configurable durability.** `flush()` is synchronous (`msync(MS_SYNC)` on Unix, `FlushViewOfFile` + `FlushFileBuffers` on Windows). `FlushPolicy::EveryBytes(N)`, `EveryWrites(N)`, `EveryMillis(N)`, `Always`, or `Manual` decide when the crate flushes for you; the millis policy runs a background flusher bound to the mapping's lifetime.
+- **Configurable durability.** `flush()` is synchronous (`msync(MS_SYNC)` semantics on Unix, `FlushViewOfFile` + `FlushFileBuffers` on Windows); since 1.2 the slow part runs without the mapping lock on Linux and Windows, so writers are not stalled by a flush. `FlushPolicy::EveryBytes(N)`, `EveryWrites(N)`, `EveryMillis(N)`, `Always`, or `Manual` decide when the crate flushes for you; the millis policy runs a background flusher bound to the mapping's lifetime.
 - **Thread-safe.** Interior mutability via `parking_lot::RwLock`. Multiple concurrent readers, one writer at a time. Every live read view (slice, iterator item, atomic view) blocks writes and `resize()` until released, so memory under your reference cannot move. The non-blocking `try_as_slice` / `try_as_slice_mut` / `try_update_region` report "would block" instead of waiting (and instead of deadlocking on the thread that holds a view).
 - **Writable copy-on-write, opt-in.** `open_cow_writable` maps a file privately: write to it freely, the file never changes (since 1.1). `open_cow` stays read-only, as in 1.0.
 - **Write-back without waiting.** `schedule_flush()` starts write-back and returns (`sync_file_range` on Linux); `flush()` is the durable one.
@@ -34,13 +34,15 @@
 - **Streaming readers.** `mmap.reader()` implements `Read`, `Seek` and `BufRead` (zero-copy `lines()` on read-only mappings).
 - **Cross-platform.** Linux, macOS, Windows. Per-platform hooks where they exist (`MADV_HUGEPAGE` / `MAP_HUGETLB` for huge pages, `posix_fadvise` for OS-level prefetch and `sync_file_range` for write-back on Linux).
 - **Opt-in surface.** Default features are `advise` + `iterator`. Everything else (`async`, `atomic`, `cow`, `locking`, `watch`, `hugepages`) is off by default to keep compile time tight.
+- **One mapping per file, checked.** Since 1.2 a process-wide registry refuses a second mapping that could change or truncate the bytes behind another one's borrows (a second `open_rw`, `write_mmap` or `create_mmap` on a mapped file, a reader next to a writer). Clone the handle instead; `unsafe` `allow_aliasing` on the builder is the explicit opt-out.
+- **No `SIGBUS` on a full disk.** Since 1.2 `create_rw` and a growing `resize` reserve the disk blocks up front (`fallocate` / `F_PREALLOCATE`), so a full disk is an `ENOSPC` error instead of a crash on a later write. `sparse(true)` on the builder keeps a file sparse on purpose.
 - **MSRV: 1.75.** Pinned and verified in CI.
 
 ## Quick start
 
 ```toml
 [dependencies]
-mmap-io = "1.1"
+mmap-io = "1.2"
 ```
 
 ```rust
@@ -102,7 +104,7 @@ Default features:
 
 ```toml
 [dependencies]
-mmap-io = "1.1"
+mmap-io = "1.2"
 ```
 
 Enable async helpers:
@@ -184,7 +186,9 @@ fn main() -> Result<(), mmap_io::MmapIoError> {
     // Persist to disk
     flush(&mmap)?;
 
-    // Open read-only and verify
+    // Open read-only and verify. Drop the writer first: a read-only
+    // mapping is refused while a read-write one of the file lives.
+    drop(mmap);
     let ro = load_mmap("data.bin", MmapMode::ReadOnly)?;
     let slice = ro.as_slice(100, 12)?;
     assert_eq!(slice, b"Hello, mmap!");
@@ -458,11 +462,13 @@ let mmap = MemoryMappedFile::builder("hp.bin")
 - Interior mutability uses `parking_lot::RwLock`.
 - A live `MappedSlice`, iterator item, or atomic view holds the read lock; a `MappedSliceMut` holds the write lock. Calling a method that needs the other kind of lock (for example `update_region` or `resize` while holding a slice, or `flush` while holding a `MappedSliceMut`) on the same thread deadlocks. Drop the guard first, or use the non-blocking `try_update_region` / `try_as_slice_mut` / `try_as_slice`, which return "would block" (`Ok(false)` / `Ok(None)`) instead of waiting.
 
-## ⚠️ Unsafe Code Disclaimer
+## Unsafe Code Disclaimer
 
-This crate uses `unsafe` internally to manage raw memory mappings (`mmap` on Unix, `MapViewOfFile` on Windows, through its own `mmap_io::raw` layer). Public APIs are memory-safe within one process. However:
+This crate uses `unsafe` internally to manage raw memory mappings (`mmap` on Unix, `MapViewOfFile` on Windows, through its own `mmap_io::raw` layer). The zero-copy accessors hand out `&[u8]` that point straight into the file, and Rust requires those bytes not to change while the borrow lives. The crate enforces that for every mapping it makes in this process: clones of a handle share one lock, and since 1.2 a process-wide registry, keyed by the file's identity rather than its path, refuses any second mapping, `write_mmap`, `create_mmap` or shrinking `resize` that could change or truncate bytes behind another mapping's borrows (`InvalidMode` / `ResizeFailed`). What the crate cannot see is your responsibility:
 
-- **You must not modify or truncate the file from another process** (or through a second, independent `MemoryMappedFile` of the same file) while it is mapped here; readers can see torn data or crash with `SIGBUS`.
+- **No other writer may modify or truncate the file while it is mapped**: not another process, and not `std::fs` writes or `File::set_len` on the same file in this process. A changed byte behind a live borrow is undefined behaviour; a truncation crashes the reader with `SIGBUS` on Unix. Coordinate with OS file locks or a protocol, and for files other processes may write, prefer the copying reads (`read_into`, `reader()`), which keep no borrow into the mapping.
+- **`MemoryMappedFileBuilder::allow_aliasing`** (an `unsafe fn`) maps a file the registry would refuse. With it you take on the same rule for both mappings.
+- **Sparse files** (`sparse(true)`, file systems without `fallocate`, files that were already sparse) can still raise `SIGBUS` on a write when the disk is full.
 - **Raw pointers** from `as_ptr` / `as_mut_ptr` are invalidated by `resize()`, and must not be used to write bytes that a `MappedSlice` or an atomic view covers.
 
 Atomic and plain access to the same bytes is checked at run time since 1.1.0: a `MappedSlice` over bytes covered by a live atomic view (or the reverse) is refused with `InvalidMode`, and copying reads (`read_into`, `read_bytes`, `MmapReader`) read those bytes with atomic loads. Disjoint ranges, such as atomic counters in a header next to plain data, are unaffected.

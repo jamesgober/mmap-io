@@ -33,6 +33,12 @@ fn assert_io<T: std::fmt::Debug>(r: Result<T, MmapIoError>, what: &str) {
     }
 }
 
+/// A missing size or an empty file on a writable path: `Io` with
+/// `ErrorKind::InvalidInput` since 1.2.0 (`ResizeFailed` before).
+fn assert_invalid_input<T: std::fmt::Debug>(r: Result<T, MmapIoError>, what: &str) {
+    assert_io_kind(r, ErrorKind::InvalidInput, what);
+}
+
 fn assert_resize_failed<T: std::fmt::Debug>(r: Result<T, MmapIoError>, what: &str) {
     match r {
         Err(MmapIoError::ResizeFailed(msg)) => assert!(!msg.is_empty(), "{what}"),
@@ -110,8 +116,8 @@ fn invalid_sizes_are_rejected_before_the_file_is_touched() {
 #[test]
 fn builder_create_without_size_is_rejected() {
     let path = tmp_path("nosize.bin");
-    assert_resize_failed(MemoryMappedFile::builder(&path).create(), "no size");
-    assert_resize_failed(
+    assert_invalid_input(MemoryMappedFile::builder(&path).create(), "no size");
+    assert_invalid_input(
         MemoryMappedFile::builder(&path)
             .mode(MmapMode::ReadWrite)
             .create(),
@@ -266,14 +272,14 @@ fn empty_file_maps_read_only_but_not_read_write() {
     assert!(from.is_empty());
     drop(from);
 
-    assert_resize_failed(MemoryMappedFile::open_rw(&path), "open_rw empty");
-    assert_resize_failed(
+    assert_invalid_input(MemoryMappedFile::open_rw(&path), "open_rw empty");
+    assert_invalid_input(
         MemoryMappedFile::builder(&path)
             .mode(MmapMode::ReadWrite)
             .open(),
         "builder open RW empty",
     );
-    assert_resize_failed(
+    assert_invalid_input(
         mmap_io::load_mmap(&path, MmapMode::ReadWrite),
         "load_mmap RW empty",
     );
@@ -282,20 +288,20 @@ fn empty_file_maps_read_only_but_not_read_write() {
         .write(true)
         .open(&path)
         .unwrap();
-    assert_resize_failed(
+    assert_invalid_input(
         MemoryMappedFile::from_file(rw_file, MmapMode::ReadWrite, &*path),
         "from_file RW empty",
     );
     #[cfg(feature = "cow")]
     {
-        assert_resize_failed(MemoryMappedFile::open_cow(&path), "open_cow empty");
-        assert_resize_failed(
+        assert_invalid_input(MemoryMappedFile::open_cow(&path), "open_cow empty");
+        assert_invalid_input(
             MemoryMappedFile::builder(&path)
                 .mode(MmapMode::CopyOnWrite)
                 .open(),
             "builder open COW empty",
         );
-        assert_resize_failed(
+        assert_invalid_input(
             MemoryMappedFile::from_file(
                 fs::File::open(&path).unwrap(),
                 MmapMode::CopyOnWrite,
@@ -424,6 +430,8 @@ fn from_file_path_is_informational_only() {
     assert_eq!(m.path(), fake);
     assert_eq!(m.as_slice(0, 7).unwrap(), b"payload");
     assert!(format!("{m:?}").contains("does"), "{m:?}");
+    // A read-write mapping needs the read-only one gone (since 1.2.0).
+    drop(m);
 
     let rw = fs::OpenOptions::new()
         .read(true)
@@ -556,7 +564,7 @@ fn open_or_create_never_truncates_and_validates_size_only_when_needed() {
     let path = tmp_path("ooc.bin");
 
     // Missing file, no size: rejected, nothing created.
-    assert_resize_failed(
+    assert_invalid_input(
         MemoryMappedFile::builder(&path).open_or_create(),
         "missing, no size",
     );
@@ -585,7 +593,7 @@ fn open_or_create_never_truncates_and_validates_size_only_when_needed() {
     // Existing empty file: needs a valid size, then is extended.
     let empty = tmp_path("ooc_empty.bin");
     write_file(&empty, b"");
-    assert_resize_failed(
+    assert_invalid_input(
         MemoryMappedFile::builder(&empty).open_or_create(),
         "empty, no size",
     );
@@ -806,13 +814,34 @@ fn clones_share_one_mapping() {
     assert_eq!(b.pending_bytes(), 0);
 }
 
+/// Since 1.2.0 the safe constructors refuse a second mapping that could
+/// change bytes behind the first one's borrows; with the builder's
+/// `unsafe` `allow_aliasing` the mappings coexist and share the page
+/// cache.
 #[cfg_attr(miri, ignore = "FFI mmap syscalls are not supported by Miri")]
 #[test]
 fn two_independent_mappings_of_one_file_see_each_others_writes() {
     let path = tmp_path("two.bin");
     let w = MemoryMappedFile::create_rw(&path, 4096).unwrap();
-    let r = MemoryMappedFile::open_ro(&path).unwrap();
-    let w2 = MemoryMappedFile::open_rw(&path).unwrap();
+    assert!(matches!(
+        MemoryMappedFile::open_ro(&path),
+        Err(MmapIoError::InvalidMode(_))
+    ));
+    assert!(matches!(
+        MemoryMappedFile::open_rw(&path),
+        Err(MmapIoError::InvalidMode(_))
+    ));
+    // SAFETY: every borrow below is a temporary that ends before the
+    // next write through any of the three mappings.
+    let r = unsafe { crate::common::open_ro_aliased(&path) };
+    // SAFETY: as above.
+    let w2 = unsafe {
+        MemoryMappedFile::builder(&path)
+            .mode(MmapMode::ReadWrite)
+            .allow_aliasing()
+    }
+    .open()
+    .unwrap();
     w.update_region(0, b"first").unwrap();
     assert_eq!(r.as_slice(0, 5).unwrap(), b"first");
     assert_eq!(w2.as_slice(0, 5).unwrap(), b"first");

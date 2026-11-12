@@ -40,9 +40,12 @@
 //! with [`MmapIoError::InvalidMode`]:
 //!
 //! - creating an atomic view over bytes covered by a live
-//!   `MappedSlice` or iterator item (a `chunks()` / `pages()` iterator
-//!   created with no atomic view alive covers the whole mapping until
-//!   it and all its items are dropped);
+//!   `MappedSlice` or iterator item. A `chunks()` / `pages()` iterator
+//!   registers each item's range only, while that item is alive; it does
+//!   not reserve the bytes it has not reached yet. An atomic view
+//!   created ahead of the iterator is accepted, and when the iterator
+//!   reaches those bytes the item is an owned snapshot (one allocation,
+//!   read with atomic loads) instead of a zero-copy borrow;
 //! - creating a `MappedSlice` (`as_slice`, `Segment::as_slice`) over
 //!   bytes covered by a live atomic view;
 //! - creating an atomic view over bytes covered by a live atomic view

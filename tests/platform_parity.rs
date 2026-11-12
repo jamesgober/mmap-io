@@ -1,8 +1,10 @@
 #![cfg(test)]
 //! Platform parity tests for flush visibility across OSes.
 //!
-//! Contract: After calling flush() or flush_range(), a newly opened read-only mapping
-//! must observe the written bytes persisted on disk on all supported platforms.
+//! Contract: After calling flush() or flush_range(), a fresh read of the
+//! file must observe the written bytes on all supported platforms. The
+//! file is read with `std::fs`, since a second mapping of a file that a
+//! read-write mapping maps is refused (since 1.2.0).
 
 use mmap_io::{MemoryMappedFile, MmapMode};
 use std::fs;
@@ -27,12 +29,10 @@ fn parity_flush_visibility_full_file() {
     // Full flush should make all changes visible
     mmap.flush().expect("flush");
 
-    // Re-open RO and verify both segments
-    let ro = MemoryMappedFile::open_ro(&path).expect("open_ro");
-    let s1 = ro.as_slice(0, 10).expect("slice s1");
-    let s2 = ro.as_slice(100, 6).expect("slice s2");
-    assert_eq!(s1, b"ABCDEFGHIJ");
-    assert_eq!(s2, b"klmnop");
+    // Read the file back and verify both segments
+    let file = fs::read(&path).expect("read");
+    assert_eq!(&file[..10], b"ABCDEFGHIJ");
+    assert_eq!(&file[100..106], b"klmnop");
 
     let _ = fs::remove_file(&path);
 }
@@ -60,24 +60,20 @@ fn parity_flush_visibility_range() {
     // - The flushed range must be visible
     // - Other ranges might or might not be visible depending on platform caching,
     //   but our contract guarantees visibility for flushed regions.
-    let ro = MemoryMappedFile::open_ro(&path).expect("open_ro");
-
-    let flushed = ro
-        .as_slice(200, "RANGE-ONLY".len() as u64)
-        .expect("slice flushed");
-    assert_eq!(flushed, b"RANGE-ONLY");
-
-    // For non-flushed ranges, do not assert visibility; just ensure access is valid.
-    let _ = ro.as_slice(10, 12).expect("slice non-flushed 1");
-    let _ = ro.as_slice(1000, 12).expect("slice non-flushed 2");
+    let file = fs::read(&path).expect("read");
+    assert_eq!(&file[200..210], b"RANGE-ONLY");
+    // For non-flushed ranges, do not assert visibility.
 
     // Now do a full flush to persist the rest and validate
     mmap.flush().expect("flush all");
-    let ro2 = MemoryMappedFile::open_ro(&path).expect("open_ro2");
-    let s1 = ro2.as_slice(10, 12).expect("slice after full flush");
-    let s2 = ro2.as_slice(1000, 12).expect("slice after full flush 2");
-    assert_eq!(s1, b"XXXXYYYYZZZZ");
-    assert_eq!(s2, b"NO-FLUSH-YET");
+    let file = fs::read(&path).expect("read after full flush");
+    assert_eq!(&file[10..22], b"XXXXYYYYZZZZ");
+    assert_eq!(&file[1000..1012], b"NO-FLUSH-YET");
+
+    // A read-only mapping opened after the writer is gone sees it all.
+    drop(mmap);
+    let ro = MemoryMappedFile::open_ro(&path).expect("open_ro");
+    assert_eq!(ro.as_slice(200, 10).expect("slice"), b"RANGE-ONLY");
 
     let _ = fs::remove_file(&path);
 }

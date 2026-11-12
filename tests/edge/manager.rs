@@ -111,7 +111,7 @@ fn write_mmap_writes_through_the_page_cache() {
     fs::write(&empty, b"").unwrap();
     assert!(matches!(
         write_mmap(&empty, 0, b"x"),
-        Err(MmapIoError::ResizeFailed(_))
+        Err(MmapIoError::Io(ref e)) if e.kind() == ErrorKind::InvalidInput
     ));
 }
 

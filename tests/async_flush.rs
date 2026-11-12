@@ -21,10 +21,9 @@ async fn async_update_region_auto_flushes() {
         .await
         .expect("update_region_async");
 
-    // Reopen read-only and verify data persisted without explicit flush
-    let ro = MemoryMappedFile::open_ro(&path).expect("open_ro");
-    let slice = ro.as_slice(128, 11).expect("slice");
-    assert_eq!(slice, b"ASYNC-FLUSH");
+    // Read the file back (a second mapping of it is refused while the
+    // writer lives) and verify data persisted without explicit flush.
+    assert_eq!(&common::read_file(&path)[128..139], b"ASYNC-FLUSH");
 
     let _ = fs::remove_file(&path);
 }
@@ -43,9 +42,7 @@ async fn async_explicit_flush_still_works() {
     // extra explicit async flush flushes again and should succeed
     mmap.flush_async().await.expect("flush_async");
 
-    let ro = MemoryMappedFile::open_ro(&path).expect("open_ro");
-    let slice = ro.as_slice(0, 3).expect("slice");
-    assert_eq!(slice, b"XYZ");
+    assert_eq!(&common::read_file(&path)[..3], b"XYZ");
 
     let _ = fs::remove_file(&path);
 }

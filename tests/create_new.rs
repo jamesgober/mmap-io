@@ -56,7 +56,7 @@ fn invalid_size_or_mode_leaves_no_file() {
     let path = dir.path().join("never.bin");
     assert!(matches!(
         MemoryMappedFile::builder(&path).create_new(),
-        Err(MmapIoError::ResizeFailed(_))
+        Err(MmapIoError::Io(ref e)) if e.kind() == std::io::ErrorKind::InvalidInput
     ));
     assert!(matches!(
         MemoryMappedFile::builder(&path).size(0).create_new(),

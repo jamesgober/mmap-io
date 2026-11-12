@@ -28,6 +28,7 @@ use crate::flush::FlushPolicy;
 use parking_lot::{RwLock, RwLockReadGuard, RwLockWriteGuard};
 
 use crate::errors::{MmapIoError, Result};
+use crate::registry::{Access, Acquired, Claim};
 use crate::utils::slice_range;
 use crate::views::{PlainReg, ViewRegistry};
 
@@ -106,6 +107,237 @@ pub struct Inner {
     // Huge pages preference (builder-set), effective on supported platforms
     #[cfg(feature = "hugepages")]
     pub(crate) huge_pages: bool,
+    // Builder `sparse(true)`: `resize` growth does not reserve disk
+    // blocks for the new range (see `crate::prealloc`).
+    pub(crate) sparse: bool,
+    // Number of live `MemoryMappedFile` handles (clones) of this state.
+    // The `EveryMillis` worker holds only a `Weak`, upgraded while it
+    // flushes, and is not counted. See `Drop for MemoryMappedFile`.
+    pub(crate) handles: std::sync::atomic::AtomicUsize,
+    // Registration of this mapping in the process-wide registry (see
+    // `crate::registry`). Declared last so it is released only after
+    // the mapping itself has been unmapped.
+    pub(crate) claim: Claim,
+}
+
+impl Inner {
+    /// State of a mapping with the default options: no flush policy,
+    /// no flusher, no huge pages, disk space reserved on growth.
+    fn new(
+        path: PathBuf,
+        file: File,
+        mode: MmapMode,
+        len: u64,
+        map: MapVariant,
+        claim: Claim,
+    ) -> Self {
+        Inner {
+            path,
+            file,
+            mode,
+            cached_len: AtomicU64::new(len),
+            map,
+            flush_policy: FlushPolicy::Never,
+            written_since_last_flush: AtomicU64::new(0),
+            writes_since_last_flush: AtomicU64::new(0),
+            flusher: RwLock::new(None),
+            views: ViewRegistry::new(),
+            #[cfg(feature = "hugepages")]
+            huge_pages: false,
+            sparse: false,
+            handles: std::sync::atomic::AtomicUsize::new(1),
+            claim,
+        }
+    }
+}
+
+/// Register a mapping of `file` in the process-wide registry. With
+/// `checked`, refuse it (`InvalidMode`) if it conflicts with a mapping
+/// of the same file that already exists in this process.
+fn claim_file(file: &File, access: Access, checked: bool) -> Result<Claim> {
+    match Claim::acquire(file, access, checked)? {
+        Acquired::Claimed(claim) => Ok(claim),
+        Acquired::Refused(conflict) => Err(MmapIoError::InvalidMode(conflict.message())),
+    }
+}
+
+/// `Io` with `ErrorKind::InvalidInput`: a file or argument the call
+/// cannot work with (an empty file on a writable path, a missing size).
+fn invalid_input(msg: &'static str) -> MmapIoError {
+    MmapIoError::Io(std::io::Error::new(std::io::ErrorKind::InvalidInput, msg))
+}
+
+/// Set `file` to `new_len` bytes and, unless `sparse`, reserve disk
+/// blocks for the bytes past `old_len` (see `crate::prealloc`). On a
+/// failed reservation the file is put back to `old_len`.
+fn extend_file(file: &File, old_len: u64, new_len: u64, sparse: bool) -> std::io::Result<()> {
+    file.set_len(new_len)?;
+    if !sparse && new_len > old_len {
+        if let Err(e) = crate::prealloc::reserve(file, old_len, new_len - old_len) {
+            let _ = file.set_len(old_len);
+            return Err(e);
+        }
+    }
+    Ok(())
+}
+
+/// A file opened for a new `ReadWrite` mapping, sized and registered,
+/// that has not been mapped yet.
+struct NewFile {
+    file: File,
+    claim: Claim,
+    /// Whether this call created the file (rather than truncating an
+    /// existing one), so a later failure can remove it again.
+    created: bool,
+}
+
+impl NewFile {
+    /// Create `path`, or truncate it if it exists, and size it to `size`
+    /// bytes, reserving the disk space unless `sparse`.
+    ///
+    /// The file is created exclusively first, so a failure never
+    /// removes a file this call did not create. An existing file is
+    /// registered before it is truncated: with `checked`, a file another
+    /// `MemoryMappedFile` maps is refused and left untouched.
+    fn create_truncated(path: &Path, size: u64, sparse: bool, checked: bool) -> Result<Self> {
+        let (file, created) = match OpenOptions::new()
+            .read(true)
+            .write(true)
+            .create_new(true)
+            .open(path)
+        {
+            Ok(file) => (file, true),
+            Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => {
+                (OpenOptions::new().read(true).write(true).open(path)?, false)
+            }
+            Err(e) => return Err(e.into()),
+        };
+        let claim = match claim_file(&file, Access::Write, checked) {
+            Ok(claim) => claim,
+            Err(e) => {
+                if created {
+                    drop(file);
+                    let _ = std::fs::remove_file(path);
+                }
+                return Err(e);
+            }
+        };
+        let new = NewFile {
+            file,
+            claim,
+            created,
+        };
+        let sized = new
+            .file
+            .set_len(0)
+            .and_then(|()| extend_file(&new.file, 0, size, sparse));
+        match sized {
+            Ok(()) => Ok(new),
+            Err(e) => Err(new.undo(path, e.into())),
+        }
+    }
+
+    /// Undo a failed create: remove the file if this call created it,
+    /// otherwise leave it truncated to zero (it was truncated already).
+    /// Returns `err`.
+    fn undo(self, path: &Path, err: MmapIoError) -> MmapIoError {
+        let NewFile {
+            file,
+            claim,
+            created,
+        } = self;
+        if created {
+            // Closed before removing: Windows cannot delete an open file.
+            drop(file);
+            let _ = std::fs::remove_file(path);
+        } else {
+            let _ = file.set_len(0);
+            drop(file);
+        }
+        drop(claim);
+        err
+    }
+}
+
+/// The body of `MemoryMappedFile::flush_rw`, on the shared state, so
+/// the `EveryMillis` worker can flush without holding a
+/// `MemoryMappedFile` handle (see `Drop for MemoryMappedFile`).
+fn flush_rw_inner(inner: &Inner, lock: &RwLock<RawMmapMut>) -> Result<()> {
+    // Take the counters before flushing: anything recorded after this
+    // point (e.g. an atomic view dropped during the flush, or a write
+    // that lands while the lock is released below) stays pending for
+    // the next flush.
+    let bytes = inner.written_since_last_flush.swap(0, Ordering::AcqRel);
+    let writes = inner.writes_since_last_flush.swap(0, Ordering::AcqRel);
+    #[cfg(target_os = "linux")]
+    let result = {
+        let _ = lock;
+        inner.file.sync_data()
+    };
+    #[cfg(windows)]
+    let result = {
+        let started = lock.read_recursive().flush_async();
+        started.and_then(|()| inner.file.sync_data())
+    };
+    #[cfg(not(any(target_os = "linux", windows)))]
+    let result = lock.read_recursive().flush();
+    if let Err(e) = result {
+        inner
+            .written_since_last_flush
+            .fetch_add(bytes, Ordering::AcqRel);
+        inner
+            .writes_since_last_flush
+            .fetch_add(writes, Ordering::AcqRel);
+        return Err(MmapIoError::FlushFailed(e.to_string()));
+    }
+    Ok(())
+}
+
+/// Map `file` (opened for reading) read-only.
+fn map_ro_inner(path: PathBuf, file: File, claim: Claim) -> Result<Inner> {
+    let len = file.metadata()?.len();
+    // SAFETY: `RawMmap::map` requires that nobody modifies or truncates
+    // the file while the mapping lives. Within this process the
+    // caller's registry claim (`Access::Read`) rules out every
+    // `MemoryMappedFile` that could write the file: a checked read claim
+    // is refused while a read-write mapping exists, and a read-write
+    // mapping is refused while this one exists. An unchecked claim
+    // (`allow_aliasing`) moves that duty to the caller, who promised it
+    // in an `unsafe` call. Other processes and `std::fs` writes are not
+    // excluded; the caller must rule them out (documented on the type and
+    // in `docs/SAFETY.md`). The mapping is never written through.
+    // Contract: `crate::raw::RawMmap::map` (see `docs/SAFETY.md`, raw mapping layer).
+    let mmap = unsafe { RawMmap::map(&file)? };
+    Ok(Inner::new(
+        path,
+        file,
+        MmapMode::ReadOnly,
+        len,
+        MapVariant::Ro(mmap),
+        claim,
+    ))
+}
+
+/// Map an existing, non-empty `file` (opened read-write) read-write.
+fn map_rw_inner(path: PathBuf, file: File, claim: Claim) -> Result<Inner> {
+    let len = file.metadata()?.len();
+    if len == 0 {
+        return Err(invalid_input(ERR_ZERO_LENGTH_FILE));
+    }
+    let map_len = usize::try_from(len).map_err(|_| {
+        MmapIoError::ResizeFailed(format!("File length {len} does not fit in usize"))
+    })?;
+    // The mapping call's contract is discharged in `map_file_rw`, with
+    // the caller's write claim; see `create_rw`.
+    let mmap = map_file_rw(&file, map_len, false)?;
+    Ok(Inner::new(
+        path,
+        file,
+        MmapMode::ReadWrite,
+        len,
+        MapVariant::Rw(RwLock::new(mmap)),
+        claim,
+    ))
 }
 
 #[doc(hidden)]
@@ -141,6 +373,45 @@ impl MapVariant {
 /// - Automatic bounds checking
 /// - Cross-platform compatibility
 ///
+/// # What the caller must guarantee
+///
+/// The zero-copy accessors hand out `&[u8]` (and `&mut [u8]`) that
+/// point straight into the file's pages. Rust requires those bytes not
+/// to change while such a borrow is alive. The crate enforces that for
+/// everything it controls in this process:
+///
+/// - clones of one handle share one lock, so a write waits for every
+///   borrow of the same mapping;
+/// - since 1.2.0 every mapping is recorded in a process-wide registry
+///   keyed by the file's identity (device and inode on Unix, volume and
+///   file id on Windows, so another path to the same file counts). A
+///   `ReadWrite` mapping is refused while any other mapping of the file
+///   exists, a `ReadOnly` or `CopyOnWrite` mapping is refused while a
+///   `ReadWrite` one exists, `create_rw` refuses to truncate a mapped
+///   file, and a shrinking `resize` is refused while another mapping
+///   exists. The refusals are [`MmapIoError::InvalidMode`] (and
+///   `ResizeFailed` for the shrink). This covers the free functions
+///   ([`write_mmap`](crate::write_mmap), [`create_mmap`](crate::create_mmap)),
+///   which open their own mapping.
+///
+/// What it cannot see, the caller must rule out for as long as any
+/// borrow of the mapping is alive: **no other writer may modify the
+/// file or truncate it** while it is mapped. That means `std::fs` writes
+/// and `set_len` on the same file in this process, and any other
+/// process. A changed byte behind a live `&[u8]` is undefined
+/// behaviour; a truncation raises `SIGBUS` on Unix when the borrow is
+/// read. Use OS file locks or a protocol between the processes. For
+/// files other processes may write, prefer the copying reads
+/// ([`read_into`](Self::read_into), the [`reader`](Self::reader)'s
+/// `Read` impl): they hold no borrow into the mapping once they return,
+/// so a concurrent change can only give a torn copy (a truncation can
+/// still fault the copy itself).
+///
+/// To map a file twice in one process anyway, and take on the contract
+/// above for both mappings, use the builder's `unsafe`
+/// [`allow_aliasing`](MemoryMappedFileBuilder::allow_aliasing). Prefer
+/// cloning one handle.
+///
 /// # Examples
 ///
 /// ```no_run
@@ -162,9 +433,32 @@ impl MapVariant {
 ///
 /// Cloning this struct is cheap; it clones an Arc to the inner state.
 /// For read-write mappings, interior mutability is protected with an `RwLock`.
-#[derive(Clone)]
 pub struct MemoryMappedFile {
     pub(crate) inner: Arc<Inner>,
+}
+
+impl Clone for MemoryMappedFile {
+    fn clone(&self) -> MemoryMappedFile {
+        self.inner.handles.fetch_add(1, Ordering::Relaxed);
+        MemoryMappedFile {
+            inner: Arc::clone(&self.inner),
+        }
+    }
+}
+
+impl Drop for MemoryMappedFile {
+    /// When the last handle goes, stop and join the `EveryMillis`
+    /// worker first. The worker upgrades its `Weak` while it flushes;
+    /// joining it here means the mapping, its file and its registry
+    /// claim are released by the time this `drop` returns, so the file
+    /// can be opened again (or `unmap` can succeed) right away.
+    fn drop(&mut self) {
+        // AcqRel: the last handle sees every other handle's release.
+        if self.inner.handles.fetch_sub(1, Ordering::AcqRel) == 1 {
+            let flusher = self.inner.flusher.write().take();
+            drop(flusher);
+        }
+    }
 }
 
 impl MemoryMappedFile {
@@ -214,6 +508,8 @@ impl MemoryMappedFile {
             huge_pages: false,
             #[cfg(feature = "cow")]
             cow_writable: false,
+            sparse: false,
+            allow_aliasing: false,
         }
     }
 
@@ -223,168 +519,128 @@ impl MemoryMappedFile {
     ///
     /// - **Time Complexity**: O(1) for mapping creation
     /// - **Memory Usage**: Virtual address space of `size` bytes (physical memory allocated on demand)
-    /// - **I/O Operations**: One file creation, one truncate, one mmap syscall
+    /// - **I/O Operations**: One file creation, one truncate, one disk
+    ///   reservation (see below), one mmap syscall
     ///
-    /// # Sparse file behavior
+    /// # Disk space
     ///
-    /// The underlying `set_len(size)` call produces a sparse file on
-    /// every supported platform (Linux ext4/xfs/btrfs, macOS APFS,
-    /// Windows NTFS). Pages do not consume disk blocks until first
-    /// write, so allocating a 1 TB region for an mmap-backed data
-    /// structure does not require 1 TB of free disk; only the bytes
-    /// you touch do. The filesystem's `du`/`stat` "allocated blocks"
-    /// reflects actual usage; the apparent size matches `size`.
+    /// Since 1.2.0 the disk blocks for the whole `size` are reserved up
+    /// front (`fallocate` on Linux and Android, `F_PREALLOCATE` on
+    /// macOS), so a full disk fails this call with an
+    /// [`MmapIoError::Io`] (`ENOSPC`) instead of killing the process
+    /// with `SIGBUS` on a later write through the mapping. On Windows
+    /// NTFS allocates the whole length when the file is extended, so
+    /// the same holds there; the file is not sparse on Windows. On a
+    /// file system that cannot reserve space (no `fallocate` support)
+    /// and on other platforms the file stays sparse, and a write into a
+    /// page that has no disk block yet can still raise `SIGBUS` when the
+    /// disk is full. To keep a large file sparse on purpose, use the
+    /// builder's [`sparse(true)`](MemoryMappedFileBuilder::sparse).
+    ///
+    /// # Other mappings of the file
+    ///
+    /// Fails with [`MmapIoError::InvalidMode`], and leaves the file
+    /// untouched, if another `MemoryMappedFile` in this process maps the
+    /// same file (by identity, whatever path it was opened with): the
+    /// truncation would pull the bytes out from under that mapping's
+    /// borrows. See [`MemoryMappedFileBuilder::allow_aliasing`] and
+    /// `docs/SAFETY.md`.
     ///
     /// # Errors
     ///
     /// Returns `MmapIoError::ResizeFailed` if size is zero or exceeds the maximum safe limit.
-    /// Returns `MmapIoError::Io` if file creation or mapping fails.
+    /// Returns `MmapIoError::InvalidMode` if another `MemoryMappedFile`
+    /// in this process maps the file (since 1.2.0).
+    /// Returns `MmapIoError::Io` if file creation, the disk reservation,
+    /// or mapping fails.
     pub fn create_rw<P: AsRef<Path>>(path: P, size: u64) -> Result<Self> {
-        if size == 0 {
-            return Err(MmapIoError::ResizeFailed(ERR_ZERO_SIZE.into()));
-        }
-        if size > MAX_MMAP_SIZE {
-            return Err(MmapIoError::ResizeFailed(format!(
-                "Size {size} exceeds maximum safe limit of {MAX_MMAP_SIZE} bytes"
-            )));
-        }
+        validated_create_size(Some(size))?;
         let path_ref = path.as_ref();
-        // Remember whether we create the file, so a failure below can
-        // undo it instead of leaving a stray, possibly huge, sparse file.
-        let existed = path_ref.exists();
-        let file = OpenOptions::new()
-            .create(true)
-            .write(true)
-            .read(true)
-            .truncate(true)
-            .open(path_ref)?;
-        let undo = |file: File, e: std::io::Error| -> MmapIoError {
-            if existed {
-                // Already truncated by the open above; drop the extension.
-                let _ = file.set_len(0);
-            } else {
-                drop(file);
-                let _ = std::fs::remove_file(path_ref);
+        let new = NewFile::create_truncated(path_ref, size, false, true)?;
+        let map_len = match usize::try_from(size) {
+            Ok(n) => n,
+            Err(_) => {
+                return Err(new.undo(
+                    path_ref,
+                    MmapIoError::ResizeFailed(format!("Size {size} does not fit in usize")),
+                ))
             }
-            e.into()
         };
-        if let Err(e) = file.set_len(size) {
-            return Err(undo(file, e));
-        }
-        // SAFETY: `RawMmapMut::map_mut` is `unsafe` because the OS does
-        // not prevent another process from concurrently modifying the
-        // backing file under the mapping, which would violate Rust's
-        // aliasing model if anyone holds a `&mut [u8]` into the
-        // mapping. We do not enforce single-writer at the OS level;
-        // callers who share the file across processes are responsible
-        // for synchronization (the crate documents this in REPS.md
-        // section 5.1). Within this process, all mutable access to
-        // the `RawMmapMut` is mediated by `parking_lot::RwLock`, so the
-        // standard aliasing rules hold for intra-process access.
-        // The file has just been created and `set_len(size)` succeeded,
-        // so the kernel will produce a mapping of exactly `size` bytes.
-        // Note: `create_rw` convenience ignores huge pages; use builder
-        // for that.
-        // Contract: `crate::raw::RawMmapMut::map_mut` (see `docs/SAFETY.md`, raw mapping layer).
-        let mmap = match unsafe { RawMmapMut::map_mut(&file) } {
+        // SAFETY (of the mapping call in `map_file_rw`): the raw
+        // contract requires that, while the mapping lives, nobody
+        // modifies or truncates the mapped bytes except through this
+        // mapping. Within this process the registry claim taken above is
+        // a checked, exclusive write claim: no other `MemoryMappedFile`
+        // maps this file while this one lives, and every access to this
+        // mapping is mediated by its `RwLock`. Other processes, and
+        // `std::fs` writes or `set_len` on the same file in this process,
+        // are not excluded; the caller must rule them out (documented in
+        // `docs/SAFETY.md` and on the type). `create_rw` ignores huge
+        // pages; use the builder for that.
+        let mmap = match map_file_rw(&new.file, map_len, false) {
             Ok(mmap) => mmap,
-            Err(e) => return Err(undo(file, e)),
+            Err(e) => return Err(new.undo(path_ref, e)),
         };
-        let inner = Inner {
-            path: path_ref.to_path_buf(),
+        let NewFile { file, claim, .. } = new;
+        Ok(Self::from_inner(Inner::new(
+            path_ref.to_path_buf(),
             file,
-            mode: MmapMode::ReadWrite,
-            cached_len: AtomicU64::new(size),
-            map: MapVariant::Rw(RwLock::new(mmap)),
-            flush_policy: FlushPolicy::default(),
-            written_since_last_flush: AtomicU64::new(0),
-            writes_since_last_flush: AtomicU64::new(0),
-            flusher: RwLock::new(None),
-            views: ViewRegistry::new(),
-            #[cfg(feature = "hugepages")]
-            huge_pages: false,
-        };
-        Ok(Self {
-            inner: Arc::new(inner),
-        })
+            MmapMode::ReadWrite,
+            size,
+            MapVariant::Rw(RwLock::new(mmap)),
+            claim,
+        )))
     }
 
     /// Open an existing file and memory-map it read-only.
     ///
+    /// Since 1.2.0 this fails with [`MmapIoError::InvalidMode`] if a
+    /// `ReadWrite` `MemoryMappedFile` of the same file exists in this
+    /// process, because that handle could change the bytes behind this
+    /// mapping's borrows. Several read-only and copy-on-write mappings of
+    /// one file can coexist. See [`MemoryMappedFileBuilder::allow_aliasing`].
+    ///
     /// # Errors
     ///
+    /// Returns `MmapIoError::InvalidMode` if a `ReadWrite` mapping of the
+    /// file exists in this process (since 1.2.0).
     /// Returns `MmapIoError::Io` if file opening or mapping fails.
     pub fn open_ro<P: AsRef<Path>>(path: P) -> Result<Self> {
         let path_ref = path.as_ref();
         let file = OpenOptions::new().read(true).open(path_ref)?;
-        let len = file.metadata()?.len();
-        // SAFETY: `RawMmap::map` is `unsafe` for the same cross-process
-        // reason as `RawMmapMut::map_mut` (see `create_rw` above): the OS
-        // does not prevent another process from writing to the backing
-        // file. For a read-only mapping the in-process aliasing
-        // hazard is reduced because we never hand out `&mut [u8]` into
-        // the mapping, but cross-process modification can still cause
-        // a race that surfaces as a torn read. This is documented as
-        // out-of-scope; intra-process access is sound.
-        // Contract: `crate::raw::RawMmap::map` (see `docs/SAFETY.md`, raw mapping layer).
-        let mmap = unsafe { RawMmap::map(&file)? };
-        let inner = Inner {
-            path: path_ref.to_path_buf(),
+        let claim = claim_file(&file, Access::Read, true)?;
+        Ok(Self::from_inner(map_ro_inner(
+            path_ref.to_path_buf(),
             file,
-            mode: MmapMode::ReadOnly,
-            cached_len: AtomicU64::new(len),
-            map: MapVariant::Ro(mmap),
-            flush_policy: FlushPolicy::Never,
-            written_since_last_flush: AtomicU64::new(0),
-            writes_since_last_flush: AtomicU64::new(0),
-            flusher: RwLock::new(None),
-            views: ViewRegistry::new(),
-            #[cfg(feature = "hugepages")]
-            huge_pages: false,
-        };
-        Ok(Self {
-            inner: Arc::new(inner),
-        })
+            claim,
+        )?))
     }
 
     /// Open an existing file and memory-map it read-write.
     ///
+    /// Since 1.2.0 this fails with [`MmapIoError::InvalidMode`] if any
+    /// other `MemoryMappedFile` of the same file exists in this process:
+    /// a read-write mapping needs exclusive access, or the bytes behind
+    /// another mapping's borrows could change. Clone the existing handle
+    /// instead (clones share one lock), or see
+    /// [`MemoryMappedFileBuilder::allow_aliasing`].
+    ///
     /// # Errors
     ///
-    /// Returns `MmapIoError::ResizeFailed` if file is zero-length.
+    /// Returns `MmapIoError::Io` with `ErrorKind::InvalidInput` if the
+    /// file is zero-length (`ResizeFailed` before 1.2.0).
+    /// Returns `MmapIoError::InvalidMode` if another mapping of the file
+    /// exists in this process (since 1.2.0).
     /// Returns `MmapIoError::Io` if file opening or mapping fails.
     pub fn open_rw<P: AsRef<Path>>(path: P) -> Result<Self> {
         let path_ref = path.as_ref();
         let file = OpenOptions::new().read(true).write(true).open(path_ref)?;
-        let len = file.metadata()?.len();
-        if len == 0 {
-            return Err(MmapIoError::ResizeFailed(ERR_ZERO_LENGTH_FILE.into()));
-        }
-        // SAFETY: see `create_rw` above for the full justification of
-        // calling `RawMmapMut::map_mut`. Additionally, we have verified
-        // here that the file is not zero-length (`len != 0`), which
-        // avoids `EINVAL` from `mmap(2)` on Linux for zero-length
-        // mappings. Note: `open_rw` convenience ignores huge pages;
-        // use the builder for that.
-        // Contract: `crate::raw::RawMmapMut::map_mut` (see `docs/SAFETY.md`, raw mapping layer).
-        let mmap = unsafe { RawMmapMut::map_mut(&file)? };
-        let inner = Inner {
-            path: path_ref.to_path_buf(),
+        let claim = claim_file(&file, Access::Write, true)?;
+        Ok(Self::from_inner(map_rw_inner(
+            path_ref.to_path_buf(),
             file,
-            mode: MmapMode::ReadWrite,
-            cached_len: AtomicU64::new(len),
-            map: MapVariant::Rw(RwLock::new(mmap)),
-            flush_policy: FlushPolicy::default(),
-            written_since_last_flush: AtomicU64::new(0),
-            writes_since_last_flush: AtomicU64::new(0),
-            flusher: RwLock::new(None),
-            views: ViewRegistry::new(),
-            #[cfg(feature = "hugepages")]
-            huge_pages: false,
-        };
-        Ok(Self {
-            inner: Arc::new(inner),
-        })
+            claim,
+        )?))
     }
 
     /// Return current mapping mode.
@@ -804,10 +1060,14 @@ impl MemoryMappedFile {
         let (start, end) = slice_range(offset, len, guard.len() as u64)?;
         guard[start..end].copy_from_slice(data);
         if self.count_update(len) {
-            // Flush under the lock we already hold, downgraded so
-            // readers can proceed; never wait for another holder.
+            // Flush while holding the lock we already have, downgraded
+            // so readers can proceed: `flush_rw` only takes recursive
+            // read guards, which this read guard satisfies at once, so
+            // the call never waits for another holder.
             let guard = RwLockWriteGuard::downgrade(guard);
-            self.flush_mapped(&guard)?;
+            let flushed = self.flush_rw(lock);
+            drop(guard);
+            flushed?;
         }
         Ok(true)
     }
@@ -866,8 +1126,15 @@ impl MemoryMappedFile {
     ///   on the file handle, which waits for the data to reach the
     ///   device.
     ///
-    /// The mapping's read lock is held for the duration, so writers
-    /// wait for the flush to finish.
+    /// Since 1.2.0 the slow, synchronous part runs without the mapping
+    /// lock on Linux (`fdatasync` on the file, which is what
+    /// `msync(MS_SYNC)` does for a shared file mapping there) and on
+    /// Windows (`FlushFileBuffers`; `FlushViewOfFile` still runs under
+    /// the read lock), so writers are not stalled while the device
+    /// catches up. On macOS and other Unix the read lock is held through
+    /// `msync`, and writers wait for the flush to finish. Bytes written
+    /// while the flush runs may or may not be included; they stay
+    /// counted in [`pending_bytes`](Self::pending_bytes) either way.
     ///
     /// # Performance
     ///
@@ -883,31 +1150,26 @@ impl MemoryMappedFile {
             // Copy-on-write pages are private: there is nothing to
             // write back, by design.
             MapVariant::Ro(_) | MapVariant::Cow(_) => Ok(()),
-            MapVariant::Rw(lock) => self.flush_mapped(&lock.read_recursive()),
+            MapVariant::Rw(lock) => self.flush_rw(lock),
         }
     }
 
-    /// Durably flush `map`, the RW mapping the caller holds a guard
-    /// on, and reset the pending counters.
-    fn flush_mapped(&self, map: &RawMmapMut) -> Result<()> {
-        // Take the counters before flushing: anything recorded after
-        // this point (e.g. an atomic view dropped during the flush)
-        // stays pending for the next flush.
-        let bytes = self
-            .inner
-            .written_since_last_flush
-            .swap(0, Ordering::AcqRel);
-        let writes = self.inner.writes_since_last_flush.swap(0, Ordering::AcqRel);
-        if let Err(e) = map.flush() {
-            self.inner
-                .written_since_last_flush
-                .fetch_add(bytes, Ordering::AcqRel);
-            self.inner
-                .writes_since_last_flush
-                .fetch_add(writes, Ordering::AcqRel);
-            return Err(MmapIoError::FlushFailed(e.to_string()));
-        }
-        Ok(())
+    /// Durably flush the RW mapping behind `lock` and reset the pending
+    /// counters.
+    ///
+    /// The slow, synchronous part runs without the mapping lock where
+    /// that is safe, so writers are not stalled for its duration:
+    ///
+    /// - Linux: `msync(MS_SYNC)` on a shared file mapping is
+    ///   `vfs_fsync_range` on the file, the same as `fdatasync`, because
+    ///   the mapping shares the file's page cache. The flush calls
+    ///   `fdatasync` (`File::sync_data`) on the file without the lock.
+    /// - Windows: `FlushViewOfFile` needs the view, so it runs under the
+    ///   read guard; `FlushFileBuffers` (`File::sync_data`), which waits
+    ///   for the device, runs after the guard is released.
+    /// - Other Unix: `msync(MS_SYNC)` under the read guard, as before.
+    fn flush_rw(&self, lock: &RwLock<RawMmapMut>) -> Result<()> {
+        flush_rw_inner(&self.inner, lock)
     }
 
     /// Async flush changes to disk. For read-only or COW mappings, this is a no-op.
@@ -1122,16 +1384,29 @@ impl MemoryMappedFile {
     ///
     /// Shrinking truncates the backing file on every platform; bytes
     /// past `new_size` are discarded, and growing again later exposes
-    /// zeros there.
+    /// zeros there. Since 1.2.0 a shrink is refused with
+    /// [`MmapIoError::ResizeFailed`], before the file is touched, while
+    /// another `MemoryMappedFile` of the same file exists in this process
+    /// (one opened through
+    /// [`allow_aliasing`](MemoryMappedFileBuilder::allow_aliasing)): the
+    /// truncation would fault that mapping's borrows. A mapping opened
+    /// through `allow_aliasing` itself skips this check; its caller
+    /// promised to rule that out.
+    ///
+    /// Growing reserves the disk blocks of the new range (since 1.2.0;
+    /// see [`create_rw`](Self::create_rw)) unless the mapping was built
+    /// with [`sparse(true)`](MemoryMappedFileBuilder::sparse), so a full
+    /// disk fails the resize with [`MmapIoError::Io`] and leaves the
+    /// mapping and the file at their old size.
     ///
     /// # Platform notes
     ///
     /// - **Windows** refuses to truncate a file while any view of it is
-    ///   mapped. `resize` unmaps its own view first, but a second,
-    ///   independent mapping of the same file (another
-    ///   `MemoryMappedFile` opened on the same path, in this or another
-    ///   process) makes a shrink fail with `MmapIoError::Io`. The
-    ///   mapping is restored at its old size in that case.
+    ///   mapped. `resize` unmaps its own view first, but a mapping of
+    ///   the same file in another process (or one in this process that
+    ///   skipped the check above through `allow_aliasing`) makes a
+    ///   shrink fail with `MmapIoError::Io`. The mapping is restored at
+    ///   its old size in that case.
     /// - If remapping fails after the file was already truncated
     ///   (Windows only, e.g. out of address space), the mapping is left
     ///   empty: `len()` reports 0 and every access returns
@@ -1147,8 +1422,11 @@ impl MemoryMappedFile {
     /// # Errors
     ///
     /// Returns `MmapIoError::InvalidMode` if not in `ReadWrite` mode.
-    /// Returns `MmapIoError::ResizeFailed` if new size is zero or exceeds the maximum safe limit.
-    /// Returns `MmapIoError::Io` if resize operation fails.
+    /// Returns `MmapIoError::ResizeFailed` if new size is zero or exceeds
+    /// the maximum safe limit, or for a shrink while another mapping of
+    /// the file exists in this process (since 1.2.0).
+    /// Returns `MmapIoError::Io` if resize operation fails, including a
+    /// failed disk reservation when growing (since 1.2.0).
     pub fn resize(&self, new_size: u64) -> Result<()> {
         if self.inner.mode != MmapMode::ReadWrite {
             return Err(MmapIoError::InvalidMode("Resize requires ReadWrite mode"));
@@ -1176,6 +1454,15 @@ impl MemoryMappedFile {
         // the mapping.
         let mut guard = lock.write();
         let current_len = guard.len();
+        // A shrink truncates the file under every other mapping of it.
+        // Checked mappings exclude other mappings already; this catches
+        // a mapping opened later through `allow_aliasing`, whose borrows
+        // would fault (SIGBUS on Unix) after the truncation.
+        if new_len < current_len && self.inner.claim.is_checked() && self.inner.claim.has_others() {
+            return Err(MmapIoError::ResizeFailed(
+                "cannot shrink: another MemoryMappedFile in this process maps the file".into(),
+            ));
+        }
         let result = match new_len.cmp(&current_len) {
             std::cmp::Ordering::Equal => Ok(()),
             std::cmp::Ordering::Greater => {
@@ -1213,7 +1500,10 @@ impl MemoryMappedFile {
     ) -> Result<()> {
         // Extend first: mapping past end-of-file is invalid. The old
         // mapping stays valid because it only covers the old length.
-        self.inner.file.set_len(new_size)?;
+        // Unless the builder asked for `sparse(true)`, the new range's
+        // disk blocks are reserved here, so a full disk fails the resize
+        // instead of a later write through the mapping (SIGBUS).
+        extend_file(&self.inner.file, current_size, new_size, self.inner.sparse)?;
         match map_file_rw(&self.inner.file, new_len, self.huge_pages()) {
             Ok(new_map) => {
                 // Old mapping is dropped (unmapped) here, after the new
@@ -1377,18 +1667,25 @@ impl MemoryMappedFile {
     /// created concurrently by another process is opened rather than
     /// overwritten.
     ///
-    /// # Sparse file behavior
+    /// # Disk space
     ///
-    /// On the create path, the file is allocated via `set_len` which
-    /// produces a sparse file on every supported platform. Disk blocks
-    /// are consumed lazily as pages are written; allocating a large
-    /// `default_size` for a structure that will fill incrementally is
-    /// safe and cheap. See [`create_rw`](Self::create_rw) for details.
+    /// When the file is created or extended, the disk blocks for
+    /// `default_size` are reserved up front (since 1.2.0), so a full disk
+    /// fails this call instead of a later write; see
+    /// [`create_rw`](Self::create_rw) for the platform details and the
+    /// builder's [`sparse(true)`](MemoryMappedFileBuilder::sparse) for
+    /// keeping the file sparse.
+    ///
+    /// Like [`open_rw`](Self::open_rw), this fails with
+    /// [`MmapIoError::InvalidMode`] if another `MemoryMappedFile` in this
+    /// process maps the file (since 1.2.0).
     ///
     /// # Errors
     ///
     /// Returns [`MmapIoError::Io`] if the filesystem rejects the
-    /// create or open call.
+    /// create or open call, or the disk reservation fails.
+    /// Returns [`MmapIoError::InvalidMode`] if another mapping of the
+    /// file exists in this process (since 1.2.0).
     /// Returns [`MmapIoError::ResizeFailed`] if `default_size` is zero
     /// or exceeds the maximum safe size (only checked when the file is
     /// created or extended; non-empty existing files of any size are
@@ -1423,67 +1720,40 @@ impl MemoryMappedFile {
     /// kind; private writes need `open_cow_writable` or the builder's
     /// `cow_writable(true)`.
     ///
+    /// Since 1.2.0 the mapping is registered like every other one: it is
+    /// refused with [`MmapIoError::InvalidMode`] if it conflicts with a
+    /// `MemoryMappedFile` of the same file that already exists in this
+    /// process (see [`open_ro`](Self::open_ro) and
+    /// [`open_rw`](Self::open_rw)).
+    ///
     /// # Errors
     ///
-    /// Returns [`MmapIoError::ResizeFailed`] if the file is
-    /// zero-length on the `ReadWrite` or `CopyOnWrite` paths
-    /// (`mmap(2)` rejects zero-length mappings on Linux).
+    /// Returns [`MmapIoError::Io`] with `ErrorKind::InvalidInput` if the
+    /// file is zero-length on the `ReadWrite` or `CopyOnWrite` paths
+    /// (`ResizeFailed` before 1.2.0).
+    /// Returns [`MmapIoError::InvalidMode`] if another mapping of the
+    /// file conflicts (since 1.2.0).
     /// Returns [`MmapIoError::Io`] if `metadata()` or the mapping
     /// call fails. The `path` argument is informational only; it
     /// is used by [`path`](Self::path) and error messages.
     pub fn from_file<P: AsRef<Path>>(file: File, mode: MmapMode, path: P) -> Result<Self> {
         let path_ref = path.as_ref().to_path_buf();
-        let len = file.metadata()?.len();
         match mode {
             MmapMode::ReadOnly => {
-                // SAFETY: see `open_ro` for the full justification.
-                let mmap = unsafe { RawMmap::map(&file)? };
-                let inner = Inner {
-                    path: path_ref,
-                    file,
-                    mode,
-                    cached_len: AtomicU64::new(len),
-                    map: MapVariant::Ro(mmap),
-                    flush_policy: FlushPolicy::Never,
-                    written_since_last_flush: AtomicU64::new(0),
-                    writes_since_last_flush: AtomicU64::new(0),
-                    flusher: RwLock::new(None),
-                    views: ViewRegistry::new(),
-                    #[cfg(feature = "hugepages")]
-                    huge_pages: false,
-                };
-                Ok(Self {
-                    inner: Arc::new(inner),
-                })
+                let claim = claim_file(&file, Access::Read, true)?;
+                Ok(Self::from_inner(map_ro_inner(path_ref, file, claim)?))
             }
             MmapMode::ReadWrite => {
-                if len == 0 {
-                    return Err(MmapIoError::ResizeFailed(ERR_ZERO_LENGTH_FILE.into()));
-                }
-                // SAFETY: see `open_rw`.
-                let mmap = unsafe { RawMmapMut::map_mut(&file)? };
-                let inner = Inner {
-                    path: path_ref,
-                    file,
-                    mode,
-                    cached_len: AtomicU64::new(len),
-                    map: MapVariant::Rw(RwLock::new(mmap)),
-                    flush_policy: FlushPolicy::default(),
-                    written_since_last_flush: AtomicU64::new(0),
-                    writes_since_last_flush: AtomicU64::new(0),
-                    flusher: RwLock::new(None),
-                    views: ViewRegistry::new(),
-                    #[cfg(feature = "hugepages")]
-                    huge_pages: false,
-                };
-                Ok(Self {
-                    inner: Arc::new(inner),
-                })
+                let claim = claim_file(&file, Access::Write, true)?;
+                Ok(Self::from_inner(map_rw_inner(path_ref, file, claim)?))
             }
             // Read-only, as in 1.0; the builder's `cow_writable` opts in
             // to private writes.
             #[cfg(feature = "cow")]
-            MmapMode::CopyOnWrite => Ok(Self::from_inner(cow_inner(path_ref, file, false)?)),
+            MmapMode::CopyOnWrite => {
+                let claim = claim_file(&file, Access::Read, true)?;
+                Ok(Self::from_inner(cow_inner(path_ref, file, false, claim)?))
+            }
             #[cfg(not(feature = "cow"))]
             MmapMode::CopyOnWrite => Err(MmapIoError::InvalidMode(
                 "CopyOnWrite mode requires 'cow' feature",
@@ -1501,6 +1771,11 @@ impl MemoryMappedFile {
     /// [`MemoryMappedFile`] clones of this mapping exist; the
     /// underlying [`File`] is shared and cannot be extracted while
     /// other handles hold references. Drop the other clones first.
+    ///
+    /// Since 1.2.0 an `EveryMillis` background flusher is stopped and
+    /// joined when the last handle is dropped or unmapped, before the
+    /// clones are counted, so a flush in progress no longer makes
+    /// `unmap` fail as if another clone existed.
     ///
     /// # Errors
     ///
@@ -1523,22 +1798,41 @@ impl MemoryMappedFile {
     /// # Ok::<(), mmap_io::MmapIoError>(())
     /// ```
     pub fn unmap(self) -> std::result::Result<File, Self> {
-        match Arc::try_unwrap(self.inner) {
+        // Dropping this handle stops and joins the EveryMillis worker if
+        // it is the last one (see `Drop`), so the worker's temporary
+        // strong reference cannot be counted as a clone below.
+        let inner = Arc::clone(&self.inner);
+        drop(self);
+        match Arc::try_unwrap(inner) {
             Ok(inner) => {
-                // Destructure so we can control drop order: stop the
-                // background flusher first (it may hold a Weak ref
-                // back into Inner via Arc::downgrade), then drop the
-                // mapping (releases address space; on Windows this
-                // must happen BEFORE the file handle is closed), then
-                // hand back the file by value.
+                // Destructure so we can control drop order: drop the
+                // mapping (releases address space; on Windows this must
+                // happen BEFORE the file handle is closed), then release
+                // the registry claim, then hand back the file by value.
                 let Inner {
-                    file, map, flusher, ..
+                    file,
+                    map,
+                    flusher,
+                    claim,
+                    ..
                 } = inner;
                 drop(flusher);
                 drop(map);
+                drop(claim);
                 Ok(file)
             }
-            Err(arc) => Err(Self { inner: arc }),
+            Err(arc) => {
+                arc.handles.fetch_add(1, Ordering::AcqRel);
+                let this = Self { inner: arc };
+                // If the other handles went away meanwhile, the worker
+                // was stopped with the last of them; start it again.
+                if let FlushPolicy::EveryMillis(ms) = this.inner.flush_policy {
+                    if this.inner.flusher.read().is_none() {
+                        start_time_based_flusher(&this, ms);
+                    }
+                }
+                Err(this)
+            }
         }
     }
 
@@ -1886,12 +2180,21 @@ impl MemoryMappedFile {
 /// set (and the `hugepages` feature on), also issue the transparent
 /// huge page hint; see [`advise_huge_pages`].
 fn map_file_rw(file: &File, len: usize, huge: bool) -> Result<RawMmapMut> {
-    // SAFETY: `RawMmapOptions::map_mut` is `unsafe` because the OS does
-    // not stop another process from modifying the file under the
-    // mapping (see `create_rw`). Callers pass a `len` no larger than
-    // the file's current length, so every mapped page is backed by
-    // the file. Within this process all access to the returned
-    // mapping goes through the `RwLock` in `MapVariant::Rw`.
+    // SAFETY: `RawMmapOptions::map_mut` requires that, while the
+    // mapping lives, nobody modifies or truncates the mapped bytes
+    // except through this mapping. Every caller holds the file's
+    // registry claim with `Access::Write` (see `crate::registry`): a
+    // checked claim means no other `MemoryMappedFile` maps the file in
+    // this process, and none can be created while this one lives, except
+    // through `allow_aliasing`, whose caller promised in an `unsafe` call
+    // to rule out conflicting access; an unchecked claim carries that
+    // same promise. Within the mapping, all access goes through the
+    // `RwLock` in `MapVariant::Rw`, and `resize` replaces the mapping
+    // only under its write lock. Other processes, and `std::fs` writes or
+    // `set_len` on the file in this process, are not excluded; the caller
+    // must rule them out (documented on `MemoryMappedFile` and in
+    // `docs/SAFETY.md`). Callers pass a `len` no larger than the file's
+    // current length, so every mapped page is backed by the file.
     // Contract: `crate::raw::RawMmapOptions::map_mut` (see `docs/SAFETY.md`, raw mapping layer).
     let map = unsafe { RawMmapOptions::new().len(len).map_mut(file)? };
     #[cfg(feature = "hugepages")]
@@ -1912,10 +2215,10 @@ fn map_file_rw(file: &File, len: usize, huge: bool) -> Result<RawMmapMut> {
 /// copies. `writable` maps it privately (`map_copy`) behind the same
 /// `RwLock` as `ReadWrite`.
 #[cfg(feature = "cow")]
-fn cow_inner(path: PathBuf, file: File, writable: bool) -> Result<Inner> {
+fn cow_inner(path: PathBuf, file: File, writable: bool, claim: Claim) -> Result<Inner> {
     let len = file.metadata()?.len();
     if len == 0 {
-        return Err(MmapIoError::ResizeFailed(ERR_ZERO_LENGTH_FILE.into()));
+        return Err(invalid_input(ERR_ZERO_LENGTH_FILE));
     }
     let map_len = usize::try_from(len).map_err(|_| {
         MmapIoError::ResizeFailed(format!("File length {len} does not fit in usize"))
@@ -1923,44 +2226,38 @@ fn cow_inner(path: PathBuf, file: File, writable: bool) -> Result<Inner> {
     let mut opts = RawMmapOptions::new();
     opts.len(map_len);
     let map = if writable {
-        // SAFETY: `RawMmapOptions::map_copy` carries the same
-        // cross-process hazard as `RawMmap::map`: another process
-        // modifying the file can change pages this mapping has not
-        // written yet (torn reads). The crate marks that as out of scope
-        // (REPS.md section 5.1). Writes through the mapping go to
-        // private pages (MAP_PRIVATE / PAGE_WRITECOPY) and never reach
-        // the file or any other mapping, and within the process every
-        // access goes through the `RwLock` in `MapVariant::Cow`, exactly
-        // as for `Rw`. `map_len` is the file size just queried, so the
-        // window lies inside the file.
+        // SAFETY: `RawMmapOptions::map_copy` requires that nobody else
+        // modifies or truncates the file while the mapping lives: pages
+        // this mapping has not written yet still show the file. The
+        // caller's registry claim (`Access::Read`) excludes, within this
+        // process, every read-write `MemoryMappedFile` of the file (see
+        // `map_ro_inner`); other processes and `std::fs` writes are the
+        // caller's to rule out (`docs/SAFETY.md`). Writes through the
+        // mapping go to private pages (MAP_PRIVATE / PAGE_WRITECOPY) and
+        // never reach the file or any other mapping, and within the
+        // process every access goes through the `RwLock` in
+        // `MapVariant::Cow`, exactly as for `Rw`. `map_len` is the file
+        // size just queried, so the window lies inside the file.
         // Contract: `crate::raw::RawMmapOptions::map_copy` (see `docs/SAFETY.md`, raw mapping layer).
         MapVariant::Cow(RwLock::new(unsafe { opts.map_copy(&file)? }))
     } else {
-        // SAFETY: same contract and justification as `open_ro`: the
-        // only hazard is another process modifying the file (out of
-        // scope, REPS.md section 5.1). The mapping is read-only and
-        // lives in `MapVariant::Ro`, which no write path accepts, so no
-        // `&mut [u8]` ever points into it. `map_len` is the file size
-        // just queried, so the window lies inside the file.
+        // SAFETY: same contract and justification as `map_ro_inner`. The
+        // mapping is read-only and lives in `MapVariant::Ro`, which no
+        // write path accepts, so no `&mut [u8]` ever points into it.
+        // `map_len` is the file size just queried, so the window lies
+        // inside the file.
         // Contract: `crate::raw::RawMmapOptions::map` (see `docs/SAFETY.md`, raw mapping layer).
         MapVariant::Ro(unsafe { opts.map(&file)? })
     };
-    Ok(Inner {
+    // Nothing to flush: the file is never written through the mapping.
+    Ok(Inner::new(
         path,
         file,
-        mode: MmapMode::CopyOnWrite,
-        cached_len: AtomicU64::new(len),
+        MmapMode::CopyOnWrite,
+        len,
         map,
-        // Nothing to flush: the file is never written through the
-        // mapping.
-        flush_policy: FlushPolicy::Never,
-        written_since_last_flush: AtomicU64::new(0),
-        writes_since_last_flush: AtomicU64::new(0),
-        flusher: RwLock::new(None),
-        views: ViewRegistry::new(),
-        #[cfg(feature = "hugepages")]
-        huge_pages: false,
-    })
+        claim,
+    ))
 }
 
 /// Hint the kernel to back `map` with transparent huge pages.
@@ -2030,8 +2327,11 @@ impl MemoryMappedFile {
     ///
     /// # Errors
     ///
-    /// Returns [`MmapIoError::Io`] if the file cannot be opened or mapped.
-    /// Returns [`MmapIoError::ResizeFailed`] if the file is zero-length.
+    /// Returns [`MmapIoError::Io`] if the file cannot be opened or mapped,
+    /// and with `ErrorKind::InvalidInput` if the file is zero-length
+    /// (`ResizeFailed` before 1.2.0).
+    /// Returns [`MmapIoError::InvalidMode`] if a `ReadWrite` mapping of
+    /// the file exists in this process (since 1.2.0).
     ///
     /// # Example
     ///
@@ -2051,10 +2351,12 @@ impl MemoryMappedFile {
     pub fn open_cow<P: AsRef<Path>>(path: P) -> Result<Self> {
         let path_ref = path.as_ref();
         let file = OpenOptions::new().read(true).open(path_ref)?;
+        let claim = claim_file(&file, Access::Read, true)?;
         Ok(Self::from_inner(cow_inner(
             path_ref.to_path_buf(),
             file,
             false,
+            claim,
         )?))
     }
 
@@ -2091,8 +2393,11 @@ impl MemoryMappedFile {
     ///
     /// # Errors
     ///
-    /// Returns [`MmapIoError::Io`] if the file cannot be opened or mapped.
-    /// Returns [`MmapIoError::ResizeFailed`] if the file is zero-length.
+    /// Returns [`MmapIoError::Io`] if the file cannot be opened or mapped,
+    /// and with `ErrorKind::InvalidInput` if the file is zero-length
+    /// (`ResizeFailed` before 1.2.0).
+    /// Returns [`MmapIoError::InvalidMode`] if a `ReadWrite` mapping of
+    /// the file exists in this process (since 1.2.0).
     ///
     /// # Example
     ///
@@ -2114,10 +2419,12 @@ impl MemoryMappedFile {
     pub fn open_cow_writable<P: AsRef<Path>>(path: P) -> Result<Self> {
         let path_ref = path.as_ref();
         let file = OpenOptions::new().read(true).open(path_ref)?;
+        let claim = claim_file(&file, Access::Read, true)?;
         Ok(Self::from_inner(cow_inner(
             path_ref.to_path_buf(),
             file,
             true,
+            claim,
         )?))
     }
 }
@@ -2391,6 +2698,8 @@ pub struct MemoryMappedFileBuilder {
     huge_pages: bool,
     #[cfg(feature = "cow")]
     cow_writable: bool,
+    sparse: bool,
+    allow_aliasing: bool,
 }
 
 impl MemoryMappedFileBuilder {
@@ -2470,32 +2779,156 @@ impl MemoryMappedFileBuilder {
         self
     }
 
+    /// Keep new file space sparse instead of reserving disk blocks for
+    /// it. Since 1.2.0; off by default. Applies to `ReadWrite`
+    /// mappings: to the file sized by `create`, `create_new` and
+    /// `open_or_create`, and to every later [`resize`](MemoryMappedFile::resize)
+    /// that grows the mapping.
+    ///
+    /// By default the crate reserves the disk blocks for new space
+    /// (`fallocate` on Linux and Android, `F_PREALLOCATE` on macOS), so
+    /// a full disk is reported as an `ENOSPC` error when the file is
+    /// created or grown. With `sparse(true)` the space is only
+    /// allocated when a page is first written, which lets a file be
+    /// sized far beyond the free disk space, at a cost: on Linux and
+    /// macOS a write through the mapping into a page without a disk
+    /// block raises `SIGBUS` and kills the process when the file system
+    /// is full, because a page fault cannot return an error. Use it only
+    /// when the disk cannot fill up, or when that crash is acceptable.
+    ///
+    /// No effect on Windows, where NTFS allocates the whole length of a
+    /// file that is not marked sparse when it is extended.
+    ///
+    /// # Example
+    ///
+    /// ```
+    /// use mmap_io::MemoryMappedFile;
+    ///
+    /// let dir = tempfile::tempdir()?;
+    /// let mmap = MemoryMappedFile::builder(dir.path().join("index.bin"))
+    ///     .size(1 << 20)
+    ///     .sparse(true)
+    ///     .create()?;
+    /// assert_eq!(mmap.len(), 1 << 20);
+    /// # Ok::<(), Box<dyn std::error::Error>>(())
+    /// ```
+    pub fn sparse(mut self, enabled: bool) -> Self {
+        self.sparse = enabled;
+        self
+    }
+
+    /// Skip the check that keeps a second `MemoryMappedFile` of the same
+    /// file from changing or truncating the bytes behind this mapping's
+    /// borrows, and the other way round. Since 1.2.0.
+    ///
+    /// Every mapping made by this crate is recorded in a process-wide
+    /// registry, keyed by the file's identity. Without this call the
+    /// terminal methods refuse, with [`MmapIoError::InvalidMode`], a
+    /// mapping that conflicts with one that already exists: a
+    /// `ReadWrite` mapping while any other mapping of the file exists,
+    /// and a `ReadOnly` or `CopyOnWrite` mapping while a `ReadWrite` one
+    /// exists. `create` also refuses to truncate a mapped file, and
+    /// [`resize`](MemoryMappedFile::resize) refuses to shrink a file that
+    /// another mapping still maps. With this call none of that is
+    /// checked for the mapping being built (it is still recorded, so
+    /// later checked opens see it).
+    ///
+    /// Prefer cloning one handle: clones share one lock and one view
+    /// registry and are always sound.
+    ///
+    /// # Safety
+    ///
+    /// For as long as any borrow handed out by the resulting mapping is
+    /// alive ([`MappedSlice`], [`MappedSliceMut`], iterator items,
+    /// segments, atomic views, the [`MmapReader`] buffer, or a slice
+    /// from `as_slice_bytes`), and for as long as any borrow handed out
+    /// by another mapping of the same file is alive, the caller must
+    /// ensure that no other mapping or writer modifies those bytes or
+    /// truncates the file under them. That includes other
+    /// `MemoryMappedFile`s of the file in this process (their
+    /// `update_region`, `as_slice_mut`, `resize`, and the free functions
+    /// `write_mmap` and `create_mmap`), `std::fs` writes and `set_len`
+    /// on the file, and other processes. Changing the bytes behind a
+    /// live `&[u8]` is undefined behaviour; truncating the file under a
+    /// live borrow raises `SIGBUS` on Unix.
+    ///
+    /// # Example
+    ///
+    /// ```
+    /// use mmap_io::{MemoryMappedFile, MmapMode};
+    ///
+    /// let dir = tempfile::tempdir()?;
+    /// let path = dir.path().join("shared.bin");
+    /// let writer = MemoryMappedFile::create_rw(&path, 4096)?;
+    /// // A checked second mapping is refused while the writer lives.
+    /// assert!(MemoryMappedFile::open_ro(&path).is_err());
+    /// // SAFETY: `reader` hands out no borrow while `writer` writes, and
+    /// // `writer` writes only after `reader` is dropped.
+    /// let reader = unsafe {
+    ///     MemoryMappedFile::builder(&path)
+    ///         .mode(MmapMode::ReadOnly)
+    ///         .allow_aliasing()
+    /// }
+    /// .open()?;
+    /// let mut header = [0u8; 4];
+    /// reader.read_into(0, &mut header)?;
+    /// drop(reader);
+    /// writer.update_region(0, b"done")?;
+    /// # Ok::<(), Box<dyn std::error::Error>>(())
+    /// ```
+    pub unsafe fn allow_aliasing(mut self) -> Self {
+        self.allow_aliasing = true;
+        self
+    }
+
+    /// Whether the registry checks conflicts for this builder.
+    fn checked(&self) -> bool {
+        !self.allow_aliasing
+    }
+
     /// Create a new mapping; for ReadWrite requires size for creation.
     ///
     /// For `ReadWrite` (the default mode here) the file is created or
-    /// truncated to `size`. For `ReadOnly` and `CopyOnWrite` the file
-    /// must already exist and is opened as-is.
+    /// truncated to `size`, with disk space reserved unless
+    /// [`sparse(true)`](Self::sparse) (see
+    /// [`MemoryMappedFile::create_rw`]). A file another
+    /// `MemoryMappedFile` in this process maps is refused and left
+    /// untouched (see [`allow_aliasing`](Self::allow_aliasing)). For
+    /// `ReadOnly` and `CopyOnWrite` the file must already exist and is
+    /// opened as-is.
     ///
     /// # Errors
     ///
-    /// Returns [`MmapIoError::ResizeFailed`] if size is missing or zero
-    /// for a `ReadWrite` create.
+    /// Returns [`MmapIoError::Io`] with `ErrorKind::InvalidInput` if
+    /// size is missing for a `ReadWrite` create (`ResizeFailed` before
+    /// 1.2.0), and [`MmapIoError::ResizeFailed`] if it is zero or exceeds
+    /// the maximum safe size.
     /// Returns [`MmapIoError::InvalidMode`] if the requested mode is
-    /// `CopyOnWrite` without the `cow` feature enabled.
-    /// Returns [`MmapIoError::Io`] if file creation or mapping fails.
+    /// `CopyOnWrite` without the `cow` feature enabled, or if another
+    /// mapping of the file conflicts (since 1.2.0).
+    /// Returns [`MmapIoError::Io`] if file creation, the disk
+    /// reservation, or mapping fails.
     pub fn create(self) -> Result<MemoryMappedFile> {
         let mode = self.mode.unwrap_or(MmapMode::ReadWrite);
         match mode {
             MmapMode::ReadWrite => {
                 let size = validated_create_size(self.size)?;
-                let file = OpenOptions::new()
-                    .create(true)
-                    .write(true)
-                    .read(true)
-                    .truncate(true)
-                    .open(&self.path)?;
-                file.set_len(size)?;
-                self.finish_rw(file, size)
+                let path = self.path.clone();
+                let new = NewFile::create_truncated(&path, size, self.sparse, self.checked())?;
+                let NewFile {
+                    file,
+                    claim,
+                    created,
+                } = new;
+                match self.finish_rw(file, size, claim) {
+                    Ok(mmap) => Ok(mmap),
+                    Err(e) => {
+                        if created {
+                            let _ = std::fs::remove_file(&path);
+                        }
+                        Err(e)
+                    }
+                }
             }
             MmapMode::ReadOnly | MmapMode::CopyOnWrite => self.open_existing(mode),
         }
@@ -2508,9 +2941,10 @@ impl MemoryMappedFileBuilder {
     /// on Unix, `CREATE_NEW` on Windows), so of several threads or
     /// processes racing to create the same path exactly one succeeds
     /// and nobody's data is truncated. The new file is sized to
-    /// `size` (sparse) and mapped `ReadWrite` with every builder option
-    /// applied (flush policy including the `EveryMillis` flusher, touch
-    /// hint, huge pages), exactly as `create` does.
+    /// `size` (with disk space reserved unless
+    /// [`sparse(true)`](Self::sparse)) and mapped `ReadWrite` with every
+    /// builder option applied (flush policy including the `EveryMillis`
+    /// flusher, touch hint, huge pages), exactly as `create` does.
     ///
     /// The mode must be `ReadWrite` (the default); a new, empty file
     /// cannot be opened read-only or copy-on-write. Size and mode are
@@ -2522,8 +2956,10 @@ impl MemoryMappedFileBuilder {
     ///
     /// Returns [`MmapIoError::Io`] with `ErrorKind::AlreadyExists` if
     /// the path exists (the existing file is left untouched).
-    /// Returns [`MmapIoError::ResizeFailed`] if `size` was not set, is
-    /// zero, or exceeds the maximum safe size.
+    /// Returns [`MmapIoError::Io`] with `ErrorKind::InvalidInput` if
+    /// `size` was not set (`ResizeFailed` before 1.2.0), and
+    /// [`MmapIoError::ResizeFailed`] if it is zero or exceeds the
+    /// maximum safe size.
     /// Returns [`MmapIoError::InvalidMode`] if the mode is not
     /// `ReadWrite`.
     /// Returns [`MmapIoError::Io`] if creating, sizing, or mapping the
@@ -2558,18 +2994,22 @@ impl MemoryMappedFileBuilder {
             .create_new(true)
             .open(&self.path)?;
         let path = self.path.clone();
-        let result = match file.set_len(size) {
-            Ok(()) => self.finish_rw(file, size),
-            Err(e) => {
-                drop(file);
-                Err(e.into())
+        // A file this call just created exclusively cannot be mapped by
+        // anyone else yet, so the claim cannot conflict.
+        let result = claim_file(&file, Access::Write, self.checked()).and_then(|claim| {
+            match extend_file(&file, 0, size, self.sparse) {
+                Ok(()) => self.finish_rw(file, size, claim),
+                Err(e) => {
+                    drop(file);
+                    Err(e.into())
+                }
             }
-        };
+        });
         if result.is_err() {
             // We created the file exclusively a moment ago and it holds
             // no data: remove it rather than leave a stray file. The
             // handle is closed by now (Windows cannot delete open files).
-            let _ = std::fs::remove_file(&path);
+            let _ = std::fs::remove_file(path);
         }
         result
     }
@@ -2581,15 +3021,19 @@ impl MemoryMappedFileBuilder {
     /// background flusher), `touch_hint`, and `huge_pages` apply
     /// exactly as they do for [`create`](Self::create). For
     /// `CopyOnWrite`, `cow_writable` (feature `cow`) decides whether the
-    /// mapping accepts private writes.
+    /// mapping accepts private writes. A mapping that conflicts with
+    /// another `MemoryMappedFile` of the file in this process is refused
+    /// (see [`allow_aliasing`](Self::allow_aliasing)).
     ///
     /// # Errors
     ///
     /// Returns [`MmapIoError::InvalidMode`] if `CopyOnWrite` was
-    /// requested without the `cow` feature.
+    /// requested without the `cow` feature, or if another mapping of the
+    /// file conflicts (since 1.2.0).
     /// Returns [`MmapIoError::Io`] if the file cannot be opened or
-    /// mapped, or [`MmapIoError::ResizeFailed`] if the file is
-    /// zero-length.
+    /// mapped, and with `ErrorKind::InvalidInput` if the file is
+    /// zero-length on the `ReadWrite` or `CopyOnWrite` paths
+    /// (`ResizeFailed` before 1.2.0).
     pub fn open(self) -> Result<MemoryMappedFile> {
         let mode = self.mode.unwrap_or(MmapMode::ReadOnly);
         self.open_existing(mode)
@@ -2602,17 +3046,22 @@ impl MemoryMappedFileBuilder {
     /// For `ReadWrite` the file is never truncated: a non-empty
     /// existing file is mapped at its current length (`size` is
     /// ignored), and a missing or zero-length file is created or
-    /// extended to `size`. Creation uses an exclusive create, so two
-    /// processes racing to create the same path cannot truncate each
-    /// other's data. The configured `flush_policy`, `touch_hint`, and
-    /// `huge_pages` apply on both paths. For `ReadOnly` and
-    /// `CopyOnWrite` this is the same as [`open`](Self::open).
+    /// extended to `size`, with disk space reserved unless
+    /// [`sparse(true)`](Self::sparse). Creation uses an exclusive
+    /// create, so two processes racing to create the same path cannot
+    /// truncate each other's data. The configured `flush_policy`,
+    /// `touch_hint`, and `huge_pages` apply on both paths. For
+    /// `ReadOnly` and `CopyOnWrite` this is the same as
+    /// [`open`](Self::open).
     ///
     /// # Errors
     ///
-    /// Returns [`MmapIoError::ResizeFailed`] if the file has to be
-    /// created or extended and `.size()` was not set or was set to
-    /// zero.
+    /// Returns [`MmapIoError::Io`] with `ErrorKind::InvalidInput` if the
+    /// file has to be created or extended and `.size()` was not set
+    /// (`ResizeFailed` before 1.2.0), and [`MmapIoError::ResizeFailed`]
+    /// if it was set to zero.
+    /// Returns [`MmapIoError::InvalidMode`] if another mapping of the
+    /// file conflicts (since 1.2.0).
     /// Returns [`MmapIoError::Io`] if the open or create call fails.
     ///
     /// # Examples
@@ -2633,53 +3082,41 @@ impl MemoryMappedFileBuilder {
         if mode != MmapMode::ReadWrite {
             return self.open_existing(mode);
         }
-        let (file, len) = open_or_create_rw_file(&self.path, self.size)?;
-        self.finish_rw(file, len)
+        let (file, len, claim) =
+            open_or_create_rw_file(&self.path, self.size, self.sparse, self.checked())?;
+        self.finish_rw(file, len, claim)
     }
 
     /// Open an existing file in `mode`. Shared by `open`, and by
     /// `create` / `open_or_create` for the non-RW modes.
     fn open_existing(self, mode: MmapMode) -> Result<MemoryMappedFile> {
+        let checked = self.checked();
         match mode {
             MmapMode::ReadOnly => {
                 let file = OpenOptions::new().read(true).open(&self.path)?;
-                let len = file.metadata()?.len();
-                // SAFETY: see `MemoryMappedFile::open_ro` for the full
-                // justification of calling `RawMmap::map`. The file was
-                // just opened read-only; cross-process modification is
-                // the only residual hazard and is documented as
-                // out-of-scope.
-                let mmap = unsafe { RawMmap::map(&file)? };
-                Ok(MemoryMappedFile::from_inner(Inner {
-                    path: self.path,
-                    file,
-                    mode,
-                    cached_len: AtomicU64::new(len),
-                    map: MapVariant::Ro(mmap),
-                    flush_policy: FlushPolicy::Never,
-                    written_since_last_flush: AtomicU64::new(0),
-                    writes_since_last_flush: AtomicU64::new(0),
-                    flusher: RwLock::new(None),
-                    views: ViewRegistry::new(),
-                    #[cfg(feature = "hugepages")]
-                    huge_pages: false,
-                }))
+                let claim = claim_file(&file, Access::Read, checked)?;
+                Ok(MemoryMappedFile::from_inner(map_ro_inner(
+                    self.path, file, claim,
+                )?))
             }
             MmapMode::ReadWrite => {
                 let file = OpenOptions::new().read(true).write(true).open(&self.path)?;
+                let claim = claim_file(&file, Access::Write, checked)?;
                 let len = file.metadata()?.len();
                 if len == 0 {
-                    return Err(MmapIoError::ResizeFailed(ERR_ZERO_LENGTH_FILE.into()));
+                    return Err(invalid_input(ERR_ZERO_LENGTH_FILE));
                 }
-                self.finish_rw(file, len)
+                self.finish_rw(file, len, claim)
             }
             #[cfg(feature = "cow")]
             MmapMode::CopyOnWrite => {
                 let file = OpenOptions::new().read(true).open(&self.path)?;
+                let claim = claim_file(&file, Access::Read, checked)?;
                 Ok(MemoryMappedFile::from_inner(cow_inner(
                     self.path,
                     file,
                     self.cow_writable,
+                    claim,
                 )?))
             }
             #[cfg(not(feature = "cow"))]
@@ -2691,27 +3128,32 @@ impl MemoryMappedFileBuilder {
 
     /// Map an RW file of `len` bytes and apply every builder option:
     /// huge-page hint, flush policy (starting the `EveryMillis`
-    /// background flusher), and touch hint. Every RW builder path ends
-    /// here so `create`, `open`, and `open_or_create` behave alike.
-    fn finish_rw(self, file: File, len: u64) -> Result<MemoryMappedFile> {
+    /// background flusher), sparse growth, and touch hint. Every RW
+    /// builder path ends here so `create`, `open`, and `open_or_create`
+    /// behave alike. `claim` is the file's write claim.
+    fn finish_rw(self, file: File, len: u64, claim: Claim) -> Result<MemoryMappedFile> {
         let map_len = usize::try_from(len).map_err(|_| {
             MmapIoError::ResizeFailed(format!("File length {len} does not fit in usize"))
         })?;
         let huge = builder_huge_pages(&self);
+        // The mapping call's contract is discharged in `map_file_rw`
+        // with this write claim (see `create_rw`); an unchecked claim
+        // carries the caller's `allow_aliasing` promise instead.
         let mmap = map_file_rw(&file, map_len, huge)?;
-        let mmap_file = MemoryMappedFile::from_inner(Inner {
-            path: self.path,
+        let base = Inner::new(
+            self.path,
             file,
-            mode: MmapMode::ReadWrite,
-            cached_len: AtomicU64::new(len),
-            map: MapVariant::Rw(RwLock::new(mmap)),
+            MmapMode::ReadWrite,
+            len,
+            MapVariant::Rw(RwLock::new(mmap)),
+            claim,
+        );
+        let mmap_file = MemoryMappedFile::from_inner(Inner {
             flush_policy: self.flush_policy,
-            written_since_last_flush: AtomicU64::new(0),
-            writes_since_last_flush: AtomicU64::new(0),
-            flusher: RwLock::new(None),
-            views: ViewRegistry::new(),
             #[cfg(feature = "hugepages")]
             huge_pages: huge,
+            sparse: self.sparse,
+            ..base
         });
 
         // The flusher holds a Weak that must point at the live Arc, so
@@ -2733,9 +3175,8 @@ impl MemoryMappedFileBuilder {
 
 /// Validate the builder size for creating a new RW file.
 fn validated_create_size(size: Option<u64>) -> Result<u64> {
-    let size = size.ok_or_else(|| {
-        MmapIoError::ResizeFailed("Size must be set for create() in ReadWrite mode".into())
-    })?;
+    let size =
+        size.ok_or_else(|| invalid_input("Size must be set for create() in ReadWrite mode"))?;
     if size == 0 {
         return Err(MmapIoError::ResizeFailed(ERR_ZERO_SIZE.into()));
     }
@@ -2749,11 +3190,17 @@ fn validated_create_size(size: Option<u64>) -> Result<u64> {
 
 /// Open `path` read-write without ever truncating it, creating it at
 /// `size` if it does not exist and extending it to `size` if it is
-/// empty. Returns the file and its length.
+/// empty (reserving the disk space unless `sparse`). Returns the file,
+/// its length, and its write claim, taken before the file is changed.
 ///
 /// The create step uses `create_new`, so a file created by someone else
 /// between our open attempt and our create is opened, not truncated.
-fn open_or_create_rw_file(path: &Path, size: Option<u64>) -> Result<(File, u64)> {
+fn open_or_create_rw_file(
+    path: &Path,
+    size: Option<u64>,
+    sparse: bool,
+    checked: bool,
+) -> Result<(File, u64, Claim)> {
     let mut opts = OpenOptions::new();
     opts.read(true).write(true);
     // Two passes cover the race where another process creates the
@@ -2761,13 +3208,14 @@ fn open_or_create_rw_file(path: &Path, size: Option<u64>) -> Result<(File, u64)>
     for _ in 0..2 {
         match opts.open(path) {
             Ok(file) => {
+                let claim = claim_file(&file, Access::Write, checked)?;
                 let len = file.metadata()?.len();
                 if len > 0 {
-                    return Ok((file, len));
+                    return Ok((file, len, claim));
                 }
                 let size = validated_create_size(size)?;
-                file.set_len(size)?;
-                return Ok((file, size));
+                extend_file(&file, 0, size, sparse)?;
+                return Ok((file, size, claim));
             }
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
                 let size = validated_create_size(size)?;
@@ -2778,8 +3226,21 @@ fn open_or_create_rw_file(path: &Path, size: Option<u64>) -> Result<(File, u64)>
                     .open(path)
                 {
                     Ok(file) => {
-                        file.set_len(size)?;
-                        return Ok((file, size));
+                        let claimed = claim_file(&file, Access::Write, checked).and_then(|claim| {
+                            extend_file(&file, 0, size, sparse)
+                                .map(|()| claim)
+                                .map_err(MmapIoError::from)
+                        });
+                        return match claimed {
+                            Ok(claim) => Ok((file, size, claim)),
+                            Err(e) => {
+                                // Created exclusively a moment ago and
+                                // still empty: remove it again.
+                                drop(file);
+                                let _ = std::fs::remove_file(path);
+                                Err(e)
+                            }
+                        };
                     }
                     Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => continue,
                     Err(e) => return Err(e.into()),
@@ -2807,7 +3268,12 @@ fn start_time_based_flusher(mmap_file: &MemoryMappedFile, ms: u64) {
         if inner.written_since_last_flush.load(Ordering::Acquire) == 0 {
             return false;
         }
-        MemoryMappedFile { inner }.flush().is_ok()
+        // Flush through the shared state, not through a temporary
+        // `MemoryMappedFile`: handles are counted in `Inner::handles`.
+        match &inner.map {
+            MapVariant::Rw(lock) => flush_rw_inner(&inner, lock).is_ok(),
+            MapVariant::Ro(_) | MapVariant::Cow(_) => false,
+        }
     });
     // Stored on Inner so the worker lives exactly as long as the
     // mapping; dropping Inner stops it.

@@ -94,6 +94,38 @@ pub fn boundary_sizes() -> Vec<u64> {
     v
 }
 
+/// A read-only mapping of `path` opened while another mapping of the
+/// file is alive. Since 1.2.0 the safe constructors refuse that (the
+/// writer could change bytes behind the reader's borrows), so this goes
+/// through the builder's `unsafe` `allow_aliasing`.
+///
+/// # Safety
+///
+/// While a borrow from the returned mapping is alive, nothing may write
+/// to or truncate the file through any other mapping, and while a
+/// borrow from another mapping is alive, the same holds the other way
+/// round. The tests that use this only read through it, between writes.
+pub unsafe fn open_ro_aliased(path: &Path) -> mmap_io::MemoryMappedFile {
+    // SAFETY: forwarded to the caller.
+    unsafe { open_aliased(path, mmap_io::MmapMode::ReadOnly) }
+}
+
+/// [`open_ro_aliased`] for any mode (`CopyOnWrite` needs the `cow`
+/// feature).
+///
+/// # Safety
+///
+/// As for [`open_ro_aliased`].
+pub unsafe fn open_aliased(path: &Path, mode: mmap_io::MmapMode) -> mmap_io::MemoryMappedFile {
+    // SAFETY: forwarded to the caller.
+    let builder = unsafe {
+        mmap_io::MemoryMappedFile::builder(path)
+            .mode(mode)
+            .allow_aliasing()
+    };
+    builder.open().expect("open aliased mapping")
+}
+
 /// Read the whole file through a fresh `std::fs` handle.
 pub fn read_file(path: &Path) -> Vec<u8> {
     std::fs::read(path).expect("read file")

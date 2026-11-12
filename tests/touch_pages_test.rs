@@ -109,11 +109,12 @@ async fn test_time_based_flushing() {
     // here an explicit flush must work alongside the policy.
     mmap.flush().expect("manual flush");
 
-    // Open a new read-only mapping to verify
-    let ro_mmap = MemoryMappedFile::open_ro(&path).expect("open ro");
-    let mut buf = vec![0u8; 22];
-    ro_mmap.read_into(0, &mut buf).expect("read");
-    assert_eq!(&buf[..21], b"time-based flush test");
+    // Read the file to verify (a second mapping of it is refused while
+    // the writer lives)
+    assert_eq!(
+        &fs::read(&path).expect("read")[..21],
+        b"time-based flush test"
+    );
 
     fs::remove_file(&path).expect("cleanup");
 }

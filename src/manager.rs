@@ -11,6 +11,11 @@ use crate::mmap::{MemoryMappedFile, MmapMode};
 /// Create a new read-write memory-mapped file of the given size.
 /// Truncates if the file already exists.
 ///
+/// Same as [`MemoryMappedFile::create_rw`]: since 1.2.0 a file that
+/// another `MemoryMappedFile` in this process maps is refused with
+/// `InvalidMode` and left untouched, instead of being truncated under
+/// that mapping.
+///
 /// # Errors
 ///
 /// Returns errors from `MemoryMappedFile::create_rw`.
@@ -19,6 +24,10 @@ pub fn create_mmap<P: AsRef<Path>>(path: P, size: u64) -> Result<MemoryMappedFil
 }
 
 /// Load an existing memory-mapped file in the requested mode.
+///
+/// Since 1.2.0 a mapping that conflicts with another `MemoryMappedFile`
+/// of the same file in this process is refused with `InvalidMode` (see
+/// [`MemoryMappedFile::open_ro`] and [`MemoryMappedFile::open_rw`]).
 ///
 /// # Errors
 ///
@@ -37,11 +46,22 @@ pub fn load_mmap<P: AsRef<Path>>(path: P, mode: MmapMode) -> Result<MemoryMapped
 }
 
 /// Write bytes at an offset into the specified file path (RW).
-/// Convenience wrapper around creating/loading and `update_region`.
+/// Convenience wrapper around [`MemoryMappedFile::open_rw`] and
+/// `update_region`: it maps the whole file, writes `data`, and unmaps
+/// it again. It does **not** flush; the bytes reach the page cache (and
+/// every other reader of the file) at once, but are durable only after
+/// the OS writes them back.
+///
+/// Since 1.2.0 it fails with `InvalidMode`, and writes nothing, while
+/// another `MemoryMappedFile` of the same file is alive in this process:
+/// the write would change bytes behind that mapping's borrows. Write
+/// through the existing handle (`update_region`) instead.
 ///
 /// # Errors
 ///
-/// Returns errors from file opening or update operations.
+/// Returns errors from file opening or update operations, and
+/// `InvalidMode` if the file is mapped elsewhere in this process
+/// (since 1.2.0).
 pub fn write_mmap<P: AsRef<Path>>(path: P, offset: u64, data: &[u8]) -> Result<()> {
     let mmap = MemoryMappedFile::open_rw(path)?;
     mmap.update_region(offset, data)
@@ -138,6 +158,6 @@ pub mod r#async {
     /// Returns `MmapIoError::Io` if the underlying delete operation fails.
     pub async fn delete_mmap_async<P: AsRef<Path>>(path: P) -> Result<()> {
         let path: PathBuf = path.as_ref().to_path_buf();
-        blocking::unblock(move || fs::remove_file(&path).map_err(MmapIoError::Io)).await
+        blocking::unblock(move || fs::remove_file(path).map_err(MmapIoError::Io)).await
     }
 }

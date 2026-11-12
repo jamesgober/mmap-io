@@ -7,6 +7,48 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.2.0] - 2026-11-12
+
+Minor release: soundness and reliability fixes from an independent review of 1.1.1. Safe code could change or truncate the bytes behind a live `&[u8]` through a second mapping of the same file, including through the crate's own `write_mmap` and `create_mmap` (undefined behaviour, and `SIGBUS` on Linux for a truncation); writes into a sparse mapping on a full disk crashed with `SIGBUS`. Both are closed for everything the crate controls. No public item was removed or renamed and no signature changed; the behaviour changes are listed under **Changed**, and code that mapped one file twice in one process now gets an error where it used to get undefined behaviour. Upgrading is recommended for every user.
+
+### Security
+
+- **Soundness: a second mapping of a mapped file is refused.** Every `MemoryMappedFile` is now recorded in a process-wide registry keyed by the file's identity (device and inode on Unix, volume serial number and file id on Windows), so another path to the same file (`./a.bin`, a hard link) counts as the same file. A `ReadWrite` mapping is refused while any other mapping of the file exists; a `ReadOnly` or `CopyOnWrite` mapping is refused while a `ReadWrite` one exists; read-only and copy-on-write mappings share. The refusal is `MmapIoError::InvalidMode` and happens before the file is touched. This covers every constructor (`create_rw`, `open_ro`, `open_rw`, `open_cow`, `open_cow_writable`, `open_or_create`, `from_file`, the builder) and the free functions: `write_mmap` and `load_mmap` on a mapped file are refused, and `create_rw` / `create_mmap` / builder `create` no longer truncate a file another mapping maps. Clones of one handle are unaffected: they share one lock and one view registry, as before.
+- **Soundness: a shrinking `resize` is refused while another mapping of the file exists** (`ResizeFailed`), so that mapping's borrows cannot fault after the truncation. With the checks above this can only happen through `allow_aliasing`.
+- **Honest safety contract.** The SAFETY comments and README claimed that in-process access was sound whatever the caller did. They now state what the crate enforces (one lock per mapping, the registry) and what the caller must still guarantee: while a borrow of a mapping is alive, no other writer modifies the file or truncates it, neither another process nor `std::fs` writes or `File::set_len` in this process. See the new "What the caller must guarantee" section on `MemoryMappedFile` and `docs/SAFETY.md`. For files other processes can write, the docs recommend the copying reads (`read_into`, `reader()`), which keep no borrow into the mapping.
+- **No `SIGBUS` on a full disk for new space.** `create_rw`, the builder's `create`, `create_new` and `open_or_create`, and a growing `resize` now reserve the disk blocks of the new range (`fallocate` on Linux and Android, `F_PREALLOCATE` on macOS), so a full file system fails the call with `MmapIoError::Io` (`ENOSPC`) and leaves the file and mapping at their old size, instead of a later write through the mapping killing the process. Windows already allocated the whole length (see **Fixed**). Remaining exposure, documented: `sparse(true)`, file systems without `fallocate` support, other Unix platforms, files that were already sparse when opened, and holes punched by other programs.
+
+### Added
+
+- **`MemoryMappedFileBuilder::allow_aliasing`** (`unsafe fn`): skip the registry checks for the mapping being built, for callers who take on the contract themselves (the mapping is still recorded, so later checked opens see it). Its `# Safety` section states the contract: while a borrow of this mapping, or of another mapping of the same file, is alive, nothing modifies those bytes or truncates the file.
+- **`MemoryMappedFileBuilder::sparse(bool)`**: keep new file space sparse instead of reserving it (the 1.1 behaviour), for files sized beyond the free disk on purpose. Applies to creation and every later growing `resize` of that mapping. No effect on Windows.
+
+### Changed
+
+- **A second, conflicting mapping of one file in one process is an error** (see **Security**). Code that opened a writer and a reader of the same file side by side must share one handle (clone it), drop the writer first, read the file with `std::fs`, or opt in with `allow_aliasing`. `write_mmap` on a file that is mapped elsewhere in the process fails; write through the existing handle.
+- **New space is reserved on disk by default** (see **Security**). Creating a file larger than the free space now fails up front; use `sparse(true)` to keep the old behaviour. Reserving space with `fallocate` is fast on ext4, xfs, btrfs and tmpfs; on APFS `F_PREALLOCATE` is used.
+- **Error variants.** An empty file opened read-write or copy-on-write (`open_rw`, `open_cow`, `open_cow_writable`, `from_file`, builder `open`, `load_mmap`, `write_mmap`) and a missing builder size (`create`, `create_new`, `open_or_create`) now return `MmapIoError::Io` with `ErrorKind::InvalidInput` instead of `ResizeFailed`: nothing was resized. A zero or oversized size is still `ResizeFailed`.
+- **`create_rw` and builder `create` create the file exclusively first** and only truncate an existing file after registering it, so a failure can no longer remove a file another process created between the existence check and the open (review F-9).
+- **`flush()` no longer holds the mapping lock while the device catches up** on Linux and Windows. On Linux `msync(MS_SYNC)` on a shared file mapping is `fdatasync` on the file, so the flush calls `File::sync_data` without the lock; on Windows `FlushViewOfFile` runs under the read lock and `FlushFileBuffers` after it is released. Writers, including those racing the `EveryMillis` flusher, are no longer stalled for the length of a flush. macOS and other Unix keep `msync` under the read lock.
+- **`MemoryMappedFile` implements `Drop`** (and `Clone` by hand, with the same behaviour as the derived one): dropping the last handle stops and joins the `EveryMillis` flusher, so the mapping, its file and its registry entry are released when `drop` returns and the file can be mapped again at once.
+
+### Fixed
+
+- **`unmap()` failed spuriously with `FlushPolicy::EveryMillis`** (4 in 200 runs on Windows, 41 in 200 on Linux in the review). The flusher held a strong reference while it flushed, which `unmap` counted as another clone. The flusher now holds only a weak reference to the shared state, never a handle, and `unmap` joins it before counting clones.
+- **Docs: Windows files are not sparse.** The `create_rw` and `open_or_create` docs claimed `set_len` produced a sparse file on every platform including NTFS; NTFS allocates the whole length of a file that is not marked sparse. Corrected.
+- **Docs: iterators and atomic views.** The `atomic` module said a `chunks()` / `pages()` iterator covered the whole mapping against atomic views; it registers each item's range only. An atomic view ahead of the iterator is accepted, and the iterator then yields an owned snapshot (one allocation) for those bytes. The module docs and the README's zero-allocation bullet now say so.
+- **Docs: `write_mmap` does not flush.** Now stated.
+
+### Tests
+
+- `tests/review_2026_11.rs` pins every fix above: second handles and other paths to the same file refused, readers sharing, truncation under a live slice refused (the `SIGBUS` case, run on Linux), `allow_aliasing` and the shrink refusal, no spurious `unmap` failure in 200 `EveryMillis(1)` rounds, reopening right after the last drop, the error variants, preallocation versus `sparse(true)` (Linux), `ENOSPC` instead of `SIGBUS` on a 1 MiB tmpfs (Linux, run when `MMAP_IO_SMALL_FS` points at a small file system), and `flush()` completing while a writer holds the lock (Linux).
+- Unit tests for the registry and the space reservation. Existing tests that opened a second mapping of a file next to a writer now read the file with `std::fs`, drop the writer first, or opt in with `allow_aliasing`.
+
+```toml
+[dependencies]
+mmap-io = "1.2"
+```
+
 ## [1.1.1] - 2026-11-11
 
 Test-only patch release: no library code changes.
@@ -949,7 +991,8 @@ impls. Everything is additive; no API breaks.
 - Basic README.
 
 <!-- LINK REFERENCE -->
-[Unreleased]: https://github.com/jamesgober/mmap-io/compare/v1.1.1...HEAD
+[Unreleased]: https://github.com/jamesgober/mmap-io/compare/v1.2.0...HEAD
+[1.2.0]: https://github.com/jamesgober/mmap-io/compare/v1.1.1...v1.2.0
 [1.1.1]: https://github.com/jamesgober/mmap-io/compare/v1.1.0...v1.1.1
 [1.1.0]: https://github.com/jamesgober/mmap-io/compare/v1.0.0...v1.1.0
 [1.0.0]: https://github.com/jamesgober/mmap-io/compare/v0.9.11...v1.0.0

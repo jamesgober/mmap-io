@@ -157,18 +157,20 @@ fn views_created_after_a_resize_see_the_new_length() {
     );
 }
 
-/// Windows refuses to truncate a file that another view maps. The
-/// documented behavior is an `Io` error with the mapping restored at
-/// its old size and contents.
-#[cfg(windows)]
+/// A shrink while another mapping of the file is alive is refused
+/// before the file is touched, on every platform (since 1.2.0; before,
+/// Windows refused it with an `Io` error and Unix truncated the file
+/// under the other mapping). The other mapping can only exist through
+/// `allow_aliasing`.
 #[cfg_attr(miri, ignore = "FFI mmap syscalls are not supported by Miri")]
 #[test]
-fn shrink_with_a_second_mapping_open_fails_and_restores_on_windows() {
+fn shrink_with_a_second_mapping_open_is_refused() {
     let path = tmp_path("second.bin");
     let m = MemoryMappedFile::create_rw(&path, 8192).unwrap();
     m.update_region(0, &pattern(8192, 8)).unwrap();
-    let other = MemoryMappedFile::open_ro(&path).unwrap();
-    assert!(matches!(m.resize(4096), Err(MmapIoError::Io(_))));
+    // SAFETY: `m` is not written while a borrow of `other` is alive.
+    let other = unsafe { crate::common::open_ro_aliased(&path) };
+    assert!(matches!(m.resize(4096), Err(MmapIoError::ResizeFailed(_))));
     assert_eq!(m.len(), 8192);
     assert_eq!(m.as_slice(0, 8192).unwrap(), &pattern(8192, 8)[..]);
     assert_eq!(other.as_slice(0, 8192).unwrap(), &pattern(8192, 8)[..]);

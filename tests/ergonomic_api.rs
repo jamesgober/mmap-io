@@ -162,7 +162,7 @@ fn from_file_rw_zero_length_errors() {
     // file.set_len(0) by default after truncate(true).
     let err = MemoryMappedFile::from_file(file, MmapMode::ReadWrite, &path)
         .expect_err("zero-length RW must error");
-    assert!(matches!(err, MmapIoError::ResizeFailed(_)));
+    assert!(matches!(err, MmapIoError::Io(ref e) if e.kind() == std::io::ErrorKind::InvalidInput));
 
     let _ = fs::remove_file(&path);
 }

@@ -334,7 +334,7 @@ fn is_cow_writable_reports_the_opt_in_only() {
     fs::write(&empty, b"").expect("write empty");
     assert!(matches!(
         MemoryMappedFile::open_cow_writable(&empty),
-        Err(MmapIoError::ResizeFailed(_))
+        Err(MmapIoError::Io(ref e)) if e.kind() == std::io::ErrorKind::InvalidInput
     ));
     assert!(matches!(
         MemoryMappedFile::open_cow_writable(dir.path().join("missing.bin")),

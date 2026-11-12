@@ -24,7 +24,9 @@ fn create_write_read_flush_ro() {
     update_region(&mmap, 100, data).expect("update");
     flush(&mmap).expect("flush");
 
-    // Re-open RO and verify
+    // Re-open RO and verify (after the writer is gone: a read-only
+    // mapping is refused while a read-write one of the file lives)
+    drop(mmap);
     let ro = load_mmap(&path, MmapMode::ReadOnly).expect("open ro");
     let slice = ro.as_slice(100, data.len() as u64).expect("slice");
     assert_eq!(slice, data);
@@ -56,8 +58,10 @@ fn flush_policy_manual_no_auto_flush() {
     // Explicit flush to persist
     mmap.flush().expect("flush");
 
-    let ro = load_mmap(&path, MmapMode::ReadOnly).expect("open ro");
-    let slice = ro.as_slice(100, 6).expect("slice");
+    // Read the file back: a second mapping of it is refused while the
+    // writer lives (since 1.2.0).
+    let file = common::read_file(&path);
+    let slice = &file[100..106];
     assert_eq!(slice, b"MANUAL");
 
     let _ = fs::remove_file(&path);
@@ -84,8 +88,10 @@ fn flush_policy_threshold_triggers() {
 
     // Because threshold equals bytes written, policy should have flushed.
     // Re-open RO and confirm content.
-    let ro = load_mmap(&path, MmapMode::ReadOnly).expect("open ro");
-    let slice = ro.as_slice(0, 8).expect("slice");
+    // Read the file back: a second mapping of it is refused while the
+    // writer lives (since 1.2.0).
+    let file = common::read_file(&path);
+    let slice = &file[..8];
     assert_eq!(slice, data);
 
     let _ = fs::remove_file(&path);
@@ -116,8 +122,10 @@ fn flush_policy_interval_flushes_automatically() {
     // NO manual flush. Wait for the background thread to flush.
     common::wait_for_background_flush(&mmap);
 
-    let ro = load_mmap(&path, MmapMode::ReadOnly).expect("open ro");
-    let slice = ro.as_slice(10, 4).expect("slice");
+    // Read the file back: a second mapping of it is refused while the
+    // writer lives (since 1.2.0).
+    let file = common::read_file(&path);
+    let slice = &file[10..14];
     assert_eq!(slice, b"INTV");
 
     drop(mmap);
@@ -144,8 +152,10 @@ fn segments_mut_and_read_into() {
     assert_eq!(&buf, b"ABCDEF");
 
     // Confirm RO open matches
-    let ro = MemoryMappedFile::open_ro(&path).expect("open ro");
-    let slice = ro.as_slice(10, 6).expect("slice");
+    // Read the file back: a second mapping of it is refused while the
+    // writer lives (since 1.2.0).
+    let file = common::read_file(&path);
+    let slice = &file[10..16];
     assert_eq!(slice, b"ABCDEF");
 
     delete_mmap(&path).expect("delete");

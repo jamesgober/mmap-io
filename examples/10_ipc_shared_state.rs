@@ -1,12 +1,15 @@
 //! Example 10: shared-memory IPC pattern using a file-backed mmap
 //! and an atomic counter as the shared synchronization primitive.
 //!
-//! Two threads (representing two processes) each open the same file
-//! and increment a shared counter. In a real deployment these would
-//! be separate processes both calling `MemoryMappedFile::open_rw`
+//! Two threads (representing two processes) share a file-backed
+//! mapping and increment a shared counter. In a real deployment these
+//! would be separate processes, each calling `MemoryMappedFile::open_rw`
 //! against the same path; the mapping is shared via the OS-level
 //! file-backed shared mapping (MAP_SHARED on POSIX, the default
-//! CreateFileMapping behavior on Windows).
+//! CreateFileMapping behavior on Windows). Within one process the
+//! threads share clones of one handle: since 1.2.0 a second `open_rw`
+//! of a file this process already maps is refused, because it could
+//! change bytes behind the first mapping's borrows.
 //!
 //! Run with:
 //!   cargo run --example 10_ipc_shared_state --features atomic
@@ -39,13 +42,13 @@ fn main() -> Result<(), mmap_io::MmapIoError> {
         ready.store(0, Ordering::SeqCst);
     }
 
-    // The "writer process" thread: opens its own handle, marks
+    // The "writer process" thread: takes its own handle, marks
     // ready, then increments a counter periodically.
-    let path_for_writer = path.clone();
+    let writer_mmap = writer.clone();
     let writer_handle = thread::spawn(move || -> Result<(), mmap_io::MmapIoError> {
         // In a real IPC scenario this would be a separate process
         // calling `open_rw` against the same path.
-        let mmap = MemoryMappedFile::open_rw(&path_for_writer)?;
+        let mmap = writer_mmap;
         let ready = mmap.atomic_u64(0)?;
         let counter = mmap.atomic_u64(8)?;
 
@@ -66,9 +69,9 @@ fn main() -> Result<(), mmap_io::MmapIoError> {
 
     // The "reader process" thread: waits for the writer to signal
     // ready, then polls the counter and reports observed values.
-    let path_for_reader = path.clone();
+    let reader_mmap = writer.clone();
     let reader_handle = thread::spawn(move || -> Result<(), mmap_io::MmapIoError> {
-        let mmap = MemoryMappedFile::open_rw(&path_for_reader)?;
+        let mmap = reader_mmap;
         let ready = mmap.atomic_u64(0)?;
         let counter = mmap.atomic_u64(8)?;
 
