@@ -386,6 +386,8 @@ impl core::clone::Clone for mmap_io::mmap::MemoryMappedFile
 pub fn mmap_io::mmap::MemoryMappedFile::clone(&self) -> mmap_io::mmap::MemoryMappedFile
 impl core::fmt::Debug for mmap_io::mmap::MemoryMappedFile
 pub fn mmap_io::mmap::MemoryMappedFile::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::ops::drop::Drop for mmap_io::mmap::MemoryMappedFile
+pub fn mmap_io::mmap::MemoryMappedFile::drop(&mut self)
 impl std::os::windows::io::handle::AsHandle for mmap_io::mmap::MemoryMappedFile
 pub fn mmap_io::mmap::MemoryMappedFile::as_handle(&self) -> std::os::windows::io::handle::BorrowedHandle<'_>
 impl std::os::windows::io::raw::AsRawHandle for mmap_io::mmap::MemoryMappedFile
@@ -399,6 +401,7 @@ impl !core::panic::unwind_safe::RefUnwindSafe for mmap_io::mmap::MemoryMappedFil
 impl !core::panic::unwind_safe::UnwindSafe for mmap_io::mmap::MemoryMappedFile
 pub struct mmap_io::mmap::MemoryMappedFileBuilder
 impl mmap_io::mmap::MemoryMappedFileBuilder
+pub unsafe fn mmap_io::mmap::MemoryMappedFileBuilder::allow_aliasing(self) -> Self
 pub fn mmap_io::mmap::MemoryMappedFileBuilder::cow_writable(self, enabled: bool) -> Self
 pub fn mmap_io::mmap::MemoryMappedFileBuilder::create(self) -> mmap_io::errors::Result<mmap_io::mmap::MemoryMappedFile>
 pub fn mmap_io::mmap::MemoryMappedFileBuilder::create_new(self) -> mmap_io::errors::Result<mmap_io::mmap::MemoryMappedFile>
@@ -408,6 +411,7 @@ pub fn mmap_io::mmap::MemoryMappedFileBuilder::mode(self, mode: mmap_io::mmap::M
 pub fn mmap_io::mmap::MemoryMappedFileBuilder::open(self) -> mmap_io::errors::Result<mmap_io::mmap::MemoryMappedFile>
 pub fn mmap_io::mmap::MemoryMappedFileBuilder::open_or_create(self) -> mmap_io::errors::Result<mmap_io::mmap::MemoryMappedFile>
 pub fn mmap_io::mmap::MemoryMappedFileBuilder::size(self, size: u64) -> Self
+pub fn mmap_io::mmap::MemoryMappedFileBuilder::sparse(self, enabled: bool) -> Self
 pub fn mmap_io::mmap::MemoryMappedFileBuilder::touch_hint(self, hint: mmap_io::mmap::TouchHint) -> Self
 impl core::marker::Freeze for mmap_io::mmap::MemoryMappedFileBuilder
 impl core::marker::Send for mmap_io::mmap::MemoryMappedFileBuilder
@@ -917,6 +921,8 @@ impl core::clone::Clone for mmap_io::mmap::MemoryMappedFile
 pub fn mmap_io::mmap::MemoryMappedFile::clone(&self) -> mmap_io::mmap::MemoryMappedFile
 impl core::fmt::Debug for mmap_io::mmap::MemoryMappedFile
 pub fn mmap_io::mmap::MemoryMappedFile::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::ops::drop::Drop for mmap_io::mmap::MemoryMappedFile
+pub fn mmap_io::mmap::MemoryMappedFile::drop(&mut self)
 impl std::os::windows::io::handle::AsHandle for mmap_io::mmap::MemoryMappedFile
 pub fn mmap_io::mmap::MemoryMappedFile::as_handle(&self) -> std::os::windows::io::handle::BorrowedHandle<'_>
 impl std::os::windows::io::raw::AsRawHandle for mmap_io::mmap::MemoryMappedFile

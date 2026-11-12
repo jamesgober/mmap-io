@@ -40,6 +40,8 @@ Complete reference for public-facing APIs. Each item lists its signature, parame
   - [open_cow_writable and cow_writable](#open_cow_writable-and-cow_writable) (1.1.0, feature = "cow")
   - [open_or_create](#open_or_create) (0.9.8)
   - [builder create_new](#builder-create_new) (1.1.0)
+  - [builder sparse](#builder-sparse) (1.2.0)
+  - [builder allow_aliasing](#builder-allow_aliasing) (1.2.0)
   - [from_file](#from_file) (0.9.8)
   - [unmap](#unmap) (0.9.8)
   - [as_slice](#as_slice)
@@ -503,7 +505,7 @@ let rw_mmap = load_mmap("data.bin", MmapMode::ReadWrite)?;
 pub fn update_region(mmap: &MemoryMappedFile, offset: u64, data: &[u8]) -> Result<()>
 ```
 
-**Description**: Writes data to the memory-mapped file at the specified offset.
+**Description**: Writes data to the memory-mapped file at the specified offset. Maps the whole file read-write, writes, and unmaps; it does not flush. Since 1.2.0 it fails with `InvalidMode`, writing nothing, while another `MemoryMappedFile` of the file is alive in this process; write through that handle instead.
 
 **Parameters**:
 - `mmap`: The memory-mapped file to write to
@@ -620,7 +622,7 @@ delete_mmap("temp.bin")?;
 pub fn create_rw<P: AsRef<Path>>(path: P, size: u64) -> Result<Self>
 ```
 
-**Description**: Creates a new file and memory-maps it in read-write mode.
+**Description**: Creates a new file (truncating an existing one) and memory-maps it in read-write mode. Since 1.2.0 the disk blocks for `size` are reserved up front, so a full disk is an `Io` error here instead of a `SIGBUS` on a later write (see [builder sparse](#builder-sparse)), and a file another `MemoryMappedFile` in this process maps is refused with `InvalidMode` and left untouched.
 
 **Parameters**:
 - `path`: Path to the file to create
@@ -643,7 +645,7 @@ let mmap = MemoryMappedFile::create_rw("new.bin", 4096)?;
 pub fn open_ro<P: AsRef<Path>>(path: P) -> Result<Self>
 ```
 
-**Description**: Opens an existing file in read-only mode.
+**Description**: Opens an existing file in read-only mode. Since 1.2.0 refused with `InvalidMode` while a `ReadWrite` mapping of the same file exists in this process; read-only and copy-on-write mappings of one file can coexist.
 
 **Parameters**:
 - `path`: Path to the file to open
@@ -665,7 +667,7 @@ let mmap = MemoryMappedFile::open_ro("data.bin")?;
 pub fn open_rw<P: AsRef<Path>>(path: P) -> Result<Self>
 ```
 
-**Description**: Opens an existing file in read-write mode.
+**Description**: Opens an existing file in read-write mode. Since 1.2.0 refused with `InvalidMode` while any other `MemoryMappedFile` of the same file exists in this process (clone the existing handle instead).
 
 **Parameters**:
 - `path`: Path to the file to open
@@ -673,7 +675,8 @@ pub fn open_rw<P: AsRef<Path>>(path: P) -> Result<Self>
 **Returns**: `Result<MemoryMappedFile>`
 
 **Errors**:
-- `MmapIoError::ResizeFailed` if file is zero-length
+- `MmapIoError::Io` with `ErrorKind::InvalidInput` if the file is zero-length (`ResizeFailed` before 1.2.0)
+- `MmapIoError::InvalidMode` if another mapping of the file exists in this process (since 1.2.0)
 
 **Example**:
 ```rust
@@ -1088,7 +1091,7 @@ impl MemoryMappedFileBuilder {
 }
 ```
 
-**Description**: Like the builder's `create()`, but never touches an existing file: the file is created exclusively (`O_CREAT | O_EXCL` on Unix, `CREATE_NEW` on Windows), sized to `size` (sparse) and mapped `ReadWrite` with every builder option applied (flush policy including the `EveryMillis` flusher, touch hint, huge pages). Of several threads or processes racing to create the same path, exactly one succeeds. Size and mode are validated before the filesystem is touched; if sizing or mapping the new file fails, the file is removed again (best effort).
+**Description**: Like the builder's `create()`, but never touches an existing file: the file is created exclusively (`O_CREAT | O_EXCL` on Unix, `CREATE_NEW` on Windows), sized to `size` (disk space reserved since 1.2.0 unless `sparse(true)`) and mapped `ReadWrite` with every builder option applied (flush policy including the `EveryMillis` flusher, touch hint, huge pages). Of several threads or processes racing to create the same path, exactly one succeeds. Size and mode are validated before the filesystem is touched; if sizing or mapping the new file fails, the file is removed again (best effort).
 
 | `create()` | `create_new()` | `open_or_create()` |
 |------------|----------------|--------------------|
@@ -1096,9 +1099,10 @@ impl MemoryMappedFileBuilder {
 
 **Errors**:
 - `MmapIoError::Io` with `ErrorKind::AlreadyExists` if the path exists (the file is left untouched)
-- `MmapIoError::ResizeFailed` if `size` is missing, zero, or above the maximum
+- `MmapIoError::Io` with `ErrorKind::InvalidInput` if `size` is missing (since 1.2.0; `ResizeFailed` before)
+- `MmapIoError::ResizeFailed` if `size` is zero or above the maximum
 - `MmapIoError::InvalidMode` if the mode is not `ReadWrite`
-- `MmapIoError::Io` for other create / size / map failures
+- `MmapIoError::Io` for other create / size / map failures, including a failed disk reservation
 
 **Example**:
 ```rust
@@ -1120,6 +1124,56 @@ match MemoryMappedFile::builder("journal.bin")
 ```
 
 <br>
+
+
+### builder sparse
+
+```rust
+impl MemoryMappedFileBuilder {
+    pub fn sparse(self, enabled: bool) -> Self;
+}
+```
+
+**Description**: Keep new file space sparse instead of reserving its disk blocks. Off by default. Applies to `ReadWrite` mappings: the size set by `create`, `create_new` and `open_or_create`, and every later growing `resize`. By default (since 1.2.0) the blocks are reserved (`fallocate` on Linux and Android, `F_PREALLOCATE` on macOS), so a full disk fails those calls with `MmapIoError::Io` (`ENOSPC`). With `sparse(true)` a file can be sized beyond the free disk space, but on Linux and macOS a write through the mapping into a page without a disk block raises `SIGBUS` when the file system is full. No effect on Windows, where NTFS allocates the whole length of a file that is not marked sparse.
+
+**Example**:
+```rust
+use mmap_io::MemoryMappedFile;
+
+let mmap = MemoryMappedFile::builder("index.bin")
+    .size(1 << 30)
+    .sparse(true)
+    .create()?;
+```
+
+### builder allow_aliasing
+
+```rust
+impl MemoryMappedFileBuilder {
+    pub unsafe fn allow_aliasing(self) -> Self;
+}
+```
+
+**Description**: Skip the process-wide registry check for the mapping being built (since 1.2.0). Without it, the terminal methods refuse with `InvalidMode` a mapping that conflicts with a live `MemoryMappedFile` of the same file (a `ReadWrite` mapping next to any other, a `ReadOnly` or `CopyOnWrite` one next to a `ReadWrite` one), `create` refuses to truncate a mapped file, and `resize` refuses to shrink while another mapping exists. The mapping is still recorded, so later checked opens see it. Prefer cloning one handle.
+
+**Safety**: while any borrow handed out by this mapping, or by another mapping of the same file, is alive, the caller must ensure nothing modifies those bytes or truncates the file: other `MemoryMappedFile`s of the file in this process, `std::fs` writes and `set_len`, and other processes.
+
+**Example**:
+```rust
+use mmap_io::{MemoryMappedFile, MmapMode};
+
+let writer = MemoryMappedFile::create_rw("shared.bin", 4096)?;
+// SAFETY: `reader` is only used through copying reads, never while
+// `writer` writes.
+let reader = unsafe {
+    MemoryMappedFile::builder("shared.bin")
+        .mode(MmapMode::ReadOnly)
+        .allow_aliasing()
+}
+.open()?;
+let mut buf = [0u8; 16];
+reader.read_into(0, &mut buf)?;
+```
 
 ### from_file
 
@@ -2472,12 +2526,14 @@ This crate uses `unsafe` code internally to interact with system memory mapping 
 - **Unix:** Uses `mmap`, `munmap`, `msync`, `madvise`, etc.
 - **Windows:** Uses `CreateFileMappingW`, `MapViewOfFile`, `VirtualLock`, etc.
 
-We expose only safe public APIs, but the following safety considerations apply:
+We expose only safe public APIs (plus the documented `unsafe fn` escape hatches), but the following safety considerations apply:
 
 <br>
 
 ### Mapped Memory Access
-- Another process must not truncate or modify the file while it is mapped here; readers can see torn data or receive `SIGBUS`.
+- No other writer may modify or truncate the file while it is mapped: not another process, and not `std::fs` writes or `File::set_len` on the same file in this process. A changed byte behind a live borrow is undefined behaviour; a truncation raises `SIGBUS` on Unix. Prefer the copying reads (`read_into`, `reader()`) for files other processes may write.
+- Since 1.2.0 the crate refuses, with `InvalidMode`, a second mapping of a file in this process that could change or truncate the bytes behind the first one's borrows: a `ReadWrite` mapping next to any other, a `ReadOnly` / `CopyOnWrite` mapping next to a `ReadWrite` one, `create_rw` / `create_mmap` on a mapped file, and `write_mmap` while the file is mapped. The check uses the file's identity, not its path. A shrinking `resize` is refused (`ResizeFailed`) while another mapping exists. Clone the handle instead; `MemoryMappedFileBuilder::allow_aliasing` (`unsafe`) opts out.
+- Since 1.2.0 new file space is reserved on create and on a growing `resize` (`fallocate` on Linux and Android, `F_PREALLOCATE` on macOS; NTFS allocates on extend, so Windows files are never sparse here). A full disk is then an `Io` error from those calls instead of a `SIGBUS` on a later write. `MemoryMappedFileBuilder::sparse(true)` keeps the old sparse behaviour and its `SIGBUS` exposure.
 - `as_slice_mut()` is only allowed in `ReadWrite` mode.
 - Raw pointers from `as_ptr()` / `as_mut_ptr()` are invalidated by `resize()`.
 - A `MappedSlice` and an atomic view of the same bytes cannot be alive together: since 1.1.0 the second one is refused with `InvalidMode` (see [Atomic and plain views](#atomic-and-plain-views)). Copying reads (`read_into`, `read_bytes`, `MmapReader`) are never refused and read atomic bytes with atomic loads.
@@ -2504,7 +2560,7 @@ See [SAFETY.md](SAFETY.md) for the full locking model.
 
 ### Flushing Behavior
 - `schedule_flush()` / `schedule_flush_range()` (1.1) start write-back and return without waiting; they are not durable.
-- `flush()` / `flush_range()` are synchronous: `msync(MS_SYNC)` on Unix, `FlushViewOfFile` + `FlushFileBuffers` on Windows. On macOS, `msync` does not issue `F_FULLFSYNC`; call `File::sync_all` on a separate handle if you need the drive cache flushed too.
+- `flush()` / `flush_range()` are synchronous: `msync(MS_SYNC)` on Unix, `FlushViewOfFile` + `FlushFileBuffers` on Windows. Since 1.2.0 `flush()` runs its slow part without the mapping lock on Linux (`fdatasync`, which is what `msync(MS_SYNC)` does for a shared file mapping there) and on Windows (`FlushFileBuffers`), so writers are not stalled. On macOS, `msync` does not issue `F_FULLFSYNC`; call `File::sync_all` on a separate handle if you need the drive cache flushed too.
 - Visibility is not durability: other mappings and `std::fs` readers of the same file see writes at once through the page cache. Flushing is what makes them survive a crash.
 - Async helpers flush after each async write.
 
@@ -2644,7 +2700,7 @@ for handle in handles {
 <br><br>
 
 ## Version History
-- **1.1.0**: memmap2 replaced by the in-house `mmap_io::raw` layer (plus `populate`, `huge`, `advise`, `lock`, `make_read_only` / `make_mut`). Soundness: run-time exclusion of atomic and plain views of the same bytes; iterator items, stale-length validation, resize truncation, `Send` impls. New: `try_as_slice` / `try_as_slice_mut` / `try_update_region` (also on `AnonymousMmap`), opt-in writable `CopyOnWrite` (`open_cow_writable`, builder `cow_writable`, `is_cow_writable`; default COW unchanged from 1.0), `schedule_flush` / `schedule_flush_range`, atomic views and `with_huge_pages` / `is_hugepage_backed` on `AnonymousMmap`, `BufRead` for `MmapReader`, builder `create_new`, `FnMut` watch callbacks. `flush()` always flushes durably. No API breaks vs 1.0.0.
+- **1.2.0**: Soundness: a process-wide registry of mappings by file identity refuses a second mapping, `write_mmap`, `create_mmap`, `create_rw` truncation or shrinking `resize` that could change or truncate bytes behind another mapping's borrows (`InvalidMode` / `ResizeFailed`); `MemoryMappedFileBuilder::allow_aliasing` (`unsafe`) opts out. Disk space is reserved on create and grow (`fallocate` / `F_PREALLOCATE`), so a full disk is an error instead of `SIGBUS`; `MemoryMappedFileBuilder::sparse` opts out. `unmap()` no longer fails spuriously under `EveryMillis`, and dropping the last handle joins the flusher. `flush()` no longer holds the lock during the device flush on Linux and Windows. An empty file on a writable path and a missing builder size are `Io(InvalidInput)` (were `ResizeFailed`). Docs: Windows files are not sparse; iterators register each item only. No API removed.- **1.1.0**: memmap2 replaced by the in-house `mmap_io::raw` layer (plus `populate`, `huge`, `advise`, `lock`, `make_read_only` / `make_mut`). Soundness: run-time exclusion of atomic and plain views of the same bytes; iterator items, stale-length validation, resize truncation, `Send` impls. New: `try_as_slice` / `try_as_slice_mut` / `try_update_region` (also on `AnonymousMmap`), opt-in writable `CopyOnWrite` (`open_cow_writable`, builder `cow_writable`, `is_cow_writable`; default COW unchanged from 1.0), `schedule_flush` / `schedule_flush_range`, atomic views and `with_huge_pages` / `is_hugepage_backed` on `AnonymousMmap`, `BufRead` for `MmapReader`, builder `create_new`, `FnMut` watch callbacks. `flush()` always flushes durably. No API breaks vs 1.0.0.
 - **1.0.0**: Stable release. New surface: `AnonymousMmap` (process-local file-less mappings), `is_hugepage_backed()` runtime introspection, multi-process IPC integration test, sparse-file documentation. Doc-completeness pass: every `Result`-returning public method documents `# Errors`; every panicking method documents `# Panics`. `cargo public-api` snapshot committed and enforced via CI; `cargo-semver-checks` becomes a hard gate against unintended breaks. No API breaks vs 0.9.11.
 - **0.9.11**: Patch release. Compat shims for the 0.9.7 semver violation (`as_slice_bytes`, `for_each_mut_legacy`). Runtime-agnostic async via `blocking` crate (smol/tokio/async-std all work). New `bytes::Bytes` integration (`feature = "bytes"`), `io::Read`+`io::Seek` cursor (`mmap.reader()`), and `AsFd`/`AsRawFd` (Unix) + `AsHandle`/`AsRawHandle` (Windows) trait impls.
 - **0.9.10**: Pre-1.0 stabilization (Lockdown). Audit D1, D7, D8, R1-R7, D5 closed. Ten focused examples, `cargo-fuzz` scaffold, `docs/PERFORMANCE.md` with measured numbers, `cargo-audit` + `cargo-semver-checks` CI workflows, bench-regression hard gate. MSRV held at Rust 1.75.

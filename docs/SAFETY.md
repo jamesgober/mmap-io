@@ -8,10 +8,25 @@ block; this file explains the shape and the shared invariants. It
 names functions rather than line numbers, so it does not drift as the
 code moves.
 
-Everything in the public API is safe to call except four `unsafe fn`
+Everything in the public API is safe to call except five `unsafe fn`
 escape hatches, which carry their own contracts:
 `MemoryMappedFile::as_ptr`, `MemoryMappedFile::as_mut_ptr`,
-`AnonymousMmap::as_ptr`, and `AnonymousMmap::as_mut_ptr`.
+`AnonymousMmap::as_ptr`, `AnonymousMmap::as_mut_ptr`, and
+`MemoryMappedFileBuilder::allow_aliasing` (since 1.2.0).
+
+**What the caller of the safe API must guarantee.** A file mapping
+hands out `&[u8]` into the file's pages, and Rust requires those bytes
+not to change while the borrow lives. The crate enforces that for every
+mapping it makes in this process (the lock, and since 1.2.0 the
+process-wide registry, category 1). It cannot see other writers, so the
+caller must guarantee: **while any borrow of a mapping is alive, no
+other writer modifies the mapped bytes or truncates the file**, in this
+process (`std::fs` writes, `File::set_len`) or in another one. Breaking
+that is undefined behaviour for a changed byte, and `SIGBUS` on Unix for
+a truncation. Use OS file locks or a protocol between processes; for
+files other processes may write, prefer the copying reads
+(`read_into`, `MmapReader`'s `Read`), which keep no borrow into the
+mapping after they return.
 The `mmap_io::raw` tier adds `unsafe fn` file-backed constructors
 (`RawMmap::map`, `RawMmapMut::map_mut`, `RawMmapOptions::map`,
 `map_mut`, `map_copy`) for the reason given in category 8 below.
@@ -94,13 +109,45 @@ view can observe a truncated file:
 ### 1. Mapping construction (`src/mmap.rs`)
 
 `raw::RawMmap::map`, `RawMmapMut::map_mut`, and `RawMmapOptions::map`
-/ `map_mut` / `map_copy` are `unsafe` because the OS does not stop
-another process from modifying or truncating the file under the
-mapping. Inside the
-process, all access to RW mappings goes through the lock described
-above (writable COW included), and RO mappings (default COW included)
-are never written.
-Cross-process modification is out of scope (REPS.md section 5.1).
+/ `map_mut` / `map_copy` are `unsafe` because nothing in the OS stops
+someone else from modifying or truncating the file under the mapping:
+another mapping in this process, a `write` or `set_len` in this
+process, or another process. The managed layer discharges the in-process
+part as follows.
+
+- **One mapping and its clones.** All access to RW mappings goes
+  through the lock described above (writable COW included), and RO
+  mappings (default COW included) are never written.
+- **Several mappings of one file (since 1.2.0).** Every
+  `MemoryMappedFile` takes a claim in a process-wide registry
+  (`src/registry.rs`), keyed by the file's identity (device and inode
+  on Unix, volume serial number and file id on Windows), so a second
+  path to the same file is the same entry. Read claims (`ReadOnly`,
+  `CopyOnWrite`) share; a write claim (`ReadWrite`) is exclusive. The
+  claim is taken after the file is opened and before it is mapped or
+  truncated, and released when the last clone is dropped. It is the
+  first field of `Inner`, so it is released while the file is still
+  open: once an unlinked file's last descriptor and mapping are gone the
+  OS may reuse its inode number for a new file, which a stale entry
+  would block. Nothing can borrow the mapping by then. `create_rw`
+  (and `create_mmap`) open the file without truncating, claim it, and
+  only then truncate, so a mapped file is never truncated. `write_mmap`
+  goes through `open_rw` and is refused the same way. A shrinking
+  `resize` checks the registry under the write lock and is refused if
+  another claim on the file exists (possible only through
+  `allow_aliasing`). The `EveryMillis` worker holds only a `Weak` to the
+  mapping state; dropping the last handle joins it, so the claim is
+  released by the time `drop` returns.
+- **`allow_aliasing`.** The builder's `unsafe fn allow_aliasing` skips
+  the registry checks for the mapping it builds (the claim is still
+  recorded). Its contract is the raw one restated for the managed
+  layer: while a borrow of that mapping, or of any other mapping of the
+  same file, is alive, nothing modifies those bytes or truncates the
+  file.
+- **Not covered.** `std::fs` writes and `set_len` on the same file in
+  this process, and other processes. These are the caller's to rule
+  out (the contract at the top of this file). Cross-process
+  coordination is out of scope (REPS.md section 5.1).
 
 Sites: `create_rw`, `open_ro`, `open_rw`, `from_file`,
 `MemoryMappedFileBuilder::open_existing` (RO), `map_file_rw`, which
@@ -375,22 +422,38 @@ With it, each RW / writable COW plain view costs one shard lock to
 register and one to deregister (see `docs/PERFORMANCE.md`).
 
 What it does not cover: raw pointers (`as_ptr` / `as_mut_ptr`), and
-other `MemoryMappedFile` values that map the same file independently
-(another `open_rw` of the same path, or another process). Those are
-separate mappings with separate registries, the same class as
-cross-process modification.
+other mappings of the same file in another process, or in this process
+through `allow_aliasing`. Those are separate mappings with separate
+view registries, the same class as cross-process modification. Since
+1.2.0 the safe constructors refuse a second in-process mapping that
+could conflict (category 1).
 
 ## What the crate cannot guarantee
 
 - **Other processes.** If another process writes to or truncates the
   file, readers here can see torn data or receive `SIGBUS`. Callers
   that share a file across processes must coordinate (REPS.md 5.1).
-- **Atomic and plain access through independent mappings.** Within
-  one mapping (and its clones) the view registry (category 9) keeps
-  atomic and plain views of the same bytes apart. Two independently
-  opened mappings of the same file, or a raw pointer, are not covered:
-  an atomic store through one and a plain read through the other is a
-  data race, like cross-process access.
+- **`std::fs` in this process.** A `write` or `set_len` on the mapped
+  file through a plain `File` changes or truncates the bytes behind
+  live borrows, exactly like another process. The registry only knows
+  about mappings.
+- **Atomic and plain access through mappings opened with
+  `allow_aliasing`.** Within one mapping (and its clones) the view
+  registry (category 9) keeps atomic and plain views of the same bytes
+  apart. Two mappings of the same file (possible in one process only
+  through `allow_aliasing`), or a raw pointer, are not covered: an
+  atomic store through one and a plain read through the other is a data
+  race, like cross-process access.
+- **Sparse files on a full disk.** A write through a mapping into a
+  page that has no disk block yet raises `SIGBUS` (Unix) when the file
+  system is full, because a page fault cannot return an error. Since
+  1.2.0 `create_rw`, the builder's create paths and a growing `resize`
+  reserve the blocks up front (`fallocate` on Linux and Android,
+  `F_PREALLOCATE` on macOS; NTFS allocates on extend), so a full disk
+  fails those calls instead. Still exposed: files built with
+  `sparse(true)`, file systems without `fallocate` support, other Unix
+  platforms, sparse files that already existed before they were
+  opened, and holes punched by other programs.
 - **Raw pointers** from `as_ptr` / `as_mut_ptr` follow the caller's
   contract above; the crate cannot check it.
 
@@ -419,6 +482,18 @@ cross-process modification.
   validation against a length read before the lock, truncation before
   locking in `resize`, and `Send` impls that relied on parking_lot
   internals. All fixed; `tests/soundness_regressions.rs` pins each.
+- **2026-11 review (1.2.0)**: the safe constructors and the free
+  functions let one process change or truncate the bytes behind a live
+  `&[u8]` through a second mapping of the same file (`write_mmap`,
+  `create_mmap`, a second `open_rw` and `resize`), which the SAFETY
+  comments claimed could not happen in-process. Fixed for every mapping
+  the crate makes, with the process-wide registry (category 1); the
+  remaining caller contract is stated at the top of this file. Writes
+  into sparse pages on a full disk raised `SIGBUS`; space is now
+  reserved on create and grow. `tests/review_2026_11.rs` pins each.
+  Making the safe constructors themselves `unsafe`, or returning a
+  guard that prevents aliasing by construction, needs a breaking change
+  and is planned for 2.0.
 
 ## Verification
 

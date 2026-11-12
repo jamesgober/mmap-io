@@ -182,7 +182,9 @@ fn test_hugepages_does_not_prefault_the_file() {
     // Before 1.1, `.huge_pages(true)` ran madvise(MADV_POPULATE_WRITE)
     // over the whole file mapping, which write-faulted every page:
     // the sparse file was fully allocated on disk and every page was
-    // dirtied. The hint must leave the file sparse.
+    // dirtied. The hint must leave the file sparse. Since 1.2 new space
+    // is reserved on disk by default, so the file is built `sparse(true)`
+    // to keep the check meaningful.
     use std::os::unix::fs::MetadataExt;
 
     let dir = tempdir().unwrap();
@@ -193,6 +195,7 @@ fn test_hugepages_does_not_prefault_the_file() {
         .mode(MmapMode::ReadWrite)
         .size(size)
         .huge_pages(true)
+        .sparse(true)
         .create()
         .expect("create");
 

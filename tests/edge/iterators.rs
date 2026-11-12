@@ -12,8 +12,12 @@ fn rw(size: u64, seed: u8) -> (TmpPath, MemoryMappedFile, Vec<u8>) {
     (path, m, data)
 }
 
+/// A read-only mapping of `path` next to the read-write one the tests
+/// built it with.
 fn ro_of(path: &TmpPath) -> MemoryMappedFile {
-    MemoryMappedFile::open_ro(path).unwrap()
+    // SAFETY: the iterator tests only read through both mappings after
+    // the data is written.
+    unsafe { crate::common::open_ro_aliased(path) }
 }
 
 /// Check one chunk size against the model: count, per-chunk lengths,
@@ -90,7 +94,8 @@ fn chunk_sizes_around_every_boundary() {
         }
         #[cfg(feature = "cow")]
         {
-            let cow = MemoryMappedFile::open_cow(&path).unwrap();
+            // SAFETY: the file is only read while a borrow of `cow` is alive.
+            let cow = unsafe { crate::common::open_aliased(&path, mmap_io::MmapMode::CopyOnWrite) };
             for cs in sizes {
                 check_chunks(&cow, &data, cs, &format!("COW size={size} cs={cs}"));
             }

@@ -24,7 +24,7 @@ jobs:
   bench:
     name: Run benches and check for regressions (Linux)
     runs-on: ubuntu-latest
-    timeout-minutes: 45
+    timeout-minutes: 90
     steps:
       - uses: actions/checkout@v5
         with:
@@ -52,30 +52,40 @@ jobs:
           restore-keys: |
             bench-${{ runner.os }}-
 
-      # Run the PR head's benches against a stable baseline name.
+      # On pushes to main, bench HEAD once so the results are uploaded.
       - name: Run benchmarks (HEAD)
+        if: github.event_name != 'pull_request'
         run: |
-          cargo bench --all-features --bench mmap_bench -- \
-            --save-baseline pr-head
+          cargo bench --all-features --bench mmap_bench -- --save-baseline pr-head
 
-      # On PRs, also bench the merge-base commit on the same runner
-      # so the comparison is apples-to-apples (same CPU, same kernel,
-      # same noise floor). On pushes to main we skip this step
-      # because there is no PR to compare against.
-      - name: Bench PR base for same-machine comparison
+      # On PRs, bench the PR head and its merge-base on the same runner,
+      # alternating, in three rounds: head then base, base then head,
+      # head then base, so neither side always runs first. Shared runners
+      # are noisy (disk-bound benches swing by 2x or more between
+      # minutes), so one pair of runs cannot tell a regression from a
+      # noisy neighbour; three alternating pairs can.
+      - name: Bench PR head and base, alternating (3 rounds)
         if: github.event_name == 'pull_request'
         shell: bash
         run: |
           set -euo pipefail
           BASE="${{ github.event.pull_request.base.sha }}"
           git fetch origin "$BASE" --depth 1 || true
-          git checkout "$BASE" -- benches/ src/ Cargo.toml Cargo.lock
-          cargo bench --all-features --bench mmap_bench -- \
-            --save-baseline pr-base
-          # Restore the PR head's tree so subsequent steps see it.
+          bench_head() {
+            git checkout HEAD -- benches/ src/ Cargo.toml Cargo.lock
+            cargo bench --all-features --bench mmap_bench -- --save-baseline "pr-head-$1"
+          }
+          bench_base() {
+            git checkout "$BASE" -- benches/ src/ Cargo.toml Cargo.lock
+            cargo bench --all-features --bench mmap_bench -- --save-baseline "pr-base-$1"
+          }
+          bench_head 1; bench_base 1
+          bench_base 2; bench_head 2
+          bench_head 3; bench_base 3
+          # Restore the PR head's tree for the later steps.
           git checkout HEAD -- benches/ src/ Cargo.toml Cargo.lock
 
-      # Hard gate. `critcmp pr-base pr-head` prints two header lines,
+      # Hard gate. `critcmp pr-base-N pr-head-N` prints two header lines,
       # then one row per benchmark:
       #
       #   <group/name>  <ratio> <time±err> <thrpt> <unit>  <ratio> <time±err> <thrpt> <unit>
@@ -85,31 +95,51 @@ jobs:
       # that row (the fastest is 1.00), and throughput is "? ?/sec"
       # when a bench sets none. So field 6 is HEAD's ratio, and a value
       # above REGRESSION_LIMIT means HEAD is that much slower than base.
-      # A run that parses no rows fails too, so a format change cannot
-      # turn the gate into a silent pass.
-      - name: Compare HEAD vs base (fails above REGRESSION_LIMIT)
+      # A benchmark fails the gate only if it is over the limit in all
+      # three rounds. A run that parses no rows fails too, so a format
+      # change cannot turn the gate into a silent pass. Benchmarks that
+      # exist on one side only (new or removed) have no ratio and are
+      # not compared.
+      - name: Compare HEAD vs base (fails when a regression repeats in 3 rounds)
         if: github.event_name == 'pull_request'
         shell: bash
         run: |
           set -euo pipefail
-          critcmp pr-base pr-head | tee critcmp.txt
+          for round in 1 2 3; do
+            echo "== round $round"
+            critcmp "pr-base-$round" "pr-head-$round" | tee "critcmp-$round.txt"
+          done
           awk -v limit="$REGRESSION_LIMIT" '
-            NR > 2 && NF >= 9 && $2 ~ /^[0-9.]+$/ && $6 ~ /^[0-9.]+$/ {
-              rows++
+            FNR > 2 && NF >= 9 && $2 ~ /^[0-9.]+$/ && $6 ~ /^[0-9.]+$/ {
+              rows[FILENAME]++
+              seen[$1]++
               if ($6 + 0 > limit + 0) {
-                printf "::error::%s regressed: HEAD is %.2fx base\n", $1, $6
-                bad++
+                over[$1]++
+                ratios[$1] = ratios[$1] sprintf(" %.2fx", $6)
               }
             }
             END {
-              if (rows == 0) {
-                print "::error::no benchmark rows parsed from critcmp output"
+              files = 0
+              for (f in rows) files++
+              if (files < 3) {
+                print "::error::no benchmark rows parsed from at least one critcmp output"
                 exit 2
               }
-              printf "Compared %d benchmarks, %d over the %sx limit.\n", rows, bad, limit
+              n = 0
+              bad = 0
+              for (name in seen) {
+                n++
+                if (over[name] == 3) {
+                  printf "::error::%s regressed in all 3 rounds: HEAD is%s base\n", name, ratios[name]
+                  bad++
+                } else if (over[name] > 0) {
+                  printf "%s over the limit in %d of 3 rounds (%s ); treated as noise\n", name, over[name], ratios[name]
+                }
+              }
+              printf "Compared %d benchmarks, %d over the %sx limit in all 3 rounds.\n", n, bad, limit
               exit (bad > 0)
             }
-          ' critcmp.txt
+          ' critcmp-1.txt critcmp-2.txt critcmp-3.txt
 
       - name: Upload criterion results
         if: always()

@@ -22,7 +22,9 @@ fn rw(size: u64) -> (TmpPath, MemoryMappedFile, Vec<u8>) {
 fn mapped_slice_trait_impls_agree_with_the_bytes() {
     let (path, m, data) = rw(64);
     m.flush().unwrap();
-    let ro = MemoryMappedFile::open_ro(&path).unwrap();
+    // SAFETY: nothing writes to the file while a borrow of `ro` is
+    // alive; the read-write mapping `m` is only read from here on.
+    let ro = unsafe { crate::common::open_ro_aliased(&path) };
     for map in [&m, &ro] {
         let s: MappedSlice<'_> = map.as_slice(4, 4).unwrap();
         let want: [u8; 4] = data[4..8].try_into().unwrap();
@@ -101,7 +103,9 @@ fn raw_pointers_match_the_mapping() {
     }
     assert_eq!(m.as_slice(1, 1).unwrap(), &[0x5A]);
     m.flush().unwrap();
-    let ro = MemoryMappedFile::open_ro(&path).unwrap();
+    // SAFETY: nothing writes to the file while a borrow of `ro` is
+    // alive; the read-write mapping `m` is only read from here on.
+    let ro = unsafe { crate::common::open_ro_aliased(&path) };
     // SAFETY: read within len() of an immutable mapping.
     unsafe {
         assert_eq!(ro.as_ptr().add(1).read(), 0x5A);
@@ -154,7 +158,9 @@ fn every_advice_keeps_the_data_including_dont_need_on_dirty_pages() {
         assert_eq!(m.as_slice(0, m.len()).unwrap(), &data[..], "{advice:?}");
     }
     m.flush().unwrap();
-    let ro = MemoryMappedFile::open_ro(&path).unwrap();
+    // SAFETY: nothing writes to the file while a borrow of `ro` is
+    // alive; the read-write mapping `m` is only read from here on.
+    let ro = unsafe { crate::common::open_ro_aliased(&path) };
     for advice in [MmapAdvice::DontNeed, MmapAdvice::WillNeed] {
         ro.advise(0, ro.len(), advice).unwrap();
         assert_eq!(ro.as_slice(0, ro.len()).unwrap(), &data[..]);
@@ -227,7 +233,9 @@ fn bytes_conversions_copy_the_slice() {
 #[test]
 fn hugepage_status_is_known_only_on_linux() {
     let (path, m, _) = rw(4096);
-    let ro = MemoryMappedFile::open_ro(&path).unwrap();
+    // SAFETY: nothing writes to the file while a borrow of `ro` is
+    // alive; the read-write mapping `m` is only read from here on.
+    let ro = unsafe { crate::common::open_ro_aliased(&path) };
     for map in [&m, &ro] {
         let s = map.is_hugepage_backed();
         if cfg!(target_os = "linux") {
@@ -238,7 +246,8 @@ fn hugepage_status_is_known_only_on_linux() {
     }
     #[cfg(feature = "cow")]
     {
-        let cow = MemoryMappedFile::open_cow(&path).unwrap();
+        // SAFETY: the file is only read while a borrow of `cow` is alive.
+        let cow = unsafe { crate::common::open_aliased(&path, MmapMode::CopyOnWrite) };
         assert_eq!(
             cow.is_hugepage_backed().is_some(),
             cfg!(target_os = "linux")

@@ -122,11 +122,9 @@ fn test_time_based_flushing_policy() {
     // Manual flush to ensure data is persisted
     mmap.flush().expect("flush");
 
-    // Verify data persisted
-    let ro_mmap = MemoryMappedFile::open_ro(&path).expect("open ro");
-    let mut buf = vec![0u8; 15];
-    ro_mmap.read_into(0, &mut buf).expect("read");
-    assert_eq!(&buf, b"time-based test");
+    // Verify data persisted (read the file: a second mapping of it is
+    // refused while the writer lives)
+    assert_eq!(&fs::read(&path).expect("read")[..15], b"time-based test");
 
     fs::remove_file(&path).expect("cleanup");
 }
@@ -149,11 +147,9 @@ fn test_microflush_optimization() {
 
     println!("Microflush optimization took: {microflush_time:?}");
 
-    // Verify data was flushed
-    let ro_mmap = MemoryMappedFile::open_ro(&path).expect("open ro");
-    let mut buf = vec![0u8; 256];
-    ro_mmap.read_into(0, &mut buf).expect("read");
-    assert_eq!(buf[0], 0xAB);
+    // Verify data was flushed (read the file: a second mapping of it is
+    // refused while the writer lives)
+    assert_eq!(fs::read(&path).expect("read")[0], 0xAB);
 
     fs::remove_file(&path).expect("cleanup");
 }

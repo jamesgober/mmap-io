@@ -173,6 +173,10 @@ fn segment_and_cow_and_anonymous_follow_the_same_rule() {
 
     #[cfg(feature = "cow")]
     {
+        // A copy-on-write mapping of a file that a read-write mapping
+        // maps is refused (since 1.2.0), so release the writer first.
+        drop(seg);
+        drop(m);
         // Default COW is read-only: no atomics at all.
         let ro_cow = MemoryMappedFile::open_cow(dir.path().join("x.bin")).expect("cow");
         assert!(is_invalid_mode(ro_cow.atomic_u64(0)));

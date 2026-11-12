@@ -52,10 +52,29 @@ fn tmp_path(name: &str) -> PathBuf {
     p
 }
 
+/// A new read-write mapping of `size` bytes for a benchmark's setup.
+///
+/// Built sparse (`sparse(true)`), as every file was before 1.2, so the
+/// read and write benches measure the code paths and stay comparable
+/// across releases. On Linux, where the 1.2 default reserves the
+/// blocks with `fallocate`, the file system lays the file out
+/// differently and later reads of it can be slower;
+/// `bench_reserved_space` tracks that separately.
+fn new_rw(path: &std::path::Path, size: u64) -> mmap_io::errors::Result<MemoryMappedFile> {
+    MemoryMappedFile::builder(path)
+        .size(size)
+        .sparse(true)
+        .create()
+}
+
 // ---------------------------------------------------------------------
 // Existing benches (preserved from prior milestones)
 // ---------------------------------------------------------------------
 
+/// `create_rw` keeps its 1.1 meaning here: a sparse file (the builder's
+/// `sparse(true)`), so the numbers stay comparable across releases.
+/// Since 1.2 `create_rw` reserves the disk blocks by default; see
+/// `bench_reserved_space`.
 fn bench_create_rw(b: &mut Criterion) {
     let mut group = b.benchmark_group("create_rw");
     for &size in &[4_usize * 1024, 64 * 1024, 1024 * 1024] {
@@ -68,7 +87,11 @@ fn bench_create_rw(b: &mut Criterion) {
                     (path, sz)
                 },
                 |(path, sz)| {
-                    let _m = MemoryMappedFile::create_rw(&path, sz as u64).expect("create_rw");
+                    let _m = MemoryMappedFile::builder(&path)
+                        .size(sz as u64)
+                        .sparse(true)
+                        .create()
+                        .expect("create sparse");
                     let _ = fs::remove_file(&path);
                 },
                 BatchSize::SmallInput,
@@ -86,7 +109,7 @@ fn bench_update_region_flush(b: &mut Criterion) {
         group.bench_with_input(BenchmarkId::new("update_only", size), &size, |ben, &sz| {
             let path = tmp_path(&format!("update_only_{sz}"));
             let _ = fs::remove_file(&path);
-            let mmap = MemoryMappedFile::create_rw(&path, sz as u64).expect("create_rw");
+            let mmap = new_rw(&path, sz as u64).expect("create_rw");
             let payload = vec![0xAB_u8; sz];
             ben.iter(|| {
                 mmap.update_region(0, &payload).expect("update");
@@ -101,7 +124,7 @@ fn bench_update_region_flush(b: &mut Criterion) {
             |ben, &sz| {
                 let path = tmp_path(&format!("update_flush_{sz}"));
                 let _ = fs::remove_file(&path);
-                let mmap = MemoryMappedFile::create_rw(&path, sz as u64).expect("create_rw");
+                let mmap = new_rw(&path, sz as u64).expect("create_rw");
                 let payload = vec![0xAC_u8; sz];
                 ben.iter(|| {
                     mmap.update_region(0, &payload).expect("update");
@@ -121,6 +144,7 @@ fn bench_update_region_flush(b: &mut Criterion) {
                     .mode(MmapMode::ReadWrite)
                     .size(sz as u64)
                     .flush_policy(FlushPolicy::EveryBytes(sz))
+                    .sparse(true)
                     .create()
                     .expect("builder create_rw with threshold");
                 let payload = vec![0xAD_u8; sz];
@@ -142,7 +166,7 @@ fn bench_read_into_rw(b: &mut Criterion) {
         group.bench_with_input(BenchmarkId::from_parameter(size), &size, |ben, &sz| {
             let path = tmp_path(&format!("read_into_rw_{sz}"));
             let _ = fs::remove_file(&path);
-            let mmap = MemoryMappedFile::create_rw(&path, sz as u64).expect("create_rw");
+            let mmap = new_rw(&path, sz as u64).expect("create_rw");
             mmap.update_region(0, &vec![1u8; sz]).expect("seed");
             mmap.flush().expect("flush");
 
@@ -165,7 +189,7 @@ fn bench_as_slice_ro(b: &mut Criterion) {
             let path = tmp_path(&format!("as_slice_ro_{sz}"));
             let _ = fs::remove_file(&path);
             {
-                let mmap = MemoryMappedFile::create_rw(&path, sz as u64).expect("create_rw");
+                let mmap = new_rw(&path, sz as u64).expect("create_rw");
                 mmap.update_region(0, &vec![2u8; sz]).expect("seed");
                 mmap.flush().expect("flush");
             }
@@ -182,10 +206,16 @@ fn bench_as_slice_ro(b: &mut Criterion) {
 
 fn bench_resize(b: &mut Criterion) {
     let mut group = b.benchmark_group("resize");
+    // Sparse growth, as in 1.1, so the numbers stay comparable; see
+    // `bench_reserved_space` for the 1.2 default.
     group.bench_function("grow_1MB_to_8MB", |ben| {
         let path = tmp_path("resize_grow");
         let _ = fs::remove_file(&path);
-        let mmap = MemoryMappedFile::create_rw(&path, 1024 * 1024).expect("create_rw");
+        let mmap = MemoryMappedFile::builder(&path)
+            .size(1024 * 1024)
+            .sparse(true)
+            .create()
+            .expect("create sparse");
         ben.iter(|| {
             mmap.resize(8 * 1024 * 1024).expect("resize grow");
             mmap.resize(1024 * 1024).expect("resize shrink");
@@ -211,7 +241,7 @@ fn bench_sequential_read(b: &mut Criterion) {
         let path = tmp_path(&format!("seq_read_{size}"));
         let _ = fs::remove_file(&path);
         {
-            let rw = MemoryMappedFile::create_rw(&path, size as u64).expect("create_rw");
+            let rw = new_rw(&path, size as u64).expect("create_rw");
             rw.update_region(0, &vec![0xA5u8; size]).expect("seed");
             rw.flush().expect("flush");
         }
@@ -258,7 +288,7 @@ fn bench_random_read(b: &mut Criterion) {
     let path = tmp_path("rand_read_16mb");
     let _ = fs::remove_file(&path);
     {
-        let rw = MemoryMappedFile::create_rw(&path, file_size as u64).expect("create_rw");
+        let rw = new_rw(&path, file_size as u64).expect("create_rw");
         rw.update_region(0, &vec![0xB6u8; file_size]).expect("seed");
         rw.flush().expect("flush");
     }
@@ -324,6 +354,7 @@ fn bench_sequential_write_policies(b: &mut Criterion) {
             .mode(MmapMode::ReadWrite)
             .size(file_size as u64)
             .flush_policy(*policy)
+            .sparse(true)
             .create()
             .expect("builder create");
         let payload = vec![0xC7u8; chunk];
@@ -355,7 +386,7 @@ fn bench_iterator_throughput(b: &mut Criterion) {
     let path = tmp_path("iter_tp");
     let _ = fs::remove_file(&path);
     {
-        let rw = MemoryMappedFile::create_rw(&path, file_size as u64).expect("create_rw");
+        let rw = new_rw(&path, file_size as u64).expect("create_rw");
         rw.update_region(0, &vec![0x88u8; file_size]).expect("seed");
         rw.flush().expect("flush");
     }
@@ -420,7 +451,7 @@ fn bench_touch_pages_large(b: &mut Criterion) {
 
     let path = tmp_path("touch_1gb");
     let _ = fs::remove_file(&path);
-    let mmap = MemoryMappedFile::create_rw(&path, file_size).expect("create_rw 1 GiB");
+    let mmap = new_rw(&path, file_size).expect("create_rw 1 GiB");
 
     group.throughput(Throughput::Bytes(file_size));
     group.bench_function("touch_pages_1gb_rw", |ben| {
@@ -448,7 +479,7 @@ fn bench_atomic_contention(b: &mut Criterion) {
 
     let path = tmp_path("atomic_contention");
     let _ = fs::remove_file(&path);
-    let mmap = Arc::new(MemoryMappedFile::create_rw(&path, 64).expect("create_rw"));
+    let mmap = Arc::new(new_rw(&path, 64).expect("create_rw"));
     {
         let v = mmap.atomic_u64(0).expect("init");
         v.store(0, Ordering::SeqCst);
@@ -497,7 +528,7 @@ fn bench_touch_pages(b: &mut Criterion) {
         group.bench_with_input(BenchmarkId::from_parameter(size), &size, |ben, &sz| {
             let path = tmp_path(&format!("touch_pages_{sz}"));
             let _ = fs::remove_file(&path);
-            let mmap = MemoryMappedFile::create_rw(&path, sz as u64).expect("create_rw");
+            let mmap = new_rw(&path, sz as u64).expect("create_rw");
             ben.iter(|| {
                 mmap.touch_pages().expect("touch_pages");
             });
@@ -517,7 +548,7 @@ fn bench_microflush_overhead(b: &mut Criterion) {
             |ben, &sz| {
                 let path = tmp_path(&format!("microflush_{sz}"));
                 let _ = fs::remove_file(&path);
-                let mmap = MemoryMappedFile::create_rw(&path, 64 * 1024).expect("create_rw");
+                let mmap = new_rw(&path, 64 * 1024).expect("create_rw");
                 let data = vec![0xCD_u8; sz];
                 ben.iter(|| {
                     mmap.update_region(0, &data).expect("update");
@@ -537,7 +568,7 @@ fn bench_advise(b: &mut Criterion) {
     group.bench_function("sequential_willneed", |ben| {
         let path = tmp_path("advise");
         let _ = fs::remove_file(&path);
-        let mmap = MemoryMappedFile::create_rw(&path, 4 * 1024 * 1024).expect("create_rw");
+        let mmap = new_rw(&path, 4 * 1024 * 1024).expect("create_rw");
         ben.iter(|| {
             mmap.advise(0, mmap.len(), MmapAdvice::Sequential).ok();
         });
@@ -555,7 +586,7 @@ fn bench_cow_open(b: &mut Criterion) {
         let path = tmp_path("cow_open");
         let _ = fs::remove_file(&path);
         {
-            let rw = MemoryMappedFile::create_rw(&path, 4 * 1024 * 1024).expect("create_rw");
+            let rw = new_rw(&path, 4 * 1024 * 1024).expect("create_rw");
             rw.update_region(0, &vec![5u8; 4096]).expect("seed");
             rw.flush().expect("flush");
         }
@@ -569,7 +600,7 @@ fn bench_cow_open(b: &mut Criterion) {
         let path = tmp_path("cow_open_writable");
         let _ = fs::remove_file(&path);
         {
-            let rw = MemoryMappedFile::create_rw(&path, 4 * 1024 * 1024).expect("create_rw");
+            let rw = new_rw(&path, 4 * 1024 * 1024).expect("create_rw");
             rw.update_region(0, &vec![5u8; 4096]).expect("seed");
             rw.flush().expect("flush");
         }
@@ -593,7 +624,7 @@ fn bench_schedule_flush(b: &mut Criterion) {
         group.throughput(Throughput::Bytes(size as u64));
         let path = tmp_path(&format!("sched_{size}"));
         let _ = fs::remove_file(&path);
-        let mmap = MemoryMappedFile::create_rw(&path, size as u64).expect("create_rw");
+        let mmap = new_rw(&path, size as u64).expect("create_rw");
         let mut fill = 0u8;
         group.bench_with_input(BenchmarkId::new("flush_range", size), &size, |ben, &sz| {
             ben.iter(|| {
@@ -634,7 +665,7 @@ fn bench_rw_views(b: &mut Criterion) {
     let file_size: usize = 16 * 1024 * 1024;
     let path = tmp_path("rw_views_16mb");
     let _ = fs::remove_file(&path);
-    let rw = MemoryMappedFile::create_rw(&path, file_size as u64).expect("create_rw");
+    let rw = new_rw(&path, file_size as u64).expect("create_rw");
     rw.update_region(0, &vec![0x5Au8; file_size]).expect("seed");
 
     group.bench_function("as_slice_64", |ben| {
@@ -672,6 +703,77 @@ fn bench_rw_views(b: &mut Criterion) {
     let _ = fs::remove_file(&path);
 }
 
+/// The 1.2 defaults that reserve disk space (`fallocate` /
+/// `F_PREALLOCATE`): `create_rw` and a growing `resize`. Registered last:
+/// allocating and freeing blocks this often keeps the file system's
+/// journal busy for a while, which would slow the flush benches if they
+/// ran afterwards.
+fn bench_reserved_space(b: &mut Criterion) {
+    let mut group = b.benchmark_group("create_rw_reserved");
+    for &size in &[4_usize * 1024, 64 * 1024, 1024 * 1024] {
+        group.throughput(Throughput::Bytes(size as u64));
+        group.bench_with_input(BenchmarkId::from_parameter(size), &size, |ben, &sz| {
+            ben.iter_batched(
+                || {
+                    let path = tmp_path(&format!("create_rw_reserved_{sz}"));
+                    let _ = fs::remove_file(&path);
+                    (path, sz)
+                },
+                |(path, sz)| {
+                    let _m = MemoryMappedFile::create_rw(&path, sz as u64).expect("create_rw");
+                    let _ = fs::remove_file(&path);
+                },
+                BatchSize::SmallInput,
+            )
+        });
+    }
+    group.finish();
+
+    let mut group = b.benchmark_group("resize");
+    group.bench_function("grow_1MB_to_8MB_reserved", |ben| {
+        let path = tmp_path("resize_grow_reserved");
+        let _ = fs::remove_file(&path);
+        let mmap = MemoryMappedFile::create_rw(&path, 1024 * 1024).expect("create_rw");
+        ben.iter(|| {
+            mmap.resize(8 * 1024 * 1024).expect("resize grow");
+            mmap.resize(1024 * 1024).expect("resize shrink");
+        });
+        let _ = fs::remove_file(&path);
+    });
+    group.finish();
+
+    // `random_read/as_slice` again, on a file created with the default
+    // (reserved) `create_rw` instead of a sparse one.
+    let mut group = b.benchmark_group("random_read_reserved");
+    let file_size: usize = 16 * 1024 * 1024;
+    let path = tmp_path("rand_read_reserved_16mb");
+    let _ = fs::remove_file(&path);
+    {
+        let rw = MemoryMappedFile::create_rw(&path, file_size as u64).expect("create_rw");
+        rw.update_region(0, &vec![0xB6u8; file_size]).expect("seed");
+        rw.flush().expect("flush");
+    }
+    let ro = MemoryMappedFile::open_ro(&path).expect("open_ro");
+    for &req_size in &[64usize, 4096] {
+        group.bench_with_input(
+            BenchmarkId::new("as_slice", req_size),
+            &req_size,
+            |ben, &rsz| {
+                let mut rng = XorShift64::new(0xC0FFEE);
+                ben.iter(|| {
+                    let max_off = (file_size - rsz) as u64;
+                    let off = rng.next_u64() % (max_off + 1);
+                    let s = ro.as_slice(off, rsz as u64).expect("as_slice");
+                    criterion::black_box(s[0]);
+                });
+            },
+        );
+    }
+    group.finish();
+    drop(ro);
+    let _ = fs::remove_file(&path);
+}
+
 fn criterion_config() -> Criterion {
     Criterion::default()
         .sample_size(30)
@@ -699,7 +801,8 @@ criterion_group! {
         bench_advise,
         bench_cow_open,
         bench_schedule_flush,
-        bench_rw_views
+        bench_rw_views,
+        bench_reserved_space
 }
 
 criterion_main!(mmap_benches);
